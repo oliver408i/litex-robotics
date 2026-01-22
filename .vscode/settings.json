@@ -1,0 +1,9 @@
+{
+    "python.analysis.extraPaths": [
+        "./litex-setup/migen",
+        "./litex-setup/litex",
+        "./litex-setup/litedram",
+        "./litex-setup/litex-boards",
+        "./litex-setup/litespi"
+    ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "gui-debugger",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "electron": "^40.0.0",
+    "serialport": "^12.0.0"
+  }
+}

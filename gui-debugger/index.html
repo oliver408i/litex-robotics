@@ -1,0 +1,459 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>UART Debugger</title>
+  <style>
+    body { font-family: sans-serif; margin: 12px; }
+    h2 { margin: 12px 0 6px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+    .col { border: 1px solid #ccc; padding: 8px; margin-bottom: 10px; }
+    input[type="number"], input[type="text"] { width: 90px; }
+    .log { width: 100%; height: 200px; }
+    .servo { display: grid; grid-template-columns: 70px 1fr 60px 60px; gap: 6px; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>LiteX UART Debugger</h1>
+
+  <div class="col">
+    <div class="row">
+      <button id="connect">Connect</button>
+      <button id="disconnect" disabled>Disconnect</button>
+      <label>Path <input id="path" type="text" value="/dev/ttyUSB1" /></label>
+      <label>Baud <input id="baud" type="number" value="115200" /></label>
+      <span id="status">disconnected</span>
+    </div>
+    <div class="row">
+      <span>Select /dev/ttyUSB1 when prompted.</span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>Basic</h2>
+    <div class="row">
+      <button id="ping">Ping</button>
+      <button id="version">Version</button>
+      <button id="statusBtn">Status</button>
+    </div>
+    <div class="row">
+      <button id="estopCmd">E-STOP (command)</button>
+      <button id="estopGet">E-STOP Get</button>
+      <span id="estopInfo"></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>Servo PWM (us)</h2>
+    <div id="servos"></div>
+  </div>
+
+  <div class="col">
+    <h2>Motor</h2>
+    <div class="row">
+      <label>Index <input id="motorIdx" type="number" value="0" min="0" max="3" /></label>
+      <label>Speed <input id="motorSpeed" type="number" value="0" /></label>
+      <button id="motorSet">Set</button>
+      <button id="motorGet">Get</button>
+      <span id="motorInfo"></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>GPIO</h2>
+    <div class="row">
+      <label>Mask <input id="gpioMask" type="text" value="0x0" /></label>
+      <label>Value <input id="gpioValue" type="text" value="0x0" /></label>
+      <button id="gpioSet">Set</button>
+      <button id="gpioGet">Get</button>
+      <span id="gpioInfo"></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>NeoPixel</h2>
+    <div class="row">
+      <label>En <input id="neoEn" type="number" value="1" min="0" max="1" /></label>
+      <label>Bri <input id="neoBri" type="number" value="128" min="0" max="255" /></label>
+      <label>G <input id="neoG" type="number" value="0" min="0" max="255" /></label>
+      <label>R <input id="neoR" type="number" value="20" min="0" max="255" /></label>
+      <label>B <input id="neoB" type="number" value="0" min="0" max="255" /></label>
+      <button id="neoSet">Set</button>
+      <button id="neoGet">Get</button>
+      <span id="neoInfo"></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>ADC (MCP3008)</h2>
+    <div class="row">
+      <button id="adcGet">Read</button>
+      <button id="adcClear">Clear Updates</button>
+      <label>Mask <input id="adcClearMask" type="text" value="0xff" /></label>
+      <span id="adcInfo"></span>
+    </div>
+    <div class="row">
+      <label>Enable <input id="adcEn" type="number" value="1" min="0" max="1" /></label>
+      <label>ChMask <input id="adcMask" type="text" value="0xff" /></label>
+      <label>Interval ticks <input id="adcInterval" type="text" value="0x0" /></label>
+      <button id="adcCfg">Apply</button>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>Log</h2>
+    <textarea id="log" class="log" readonly></textarea>
+  </div>
+
+<script>
+const PREAMBLE_0 = 0xAA;
+const PREAMBLE_1 = 0x55;
+const RSP_ERROR = 0x7F;
+
+const CMD_PING = 0x01;
+const CMD_GET_VERSION = 0x02;
+const CMD_SET_MOTOR = 0x10;
+const CMD_GET_MOTOR = 0x11;
+const CMD_SET_SERVO = 0x12;
+const CMD_GET_SERVO = 0x13;
+const CMD_SET_GPIO = 0x14;
+const CMD_GET_GPIO = 0x15;
+const CMD_ESTOP = 0x16;
+const CMD_GET_STATUS = 0x20;
+const CMD_SET_NEOPIXEL = 0x30;
+const CMD_GET_NEOPIXEL = 0x31;
+const CMD_GET_ADC = 0x40;
+const CMD_SET_ADC_CFG = 0x41;
+const CMD_CLR_ADC_UPD = 0x42;
+const CMD_GET_ESTOP = 0x50;
+
+const { SerialPort } = require("serialport");
+
+let port = null;
+const pending = new Map();
+
+const logEl = document.getElementById("log");
+function log(msg) {
+  logEl.value += msg + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function checksumXor(bytes) {
+  let c = 0;
+  for (const b of bytes) c ^= b;
+  return c & 0xFF;
+}
+
+function sendFrame(cmd, payload = []) {
+  const len = 1 + payload.length;
+  const frame = [PREAMBLE_0, PREAMBLE_1, len, cmd, ...payload];
+  const chk = checksumXor(frame.slice(2));
+  frame.push(chk);
+  const data = new Uint8Array(frame);
+  if (!port || !port.isOpen) {
+    log("serial not connected");
+    return;
+  }
+  port.write(data);
+}
+
+function transact(cmd, payload = [], timeoutMs = 1000) {
+  return new Promise((resolve, reject) => {
+    const expected = (cmd | 0x80) & 0xFF;
+    const timer = setTimeout(() => {
+      pending.delete(expected);
+      reject(new Error("timeout"));
+    }, timeoutMs);
+    pending.set(expected, { resolve, reject, timer, cmd });
+    sendFrame(cmd, payload);
+  });
+}
+
+function handleFrame(cmd, payload) {
+  if (cmd === RSP_ERROR) {
+    const orig = payload[0];
+    const code = payload[1];
+    const expected = (orig | 0x80) & 0xFF;
+    const entry = pending.get(expected);
+    if (entry) {
+      clearTimeout(entry.timer);
+      pending.delete(expected);
+      entry.reject(new Error("device error cmd=0x" + orig.toString(16) + " code=" + code));
+      return;
+    }
+  }
+  const entry = pending.get(cmd);
+  if (entry) {
+    clearTimeout(entry.timer);
+    pending.delete(cmd);
+    entry.resolve(payload);
+    return;
+  }
+  log("unsolicited cmd=0x" + cmd.toString(16));
+}
+
+const parser = { state: 0, len: 0, cmd: 0, payload: [], chk: 0 };
+function handleBytes(bytes) {
+  for (const byte of bytes) {
+    switch (parser.state) {
+      case 0:
+        if (byte === PREAMBLE_0) parser.state = 1;
+        break;
+      case 1:
+        parser.state = (byte === PREAMBLE_1) ? 2 : 0;
+        break;
+      case 2:
+        parser.len = byte;
+        parser.payload = [];
+        parser.chk = byte;
+        parser.state = 3;
+        break;
+      case 3:
+        parser.cmd = byte;
+        parser.chk ^= byte;
+        if (parser.len === 1) parser.state = 5;
+        else parser.state = 4;
+        break;
+      case 4:
+        parser.payload.push(byte);
+        parser.chk ^= byte;
+        if (parser.payload.length >= parser.len - 1) parser.state = 5;
+        break;
+      case 5:
+        if (parser.chk === byte) {
+          handleFrame(parser.cmd, parser.payload);
+        } else {
+          log("checksum mismatch");
+        }
+        parser.state = 0;
+        break;
+    }
+  }
+}
+
+function valNum(id) {
+  return Number(document.getElementById(id).value);
+}
+
+function connect() {
+  const baud = valNum("baud") || 115200;
+  const path = document.getElementById("path").value || "/dev/ttyUSB1";
+  port = new SerialPort({ path, baudRate: baud, autoOpen: false });
+  port.on("data", (data) => handleBytes(data));
+  port.on("error", (err) => log("serial error: " + err.message));
+  port.open((err) => {
+    if (err) {
+      log("open error: " + err.message);
+      return;
+    }
+    document.getElementById("status").textContent = "connected";
+    document.getElementById("connect").disabled = true;
+    document.getElementById("disconnect").disabled = false;
+  });
+}
+
+function disconnect() {
+  if (port && port.isOpen) {
+    port.close(() => {
+      document.getElementById("status").textContent = "disconnected";
+      document.getElementById("connect").disabled = false;
+      document.getElementById("disconnect").disabled = true;
+    });
+  } else {
+    document.getElementById("status").textContent = "disconnected";
+    document.getElementById("connect").disabled = false;
+    document.getElementById("disconnect").disabled = true;
+  }
+}
+
+function setupServoUI() {
+  const root = document.getElementById("servos");
+  const timers = new Array(5).fill(null);
+  for (let i = 0; i < 5; i++) {
+    const row = document.createElement("div");
+    row.className = "servo";
+    const label = document.createElement("div");
+    label.textContent = "Servo " + i;
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "500";
+    slider.max = "2500";
+    slider.step = "1";
+    slider.value = "1500";
+    const val = document.createElement("input");
+    val.type = "number";
+    val.value = "1500";
+    val.min = "500";
+    val.max = "2500";
+    const btn = document.createElement("button");
+    btn.textContent = "Set";
+
+    const send = () => {
+      const pulse = Number(val.value);
+      transact(CMD_SET_SERVO, [i, pulse & 0xFF, (pulse >> 8) & 0xFF])
+        .catch(err => log("servo " + i + " error: " + err.message));
+    };
+
+    slider.addEventListener("input", () => {
+      val.value = slider.value;
+      if (timers[i]) clearTimeout(timers[i]);
+      timers[i] = setTimeout(send, 60);
+    });
+    val.addEventListener("change", () => {
+      slider.value = val.value;
+      send();
+    });
+    btn.addEventListener("click", send);
+
+    row.appendChild(label);
+    row.appendChild(slider);
+    row.appendChild(val);
+    row.appendChild(btn);
+    root.appendChild(row);
+  }
+}
+
+setupServoUI();
+
+// Wire buttons
+
+document.getElementById("connect").addEventListener("click", () => connect());
+document.getElementById("disconnect").addEventListener("click", () => disconnect());
+
+document.getElementById("ping").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_PING);
+    log("ping: " + new TextDecoder().decode(new Uint8Array(rsp)));
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("version").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_VERSION);
+    log("version: " + rsp[0] + "." + rsp[1]);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("statusBtn").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_STATUS);
+    const uptime = rsp[0] | (rsp[1] << 8) | (rsp[2] << 16) | (rsp[3] << 24);
+    log("status: uptime_ms=" + uptime + " last_error=" + rsp[4]);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("estopCmd").addEventListener("click", async () => {
+  try {
+    await transact(CMD_ESTOP);
+    log("estop command sent");
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("estopGet").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_ESTOP);
+    const info = "active=" + rsp[0] + " debounced=" + rsp[1] + " raw=" + rsp[2];
+    document.getElementById("estopInfo").textContent = info;
+    log("estop: " + info);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("motorSet").addEventListener("click", async () => {
+  const idx = valNum("motorIdx");
+  const speed = valNum("motorSpeed");
+  const payload = [idx & 0xFF, speed & 0xFF, (speed >> 8) & 0xFF];
+  try {
+    await transact(CMD_SET_MOTOR, payload);
+    log("motor " + idx + " set " + speed);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("motorGet").addEventListener("click", async () => {
+  const idx = valNum("motorIdx");
+  try {
+    const rsp = await transact(CMD_GET_MOTOR, [idx & 0xFF]);
+    const speed = (rsp[1] | (rsp[2] << 8)) << 16 >> 16;
+    document.getElementById("motorInfo").textContent = "speed=" + speed;
+    log("motor " + idx + " speed=" + speed);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("gpioSet").addEventListener("click", async () => {
+  const mask = parseInt(document.getElementById("gpioMask").value);
+  const value = parseInt(document.getElementById("gpioValue").value);
+  const payload = [mask & 0xFF, (mask >> 8) & 0xFF, (mask >> 16) & 0xFF, (mask >> 24) & 0xFF,
+                   value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF];
+  try {
+    await transact(CMD_SET_GPIO, payload);
+    log("gpio set mask=0x" + mask.toString(16) + " value=0x" + value.toString(16));
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("gpioGet").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_GPIO);
+    const mask = rsp[0] | (rsp[1] << 8) | (rsp[2] << 16) | (rsp[3] << 24);
+    const value = rsp[4] | (rsp[5] << 8) | (rsp[6] << 16) | (rsp[7] << 24);
+    const info = "mask=0x" + mask.toString(16) + " value=0x" + value.toString(16);
+    document.getElementById("gpioInfo").textContent = info;
+    log("gpio: " + info);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("neoSet").addEventListener("click", async () => {
+  const en = valNum("neoEn");
+  const bri = valNum("neoBri");
+  const g = valNum("neoG");
+  const r = valNum("neoR");
+  const b = valNum("neoB");
+  try {
+    await transact(CMD_SET_NEOPIXEL, [en & 0xFF, bri & 0xFF, g & 0xFF, r & 0xFF, b & 0xFF]);
+    log("neopixel set");
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("neoGet").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_NEOPIXEL);
+    const info = "en=" + rsp[0] + " bri=" + rsp[1] + " g=" + rsp[2] + " r=" + rsp[3] + " b=" + rsp[4];
+    document.getElementById("neoInfo").textContent = info;
+    log("neopixel: " + info);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("adcGet").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_ADC);
+    const samples = [];
+    for (let i = 0; i < 8; i++) {
+      const v = rsp[i * 2] | (rsp[i * 2 + 1] << 8);
+      samples.push(v);
+    }
+    const info = "samples_mv=" + samples.join(",") + " update=0x" + rsp[16].toString(16) + " last=" + rsp[17];
+    document.getElementById("adcInfo").textContent = info;
+    log("adc: " + info);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("adcCfg").addEventListener("click", async () => {
+  const en = valNum("adcEn");
+  const mask = parseInt(document.getElementById("adcMask").value);
+  const interval = parseInt(document.getElementById("adcInterval").value);
+  const payload = [en & 0xFF, mask & 0xFF,
+    interval & 0xFF, (interval >> 8) & 0xFF, (interval >> 16) & 0xFF, (interval >> 24) & 0xFF];
+  try {
+    await transact(CMD_SET_ADC_CFG, payload);
+    log("adc cfg set");
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("adcClear").addEventListener("click", async () => {
+  const mask = parseInt(document.getElementById("adcClearMask").value);
+  try {
+    await transact(CMD_CLR_ADC_UPD, [mask & 0xFF]);
+    log("adc update mask cleared");
+  } catch (err) { log(err.message); }
+});
+</script>
+</body>
+</html>

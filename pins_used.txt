@@ -1,0 +1,53 @@
+Pins used in this repo
+
+Source: sipeed_tang_nano_20k.py (default options) + litex_boards platform
+- clk27: pin 4
+- reset button (btn[1]): pin 87
+- e-stop/button (btn[0]): pin 88
+- UART serial: rx pin 70, tx pin 69
+- WS2812 rgb_led/strip: pin 79 (LED0 status, LED1-299 user)
+- ext_rgb (external RGB PWM): r pin 76, g pin 42, b pin 41
+- motor_pwm[0..1]: pins 71, 72
+- i2c: scl pin 53, sda pin 52
+- AS5600 (I2C): addr 0x36 on scl pin 53, sda pin 52
+- MCP3008 ADC (SPI): sclk pin 73, cs_n pin 74, mosi pin 49, miso pin 55
+- estop_ext: pin 31
+- servo_pwm[0..4]: pins 25, 26, 27, 28, 29
+- SPI SD card (auto default): clk pin 83, mosi pin 82, cs_n pin 81, miso pin 84
+- SDRAM (SIP internal, special IO naming):
+  - O_sdram_clk pin 1
+  - O_sdram_cke pin 1
+  - O_sdram_cs_n pin 1
+  - O_sdram_cas_n pin 1
+  - O_sdram_ras_n pin 1
+  - O_sdram_wen_n pin 1
+  - O_sdram_dqm pin 4
+  - O_sdram_addr pin 11
+  - O_sdram_ba pin 2
+  - IO_sdram_dq pin 32
+
+ * (TOP: USB-C / S1 / S2)
+ * _________________________
+ * (ADC_SCLK) USED [73] | [5V]  POWER
+ * (ADC_CS_N) USED [74] | [GND] GROUND
+ * (RECLAIMED)     [75] | [76]  USED (EXT_RGB_R)
+ * (SD_DATA1) USED [85] | [80]  USED (SD_DATA2)
+ * (RECLAIMED)     [77] | [42]  USED (EXT_RGB_G)
+ * (LED0)     RECL [15] | [41]  USED (EXT_RGB_B)
+ * (LED1)     RECL [16] | [56]  RECL (I2S_BCLK)
+ * (SERVO_0)  USED [27] | [54]  RECL (I2S_DIN)
+ * (SERVO_1)  USED [28] | [51]  RECL (PA_EN)
+ * (SERVO_2)  USED [25] | [48]  RECL (LCD_DE)
+ * (SERVO_3)  USED [26] | [55]  USED (ADC_MISO)
+ * (SERVO_4)  USED [29] | [49]  USED (ADC_MOSI)
+ * (RECLAIMED)     [30] | [86]  NEW  (MOTOR_5_PWM)
+ * (ESTOP_EXT) USED [31] | [79]  USED (WS2812_DIN)
+ * (LED2)     RECL [17] | [GND] GROUND
+ * (LED5)     RECL [20] | [3V3] POWER
+ * (LED4)     RECL [19] | [72]  NEW  (MOTOR_6_PWM)
+ * (LED3)     RECL [18] | [71]  NEW  (MOTOR_1_PWM)
+ * POWER      [3V3]     | [53]  NEW  (I2C_SCL - Built-in PU)
+ * GROUND     [GND]     | [52]  NEW  (I2C_SDA - Built-in PU)
+ * _________________________
+ * (BOTTOM: HDMI / LCD)
+ *
