@@ -29,6 +29,7 @@ from litex_boards.platforms import sipeed_tang_nano_20k
 from gateware.ws2812_status_verilog import WS2812StatusVerilog
 from gateware.mcp3008_verilog import MCP3008ReaderVerilog
 from gateware.external_rgb_pwm import ExternalRGBPWM
+from gateware.shift_register_595 import ShiftRegister595
 from gateware.motor_pwm import MotorPWM
 from gateware.servo_pwm import ServoPWM
 from litex.soc.cores.bitbang import I2CMaster
@@ -118,10 +119,10 @@ class BaseSoC(SoCCore):
                 ("servo_pwm", 0, Pins("25 26 27 28 29"), IOStandard("LVCMOS33")),
             ])
         platform.add_extension([
-            ("ext_rgb", 0,
-                Subsignal("r", Pins("76")),
-                Subsignal("g", Pins("42")),
-                Subsignal("b", Pins("41")),
+            ("shiftreg", 0,
+                Subsignal("rclk", Pins("76")),
+                Subsignal("srclk", Pins("42")),
+                Subsignal("ser", Pins("41")),
                 IOStandard("LVCMOS33"),
             ),
         ])
@@ -144,6 +145,7 @@ class BaseSoC(SoCCore):
             ])
 
         with_hdmi = with_video_terminal or with_video_colorbars
+        kwargs.setdefault("uart_baudrate", 750000)
 
         # CRG --------------------------------------------------------------------------------------
         self.crg = _CRG(platform, sys_clk_freq, with_hdmi=with_hdmi, with_reset_button=with_reset_button)
@@ -208,8 +210,12 @@ class BaseSoC(SoCCore):
             self.add_csr("rgb_led")
 
         # External RGB LED -------------------------------------------------------------------------
-        self.ext_rgb = ExternalRGBPWM(pads=platform.request("ext_rgb"), active_low=True)
+        self.ext_rgb = ExternalRGBPWM(active_low=True)
         self.add_csr("ext_rgb")
+        self.shiftreg = ShiftRegister595(
+            pads=platform.request("shiftreg"),
+            data=Cat(self.ext_rgb.r, self.ext_rgb.g, self.ext_rgb.b, Replicate(0, 5)),
+        )
 
         # I2C --------------------------------------------------------------------------------------
         if with_i2c:
@@ -252,6 +258,7 @@ class BaseSoC(SoCCore):
 def main():
     from litex.build.parser import LiteXArgumentParser
     parser = LiteXArgumentParser(platform=sipeed_tang_nano_20k.Platform, description="LiteX SoC on Tang Nano 20K.")
+    parser.set_defaults(uart_baudrate=750000)
     parser.add_target_argument("--flash",        action="store_true",      help="Flash Bitstream.")
     parser.add_target_argument("--sys-clk-freq", default=48e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--with-spi-flash", action="store_true", help="Enable SPI Flash (MMAPed).")

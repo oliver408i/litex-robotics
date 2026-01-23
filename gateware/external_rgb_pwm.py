@@ -5,7 +5,7 @@ from litex.soc.interconnect.csr import AutoCSR, CSRStorage
 
 
 class ExternalRGBPWM(LiteXModule, AutoCSR):
-    def __init__(self, pads, active_low=False):
+    def __init__(self, pads=None, active_low=False):
         self._r = CSRStorage(8, reset=0, description="External RGB red PWM duty (0-255).")
         self._g = CSRStorage(8, reset=0, description="External RGB green PWM duty (0-255).")
         self._b = CSRStorage(8, reset=0, description="External RGB blue PWM duty (0-255).")
@@ -40,11 +40,16 @@ class ExternalRGBPWM(LiteXModule, AutoCSR):
                 b_drive.eq(b_out),
             ]
 
-        if hasattr(pads, "r"):
-            self.comb += [
-                pads.r.eq(r_drive),
-                pads.g.eq(g_drive),
-                pads.b.eq(b_drive),
-            ]
-        else:
-            self.comb += pads.eq(Cat(r_drive, g_drive, b_drive))
+        self.r = r_drive
+        self.g = g_drive
+        self.b = b_drive
+
+        if pads is not None:
+            if hasattr(pads, "r"):
+                self.comb += [
+                    pads.r.eq(r_drive),
+                    pads.g.eq(g_drive),
+                    pads.b.eq(b_drive),
+                ]
+            else:
+                self.comb += pads.eq(Cat(r_drive, g_drive, b_drive))

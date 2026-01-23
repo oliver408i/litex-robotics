@@ -45,7 +45,7 @@ def checksum_xor(data: bytes) -> int:
 
 
 class UartProtocol:
-    def __init__(self, port: str, baud: int = 115200, timeout: float = 0.5, debug: bool = False, flush: bool = True):
+    def __init__(self, port: str, baud: int = 750000, timeout: float = 0.5, debug: bool = False, flush: bool = True):
         if serial is None:
             raise RuntimeError("pyserial is required: pip install pyserial")
         self.ser = serial.Serial(port, baudrate=baud, timeout=timeout)
@@ -232,7 +232,7 @@ class UartProtocol:
 def main():
     parser = argparse.ArgumentParser(description="LiteX UART robotics protocol client")
     parser.add_argument("--port", default="/dev/ttyUSB1")
-    parser.add_argument("--baud", default=115200, type=int)
+    parser.add_argument("--baud", default=750000, type=int)
     parser.add_argument("--debug", action="store_true", help="Dump raw UART bytes.")
     parser.add_argument("--no-flush", action="store_true", help="Do not flush RX before each command.")
     sub = parser.add_subparsers(dest="cmd", required=True)

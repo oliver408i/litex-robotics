@@ -21,7 +21,7 @@
       <button id="connect">Connect</button>
       <button id="disconnect" disabled>Disconnect</button>
       <label>Path <input id="path" type="text" value="/dev/ttyUSB1" /></label>
-      <label>Baud <input id="baud" type="number" value="115200" /></label>
+      <label>Baud <input id="baud" type="number" value="750000" /></label>
       <span id="status">disconnected</span>
     </div>
     <div class="row">
@@ -236,7 +236,7 @@ function valNum(id) {
 }
 
 function connect() {
-  const baud = valNum("baud") || 115200;
+  const baud = valNum("baud") || 750000;
   const path = document.getElementById("path").value || "/dev/ttyUSB1";
   port = new SerialPort({ path, baudRate: baud, autoOpen: false });
   port.on("data", (data) => handleBytes(data));

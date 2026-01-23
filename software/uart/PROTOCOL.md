@@ -1,7 +1,7 @@
 LiteX UART Robotics Protocol v1.0
 
 Overview
-- Transport: UART, 115200 8N1.
+- Transport: UART, 750000 8N1.
 - Framing: preamble + length + command + payload + checksum.
 - Endianness: little-endian for multi-byte fields.
 - Responses: command | 0x80 on success, 0x7F on error.

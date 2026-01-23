@@ -5,3 +5,7 @@ node_modules
 IDE
 litex-setup
 old-verilog
+*.bin
+*.elf
+*.map
+*.o

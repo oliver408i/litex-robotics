@@ -81,7 +81,7 @@ def configure_interp(client: UartProtocol, color_step: int, brightness_step: int
 def main():
     parser = argparse.ArgumentParser(description="WS2812 strip pattern tests (LED1..LED149).")
     parser.add_argument("--port", default="/dev/ttyUSB1")
-    parser.add_argument("--baud", default=115200, type=int)
+    parser.add_argument("--baud", default=750000, type=int)
     parser.add_argument("--count", default=299, type=int, help="Number of strip LEDs (excludes LED0).")
     parser.add_argument("--interp-color-step", type=int, default=0,
                         help="Per-tick color interpolation step (0 disables).")
