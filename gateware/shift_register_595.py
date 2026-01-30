@@ -22,7 +22,7 @@ class ShiftRegister595(LiteXModule):
             ).Else(
                 srclk.eq(1),
                 phase.eq(0),
-                shift_word.eq(Cat(shift_word[0:7], 0)),
+                shift_word.eq(shift_word << 1),
                 If(bit_index == 7,
                     bit_index.eq(0),
                     rclk.eq(1),

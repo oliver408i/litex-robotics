@@ -11,6 +11,7 @@
     input[type="number"], input[type="text"] { width: 90px; }
     .log { width: 100%; height: 200px; }
     .servo { display: grid; grid-template-columns: 70px 1fr 60px 60px; gap: 6px; align-items: center; }
+    .motor-run { display: grid; grid-template-columns: 70px 1fr 70px 80px; gap: 6px; align-items: center; }
   </style>
 </head>
 <body>
@@ -57,6 +58,15 @@
       <button id="motorGet">Get</button>
       <span id="motorInfo"></span>
     </div>
+    <div class="row">
+      <label><input id="motorArm" type="checkbox" /> Arm</label>
+    </div>
+    <div class="motor-run">
+      <div>All</div>
+      <input id="motorAllSlider" type="range" min="0" max="32767" step="1" value="0" disabled />
+      <input id="motorAllValue" type="number" min="0" max="32767" value="0" disabled />
+      <button id="motorAllSet" disabled>Apply</button>
+    </div>
   </div>
 
   <div class="col">
@@ -98,6 +108,24 @@
       <label>Interval ticks <input id="adcInterval" type="text" value="0x0" /></label>
       <button id="adcCfg">Apply</button>
     </div>
+    <div class="row">
+      <label><input id="adcLive" type="checkbox" /> Live</label>
+      <label>Interval ms <input id="adcLiveInterval" type="number" value="250" min="50" /></label>
+      <span id="adcLiveInfo"></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>Mag Encoder (AS5600)</h2>
+    <div class="row">
+      <button id="as5600Get">Read</button>
+      <span id="as5600Info"></span>
+    </div>
+    <div class="row">
+      <label><input id="as5600Live" type="checkbox" /> Live</label>
+      <label>Interval ms <input id="as5600LiveInterval" type="number" value="250" min="50" /></label>
+      <span id="as5600LiveInfo"></span>
+    </div>
   </div>
 
   <div class="col">
@@ -126,6 +154,7 @@ const CMD_GET_ADC = 0x40;
 const CMD_SET_ADC_CFG = 0x41;
 const CMD_CLR_ADC_UPD = 0x42;
 const CMD_GET_ESTOP = 0x50;
+const CMD_GET_AS5600 = 0x60;
 
 const { SerialPort } = require("serialport");
 
@@ -315,6 +344,33 @@ function setupServoUI() {
 
 setupServoUI();
 
+function setMotorArmState(armed) {
+  document.getElementById("motorAllSlider").disabled = !armed;
+  document.getElementById("motorAllValue").disabled = !armed;
+  document.getElementById("motorAllSet").disabled = !armed;
+}
+
+function motorSpeedPayload(speed) {
+  return [speed & 0xFF, (speed >> 8) & 0xFF];
+}
+
+let motorAllTimer = null;
+let motorAllInFlight = false;
+async function setAllMotors(speed, logIt) {
+  if (motorAllInFlight) return;
+  motorAllInFlight = true;
+  try {
+    for (let i = 0; i < 2; i++) {
+      await transact(CMD_SET_MOTOR, [i & 0xFF, ...motorSpeedPayload(speed)]);
+    }
+    if (logIt) log("motor all set " + speed);
+  } catch (err) {
+    log("motor all error: " + err.message);
+  } finally {
+    motorAllInFlight = false;
+  }
+}
+
 // Wire buttons
 
 document.getElementById("connect").addEventListener("click", () => connect());
@@ -378,6 +434,41 @@ document.getElementById("motorGet").addEventListener("click", async () => {
   } catch (err) { log(err.message); }
 });
 
+document.getElementById("motorArm").addEventListener("change", async (ev) => {
+  const armed = ev.target.checked;
+  setMotorArmState(armed);
+  if (!armed) {
+    document.getElementById("motorAllSlider").value = "0";
+    document.getElementById("motorAllValue").value = "0";
+    await setAllMotors(0, true);
+  }
+});
+
+document.getElementById("motorAllSlider").addEventListener("input", () => {
+  const slider = document.getElementById("motorAllSlider");
+  const val = document.getElementById("motorAllValue");
+  val.value = slider.value;
+  if (motorAllTimer) clearTimeout(motorAllTimer);
+  motorAllTimer = setTimeout(() => {
+    if (!document.getElementById("motorArm").checked) return;
+    setAllMotors(Number(val.value), false);
+  }, 80);
+});
+
+document.getElementById("motorAllValue").addEventListener("change", () => {
+  const slider = document.getElementById("motorAllSlider");
+  const val = document.getElementById("motorAllValue");
+  slider.value = val.value;
+  if (!document.getElementById("motorArm").checked) return;
+  setAllMotors(Number(val.value), true);
+});
+
+document.getElementById("motorAllSet").addEventListener("click", () => {
+  const val = Number(document.getElementById("motorAllValue").value);
+  if (!document.getElementById("motorArm").checked) return;
+  setAllMotors(val, true);
+});
+
 document.getElementById("gpioSet").addEventListener("click", async () => {
   const mask = parseInt(document.getElementById("gpioMask").value);
   const value = parseInt(document.getElementById("gpioValue").value);
@@ -424,12 +515,7 @@ document.getElementById("neoGet").addEventListener("click", async () => {
 document.getElementById("adcGet").addEventListener("click", async () => {
   try {
     const rsp = await transact(CMD_GET_ADC);
-    const samples = [];
-    for (let i = 0; i < 8; i++) {
-      const v = rsp[i * 2] | (rsp[i * 2 + 1] << 8);
-      samples.push(v);
-    }
-    const info = "samples_mv=" + samples.join(",") + " update=0x" + rsp[16].toString(16) + " last=" + rsp[17];
+    const info = formatAdcInfo(rsp);
     document.getElementById("adcInfo").textContent = info;
     log("adc: " + info);
   } catch (err) { log(err.message); }
@@ -454,6 +540,110 @@ document.getElementById("adcClear").addEventListener("click", async () => {
     log("adc update mask cleared");
   } catch (err) { log(err.message); }
 });
+
+function formatAdcInfo(rsp) {
+  const samples = [];
+  for (let i = 0; i < 8; i++) {
+    const v = rsp[i * 2] | (rsp[i * 2 + 1] << 8);
+    samples.push(v);
+  }
+  return "samples_mv=" + samples.join(",") + " update=0x" + rsp[16].toString(16) + " last=" + rsp[17];
+}
+
+let adcLiveTimer = null;
+let adcLiveInFlight = false;
+async function adcLiveTick() {
+  if (adcLiveInFlight) return;
+  adcLiveInFlight = true;
+  try {
+    const rsp = await transact(CMD_GET_ADC);
+    const info = formatAdcInfo(rsp);
+    document.getElementById("adcLiveInfo").textContent = info;
+  } catch (err) {
+    document.getElementById("adcLiveInfo").textContent = "error: " + err.message;
+  } finally {
+    adcLiveInFlight = false;
+  }
+}
+
+function setAdcLive(enabled) {
+  if (adcLiveTimer) {
+    clearInterval(adcLiveTimer);
+    adcLiveTimer = null;
+  }
+  if (enabled) {
+    adcLiveTick();
+    const interval = Math.max(50, valNum("adcLiveInterval") || 250);
+    adcLiveTimer = setInterval(adcLiveTick, interval);
+  } else {
+    document.getElementById("adcLiveInfo").textContent = "";
+  }
+}
+
+document.getElementById("adcLive").addEventListener("change", (ev) => {
+  setAdcLive(ev.target.checked);
+});
+document.getElementById("adcLiveInterval").addEventListener("change", () => {
+  if (document.getElementById("adcLive").checked) setAdcLive(true);
+});
+
+function formatAs5600Info(rsp) {
+  const present = rsp[0];
+  const ok = rsp[1];
+  const status = rsp[2];
+  const angle = rsp[3] | (rsp[4] << 8);
+  const magnitude = rsp[5] | (rsp[6] << 8);
+  return "present=" + present + " ok=" + ok + " status=0x" + status.toString(16) +
+    " angle=" + angle + " magnitude=" + magnitude;
+}
+
+document.getElementById("as5600Get").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_AS5600);
+    const info = formatAs5600Info(rsp);
+    document.getElementById("as5600Info").textContent = info;
+    log("as5600: " + info);
+  } catch (err) { log(err.message); }
+});
+
+let as5600LiveTimer = null;
+let as5600LiveInFlight = false;
+async function as5600LiveTick() {
+  if (as5600LiveInFlight) return;
+  as5600LiveInFlight = true;
+  try {
+    const rsp = await transact(CMD_GET_AS5600);
+    const info = formatAs5600Info(rsp);
+    document.getElementById("as5600LiveInfo").textContent = info;
+  } catch (err) {
+    document.getElementById("as5600LiveInfo").textContent = "error: " + err.message;
+  } finally {
+    as5600LiveInFlight = false;
+  }
+}
+
+function setAs5600Live(enabled) {
+  if (as5600LiveTimer) {
+    clearInterval(as5600LiveTimer);
+    as5600LiveTimer = null;
+  }
+  if (enabled) {
+    as5600LiveTick();
+    const interval = Math.max(50, valNum("as5600LiveInterval") || 250);
+    as5600LiveTimer = setInterval(as5600LiveTick, interval);
+  } else {
+    document.getElementById("as5600LiveInfo").textContent = "";
+  }
+}
+
+document.getElementById("as5600Live").addEventListener("change", (ev) => {
+  setAs5600Live(ev.target.checked);
+});
+document.getElementById("as5600LiveInterval").addEventListener("change", () => {
+  if (document.getElementById("as5600Live").checked) setAs5600Live(true);
+});
+
+setMotorArmState(false);
 </script>
 </body>
 </html>
