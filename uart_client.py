@@ -33,6 +33,8 @@ CMD_SET_ADC_CFG = 0x41
 CMD_CLR_ADC_UPD = 0x42
 CMD_GET_ESTOP = 0x50
 CMD_GET_AS5600 = 0x60
+CMD_SET_LASER = 0x70
+CMD_GET_LASER = 0x71
 
 RSP_ERROR = 0x7F
 
@@ -228,6 +230,14 @@ class UartProtocol:
         magnitude = struct.unpack("<H", data[5:7])[0]
         return present, ok, status, angle, magnitude
 
+    def set_laser(self, enabled: int):
+        payload = bytes([enabled & 0x01])
+        self.transact(CMD_SET_LASER, payload)
+
+    def get_laser(self):
+        data = self.transact(CMD_GET_LASER)
+        return data[0]
+
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX UART robotics protocol client")
@@ -288,6 +298,9 @@ def main():
     aclear.add_argument("mask", type=lambda x: int(x, 0))
     sub.add_parser("estop-get")
     sub.add_parser("as5600-get")
+    lset = sub.add_parser("laser-set")
+    lset.add_argument("enabled", type=int)
+    sub.add_parser("laser-get")
 
     args = parser.parse_args()
 
@@ -367,6 +380,12 @@ def main():
                 f"present={present} ok={ok} status=0x{status:02x} "
                 f"md={md} ml={ml} mh={mh} angle={angle} magnitude={magnitude}"
             )
+        elif args.cmd == "laser-set":
+            client.set_laser(args.enabled)
+            print("ok")
+        elif args.cmd == "laser-get":
+            enabled = client.get_laser()
+            print(f"enabled={enabled}")
     finally:
         client.close()
 

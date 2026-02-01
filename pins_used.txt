@@ -6,10 +6,8 @@ Source: sipeed_tang_nano_20k.py (default options) + litex_boards platform
 - e-stop/button (btn[0]): pin 88
 - UART serial: rx pin 70, tx pin 69
 - WS2812 rgb_led/strip: pin 79 (LED0 status, LED1-299 user)
-- SN74HC595 shift register:
-  - RCLK pin 76, SRCLK pin 42, SER pin 41
-  - Qa/Qb/Qc drive external RGB LED (Qa red, Qb green, Qc blue)
-- motor_pwm[0..1]: pins 71, 72
+- Laser (direct): pin 41 (old SN74HC595 SER)
+- motor_pwm[0..1]: pins 71, 72 (driven by servo_pwm[5..6] in gateware)
 - i2c: scl pin 53, sda pin 52
 - AS5600 (I2C): addr 0x36 on scl pin 53, sda pin 52
 - MCP3008 ADC (SPI): sclk pin 73, cs_n pin 74, mosi pin 49, miso pin 55

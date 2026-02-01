@@ -60,6 +60,7 @@
     </div>
     <div class="row">
       <label><input id="motorArm" type="checkbox" /> Arm</label>
+      <span>Motor Set affects both outputs</span>
     </div>
     <div class="motor-run">
       <div>All</div>
@@ -91,6 +92,16 @@
       <button id="neoSet">Set</button>
       <button id="neoGet">Get</button>
       <span id="neoInfo"></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>Laser (Shift Reg Qa)</h2>
+    <div class="row">
+      <label>En <input id="laserEn" type="number" value="0" min="0" max="1" /></label>
+      <button id="laserSet">Set</button>
+      <button id="laserGet">Get</button>
+      <span id="laserInfo"></span>
     </div>
   </div>
 
@@ -155,6 +166,8 @@ const CMD_SET_ADC_CFG = 0x41;
 const CMD_CLR_ADC_UPD = 0x42;
 const CMD_GET_ESTOP = 0x50;
 const CMD_GET_AS5600 = 0x60;
+const CMD_SET_LASER = 0x70;
+const CMD_GET_LASER = 0x71;
 
 const { SerialPort } = require("serialport");
 
@@ -417,10 +430,18 @@ document.getElementById("estopGet").addEventListener("click", async () => {
 document.getElementById("motorSet").addEventListener("click", async () => {
   const idx = valNum("motorIdx");
   const speed = valNum("motorSpeed");
-  const payload = [idx & 0xFF, speed & 0xFF, (speed >> 8) & 0xFF];
   try {
-    await transact(CMD_SET_MOTOR, payload);
-    log("motor " + idx + " set " + speed);
+    if (idx <= 1) {
+      for (let i = 0; i < 2; i++) {
+        const payload = [i & 0xFF, speed & 0xFF, (speed >> 8) & 0xFF];
+        await transact(CMD_SET_MOTOR, payload);
+      }
+      log("motor 0/1 set " + speed);
+    } else {
+      const payload = [idx & 0xFF, speed & 0xFF, (speed >> 8) & 0xFF];
+      await transact(CMD_SET_MOTOR, payload);
+      log("motor " + idx + " set " + speed);
+    }
   } catch (err) { log(err.message); }
 });
 
@@ -509,6 +530,23 @@ document.getElementById("neoGet").addEventListener("click", async () => {
     const info = "en=" + rsp[0] + " bri=" + rsp[1] + " g=" + rsp[2] + " r=" + rsp[3] + " b=" + rsp[4];
     document.getElementById("neoInfo").textContent = info;
     log("neopixel: " + info);
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("laserSet").addEventListener("click", async () => {
+  const en = valNum("laserEn");
+  try {
+    await transact(CMD_SET_LASER, [en & 0xFF]);
+    log("laser set " + (en ? "on" : "off"));
+  } catch (err) { log(err.message); }
+});
+
+document.getElementById("laserGet").addEventListener("click", async () => {
+  try {
+    const rsp = await transact(CMD_GET_LASER);
+    const info = "en=" + rsp[0];
+    document.getElementById("laserInfo").textContent = info;
+    log("laser: " + info);
   } catch (err) { log(err.message); }
 });
 

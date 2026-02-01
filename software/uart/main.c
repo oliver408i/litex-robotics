@@ -32,6 +32,8 @@
 #define CMD_CLR_ADC_UPD 0x42
 #define CMD_GET_ESTOP   0x50
 #define CMD_GET_AS5600  0x60
+#define CMD_SET_LASER   0x70
+#define CMD_GET_LASER   0x71
 
 #define RSP_ERROR       0x7F
 #define STRIP_LED_COUNT 299
@@ -49,6 +51,7 @@ static uint32_t tick_load;
 static uint8_t last_error;
 
 static int16_t motor_speed[4];
+#define SERVO_CH_COUNT 5
 static uint16_t servo_pulse_us[8];
 static uint32_t gpio_mask;
 static uint32_t gpio_value;
@@ -152,25 +155,6 @@ static void ws2812_activity_pulse(void)
 #ifdef CSR_RGB_LED_BASE
 	rgb_led_neo_activity_write(1);
 #endif
-}
-
-static void ext_rgb_apply(uint8_t r, uint8_t g, uint8_t b)
-{
-#ifdef CSR_EXT_RGB_BASE
-	const uint8_t cap = 0x80;
-	uint8_t r_cap = r > cap ? cap : r;
-	uint8_t g_cap = g > cap ? cap : g;
-	uint8_t b_cap = b > cap ? cap : b;
-	ext_rgb__r_write(r_cap);
-	ext_rgb__g_write(g_cap);
-	ext_rgb__b_write(b_cap);
-#endif
-}
-
-static uint8_t scale_u8(uint8_t value, uint8_t scale)
-{
-	uint16_t scaled = (uint16_t)value * (uint16_t)scale;
-	return (uint8_t)((scaled + 127) / 255);
 }
 
 static uint16_t clamp_u16(uint16_t v, uint16_t lo, uint16_t hi)
@@ -358,23 +342,6 @@ static void ws2812_apply_state(void)
 	}
 #endif
 
-	if (estop_active) {
-		ext_rgb_apply(estop_blink_on ? 0xff : 0x00, 0x00, 0x00);
-	} else if (ntc_warning) {
-		uint8_t on = estop_blink_on ? 0xff : 0x00;
-		ext_rgb_apply(on, on, 0x00);
-	} else if (joy_btn_debug) {
-		ext_rgb_apply(0x00, estop_blink_on ? 0xff : 0x10, 0x00);
-	} else if (manual_mode) {
-		ext_rgb_apply(0x00, 0x00, 0xff);
-	} else if (neo_en && neo_brightness) {
-		uint8_t g = scale_u8(neo_grb[0], neo_brightness);
-		uint8_t r = scale_u8(neo_grb[1], neo_brightness);
-		uint8_t b = scale_u8(neo_grb[2], neo_brightness);
-		ext_rgb_apply(r, g, b);
-	} else {
-		ext_rgb_apply(0x00, 0x00, 0x00);
-	}
 }
 
 static void ws2812_strip_write(uint16_t index, uint8_t g, uint8_t r, uint8_t b, uint8_t brightness)
@@ -563,10 +530,12 @@ static void estop_update_on_tick(void)
 			if (btn_rise) {
 				estop_active = 1;
 				estop_hold_ms = 0;
-				for (uint8_t i = 0; i < (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0])); i++) {
+				for (uint8_t i = 0; i < SERVO_CH_COUNT; i++) {
 					servo_pulse_us[i] = 1500;
 				}
 				servo_pwm_apply_all();
+				memset(motor_speed, 0, sizeof(motor_speed));
+				motor_pwm_apply_all();
 			}
 		} else {
 			if (estop_btn_db && !estop_ntc_active) {
@@ -602,7 +571,7 @@ static void ntc_update_on_tick(void)
 	if (estop_ntc_active && !estop_active) {
 		estop_active = 1;
 		estop_hold_ms = 0;
-		for (uint8_t i = 0; i < (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0])); i++) {
+		for (uint8_t i = 0; i < SERVO_CH_COUNT; i++) {
 			servo_pulse_us[i] = 1500;
 		}
 		servo_pwm_apply_all();
@@ -652,6 +621,18 @@ static uint32_t servo_ticks_from_us(uint16_t us)
 	return (uint32_t)ticks;
 }
 
+static uint16_t motor_pulse_from_speed(int32_t speed)
+{
+	const uint16_t esc_min_us = 1000;
+	const uint16_t esc_max_us = 2000;
+	const uint32_t span = (uint32_t)(esc_max_us - esc_min_us);
+	uint32_t clamped = (speed < 0) ? 0u : (uint32_t)speed;
+	if (clamped > 32767u) {
+		clamped = 32767u;
+	}
+	return (uint16_t)(esc_min_us + (clamped * span + 16383u) / 32767u);
+}
+
 static void servo_pwm_apply(uint8_t index)
 {
 #ifdef CSR_SERVO_PWM_BASE
@@ -662,6 +643,8 @@ static void servo_pwm_apply(uint8_t index)
 	case 2: servo_pwm_duty2_write(ticks); break;
 	case 3: servo_pwm_duty3_write(ticks); break;
 	case 4: servo_pwm_duty4_write(ticks); break;
+	case 5: servo_pwm_duty5_write(ticks); break;
+	case 6: servo_pwm_duty6_write(ticks); break;
 	default: break;
 	}
 #endif
@@ -669,14 +652,26 @@ static void servo_pwm_apply(uint8_t index)
 
 static void servo_pwm_apply_all(void)
 {
-	for (uint8_t i = 0; i < (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0])); i++) {
+	for (uint8_t i = 0; i < SERVO_CH_COUNT; i++) {
 		servo_pwm_apply(i);
 	}
 }
 
 static void motor_pwm_apply(uint8_t index)
 {
-#ifdef CSR_MOTOR_PWM_BASE
+#if defined(CSR_SERVO_PWM_BASE)
+	if (index >= 2) {
+		return;
+	}
+	int32_t speed = motor_speed[index];
+	uint16_t pulse_us = motor_pulse_from_speed(speed);
+	uint32_t ticks = servo_ticks_from_us(pulse_us);
+	switch (index) {
+	case 0: servo_pwm_duty5_write(ticks); break;
+	case 1: servo_pwm_duty6_write(ticks); break;
+	default: break;
+	}
+#elif defined(CSR_MOTOR_PWM_BASE)
 	if (index >= 2) {
 		return;
 	}
@@ -751,7 +746,7 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 			send_error(cmd, ERR_BAD_LEN);
 			break;
 		}
-		if (payload[0] >= (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0]))) {
+		if (payload[0] >= SERVO_CH_COUNT) {
 			send_error(cmd, ERR_BAD_INDEX);
 			break;
 		}
@@ -765,7 +760,7 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 			send_error(cmd, ERR_BAD_LEN);
 			break;
 		}
-		if (payload[0] >= (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0]))) {
+		if (payload[0] >= SERVO_CH_COUNT) {
 			send_error(cmd, ERR_BAD_INDEX);
 			break;
 		}
@@ -809,7 +804,7 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 			send_error(cmd, ERR_BAD_LEN);
 			break;
 		}
-		for (uint8_t i = 0; i < (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0])); i++) {
+		for (uint8_t i = 0; i < SERVO_CH_COUNT; i++) {
 			servo_pulse_us[i] = 1500;
 		}
 		servo_pwm_apply_all();
@@ -950,6 +945,28 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 		send_frame((uint8_t)(cmd | 0x80), rsp, 7);
 		break;
 	}
+	case CMD_SET_LASER:
+		if (payload_len != 1) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_LASER_BASE
+		laser_enable_write(payload[0] ? 1 : 0);
+#endif
+		send_frame((uint8_t)(cmd | 0x80), NULL, 0);
+		break;
+	case CMD_GET_LASER:
+		if (payload_len != 0) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_LASER_BASE
+		rsp[0] = (uint8_t)laser_status_read();
+#else
+		rsp[0] = 0;
+#endif
+		send_frame((uint8_t)(cmd | 0x80), rsp, 1);
+		break;
 	case CMD_GET_ADC: {
 		uint8_t adc_rsp[18];
 		if (payload_len != 0) {
@@ -1136,7 +1153,7 @@ int main(void)
 	strip_interp_color_step = 0;
 	strip_interp_brightness_step = 0;
 	strip_interp_index = 0;
-	for (uint8_t i = 0; i < (uint8_t)(sizeof(servo_pulse_us) / sizeof(servo_pulse_us[0])); i++) {
+	for (uint8_t i = 0; i < SERVO_CH_COUNT; i++) {
 		servo_pulse_us[i] = 1500;
 	}
 	servo_pwm_apply_all();
