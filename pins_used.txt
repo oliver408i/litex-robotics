@@ -28,12 +28,12 @@ Source: sipeed_tang_nano_20k.py (default options) + litex_boards platform
 
  * (TOP: USB-C / S1 / S2)
  * _________________________
- * (ADC_SCLK)  USED [73] | [5V]  POWER
+ * (ADC_SCLK)  USED [73] | [5V]  POWER   (UBEC_IN)
  * (ADC_CS_N)  USED [74] | [GND] GROUND
- * (RECLAIMED)      [75] | [76]  USED (SN74HC595_RCLK)
+ * (RECLAIMED)      [75] | [76]  USED (ROUTED_UNUSED)
  * (SD_DATA1)  USED [85] | [80]  USED (SD_DATA2)
- * (RECLAIMED)      [77] | [42]  USED (SN74HC595_SRCLK)
- * (LED0)      RECL [15] | [41]  USED (SN74HC595_SER)
+ * (RECLAIMED)      [77] | [42]  USED (ROUTED_UNUSED)
+ * (LED0)      RECL [15] | [41]  USED (LASER_TOGGLE)
  * (LED1)      RECL [16] | [56]  RECL (I2S_BCLK)
  * (SERVO_0)   USED [27] | [54]  RECL (I2S_DIN)
  * (SERVO_1)   USED [28] | [51]  RECL (PA_EN)
@@ -43,11 +43,11 @@ Source: sipeed_tang_nano_20k.py (default options) + litex_boards platform
  * (RECLAIMED)      [30] | [86]  USED (MOTOR_5_PWM)
  * (ESTOP_EXT) USED [31] | [79]  USED (WS2812_DIN)
  * (LED2)      RECL [17] | [GND] GROUND
- * (LED5)      RECL [20] | [3V3] POWER
+ * (LED5)      RECL [20] | [3V3] POWER   (ADC_RAIL)
  * (LED4)      RECL [19] | [72]  USED (MOTOR_6_PWM)
  * (LED3)      RECL [18] | [71]  USED (MOTOR_1_PWM)
- * POWER       [3V3]     | [53]  USED (I2C_SCL - Built-in PU)
- * GROUND      [GND]     | [52]  USED (I2C_SDA - Built-in PU)
+ * POWER       [3V3]     | [53]  USED (I2C_SCL_ENCODER)
+ * GROUND      [GND]     | [52]  USED (I2C_SDA_ENCODER)
  * _________________________
  * (BOTTOM: HDMI / LCD)
  *
