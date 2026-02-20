@@ -108,6 +108,11 @@ int main(void)
 
 	uart_write_str("\r\nMLP2 demo start\r\n");
 
+	mlp_accel_in_size_write(16);
+	mlp_accel_hidden_size_write(8);
+	mlp_accel_out_size_write(4);
+	mlp_accel_tile_in_write(16);
+
 	for (uint8_t i = 0; i < 16; i++) {
 		mlp2_write_input(i, inputs[i]);
 	}

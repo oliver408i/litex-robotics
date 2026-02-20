@@ -61,6 +61,11 @@ def tb(dut, in_size, hidden_size, out_size):
     print(f"L1 Bias: {b1}")
     print(f"L2 Bias: {b2}")
 
+    yield from _write_csr(dut, dut._in_size, in_size)
+    yield from _write_csr(dut, dut._hidden_size, hidden_size)
+    yield from _write_csr(dut, dut._out_size, out_size)
+    yield from _write_csr(dut, dut._tile_in, in_size)
+
     # Load inputs.
     for i, v in enumerate(inputs):
         yield from _write_csr(dut, dut._in_addr, i)
@@ -149,5 +154,5 @@ if __name__ == "__main__":
     in_size = 16
     hidden_size = 8
     out_size = 4
-    dut = MLP2Accel(in_size=in_size, hidden_size=hidden_size, out_size=out_size, macs_per_cycle=2)
+    dut = MLP2Accel(in_size_max=256, hidden_size_max=64, out_size_max=10, tile_in_max=32, macs_per_cycle=2)
     run_simulation(dut, tb(dut, in_size, hidden_size, out_size), vcd_name="sim/build/mlp_accel.vcd")

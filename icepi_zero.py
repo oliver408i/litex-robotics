@@ -93,8 +93,10 @@ class BaseSoC(SoCCore):
         self.comb += self.user_led_pwm.raw.eq(leds_raw)
 
         # Simple MLP accelerator (BRAM-only) ----------------------------------------------------
-        self.mlp_accel = MLP2Accel(in_size=16, hidden_size=8, out_size=4, macs_per_cycle=2)
+        # Dev build sizes to speed up PNR.
+        self.mlp_accel = MLP2Accel(in_size_max=256, hidden_size_max=64, out_size_max=10, tile_in_max=32, macs_per_cycle=2)
         self.add_csr("mlp_accel")
+        self.bus.add_master(name="mlp_accel_wb", master=self.mlp_accel.wb)
 
         # SDR SDRAM --------------------------------------------------------------------------------
         if with_sdram and not self.integrated_main_ram_size:
