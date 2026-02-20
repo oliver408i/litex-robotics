@@ -9,9 +9,10 @@ from litex.soc.cores.clock import ECP5PLL
 from litex.soc.cores.gpio import GPIOOut
 from litex.soc.integration.soc_core import SoCCore
 from litex.soc.integration.builder import Builder
-
 from litedram import modules as litedram_modules
 from litedram.phy import GENSDRPHY
+
+from gateware.mlp_stream import MLPStream
 
 # CPU Activity LED --------------------------------------------------------------------------------
 class CpuActivityLED(LiteXModule):
@@ -56,7 +57,7 @@ class _CRG(LiteXModule):
 
 # BaseSoC ------------------------------------------------------------------------------------------
 class BaseSoC(SoCCore):
-    def __init__(self, sys_clk_freq=50e6, with_sdram=False, with_spi_flash=False, flash_boot_offset=None, **kwargs):
+    def __init__(self, sys_clk_freq=50e6, with_sdram=False, with_spi_flash=False, flash_boot_offset=None, with_cpu_activity_led=True, with_mlp_stream=False, **kwargs):
         platform = icepi_zero.Platform()
 
         # Handle CRG
@@ -74,12 +75,12 @@ class BaseSoC(SoCCore):
         
         SoCCore.__init__(
             self, platform, sys_clk_freq,
-            ident="LiteX SoC on IcePi Zero (SDRAM Fixed)",
+            ident="LiteX SoC on IcePi Zero",
             **kwargs
         )
 
         # CPU Activity LED -----------------------------------------------------------------------
-        if getattr(self, "cpu", None) is not None:
+        if with_cpu_activity_led and getattr(self, "cpu", None) is not None:
             buses = []
             for bus_name in ("ibus", "dbus"):
                 bus = getattr(self.cpu, bus_name, None)
@@ -114,6 +115,14 @@ class BaseSoC(SoCCore):
                 l2_cache_size = 8192
             )
 
+        # MLP Stream Engine ------------------------------------------------------------------------
+        if with_mlp_stream:
+            if not with_sdram:
+                raise ValueError("MLP streaming requires SDRAM enabled (--with-sdram).")
+            self.mlp = MLPStream(max_in=784, max_hid=128, max_out=10, data_bits=16)
+            self.add_csr("mlp")
+            self.bus.add_master(name="mlp", master=self.mlp.bus)
+
         # SPI Flash --------------------------------------------------------------------------------
         if with_spi_flash:
             from litespi.modules import W25Q128JV
@@ -133,9 +142,12 @@ def main():
     parser.add_target_argument("--sys-clk-freq", default=50e6, type=float)
     parser.add_target_argument("--with-sdram", action="store_true", help="Use external SDRAM as main RAM.")
     parser.add_target_argument("--with-spi-flash", action="store_true", help="Enable SPI Flash (MMAPed).")
+    parser.add_target_argument("--with-mlp-stream", action="store_true", help="Enable streaming MLP engine (requires SDRAM).")
     parser.add_target_argument("--flash-boot-offset", default=None,
                                type=lambda x: int(x, 0),
                                help="Enable BIOS autoboot from SPI flash at this offset.")
+    parser.add_target_argument("--no-cpu-activity-led", action="store_true",
+                               help="Disable CPU activity LED on user_led[0].")
     parser.add_target_argument("--flash-firmware", default=None,
                                help="Flash firmware to SPI Flash (path to .bin).")
     parser.add_target_argument("--firmware-offset", default="0x200000",
@@ -149,6 +161,8 @@ def main():
         with_sdram     = args.with_sdram,
         with_spi_flash = with_spi_flash,
         flash_boot_offset = args.flash_boot_offset,
+        with_cpu_activity_led = not args.no_cpu_activity_led,
+        with_mlp_stream = args.with_mlp_stream,
         **parser.soc_argdict,
     )
     builder = Builder(soc, **parser.builder_argdict)

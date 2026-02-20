@@ -1,0 +1,6 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1771565647" />
+    <testcase name="test_mlp_stream" classname="test_mlp_stream" file="/run/media/yin/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/cocotb/test_mlp_stream.py" lineno="66" time="0.004642486572265625" sim_time_ns="2910.0" ratio_time="626819.2604765818" />
+  </testsuite>
+</testsuites>
