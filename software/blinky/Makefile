@@ -1,4 +1,4 @@
-BUILD_DIR?=../../build/sipeed_tang_nano_20k
+BUILD_DIR?=../../build/icepi_zero
 LITEX_ROOT?=../../litex-setup
 TRIPLE?=riscv64-linux-gnu
 

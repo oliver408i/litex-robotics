@@ -5,5 +5,13 @@
         "./litex-setup/litedram",
         "./litex-setup/litex-boards",
         "./litex-setup/litespi"
-    ]
+    ],
+    "terminal.integrated.profiles.linux": {
+        "zsh (oss+venv)": {
+            "path": "${workspaceFolder}/scripts/oss_venv_shell.sh"
+        }
+    },
+    "terminal.integrated.defaultProfile.linux": "zsh (oss+venv)",
+    "terminal.integrated.shell.linux": "${workspaceFolder}/scripts/oss_venv_shell.sh",
+    "python.terminal.activateEnvironment": false
 }

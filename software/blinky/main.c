@@ -30,7 +30,7 @@ static void delay_ms(uint32_t ms)
 int main(void)
 {
 	while (1) {
-		leds_out_write(1);
+		leds_out_write(1); // LED1 on (user_led[1])
 		delay_ms(500);
 		leds_out_write(0);
 		delay_ms(500);
