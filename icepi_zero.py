@@ -13,23 +13,10 @@ from litex.soc.integration.builder import Builder
 from litedram import modules as litedram_modules
 from litedram.phy import GENSDRPHY
 
-# CPU Activity LED --------------------------------------------------------------------------------
-class CpuActivityLED(LiteXModule):
-    def __init__(self, pad, activity, sys_clk_freq, hold_time=0.02, invert=False):
-        hold_cycles = max(1, int(sys_clk_freq * hold_time))
-        counter     = Signal(max=hold_cycles + 1)
-        led         = Signal()
-
-        # Stretch activity pulses to a visible LED blink.
-        self.sync += [
-            If(activity,
-                counter.eq(hold_cycles)
-            ).Elif(counter != 0,
-                counter.eq(counter - 1)
-            )
-        ]
-        self.comb += led.eq(counter != 0)
-        self.comb += pad.eq(~led if invert else led)
+from gateware.led_pwm import LEDPwm
+from gateware.user_led_pwm import UserLEDPwm
+from gateware.cpu_activity_led import CpuActivityLED
+from gateware.mlp_accel import MLP2Accel
 
 # CRG ----------------------------------------------------------------------------------------------
 class _CRG(LiteXModule):
@@ -78,7 +65,10 @@ class BaseSoC(SoCCore):
             **kwargs
         )
 
-        # CPU Activity LED -----------------------------------------------------------------------
+        # LED PWM (10% brightness) ----------------------------------------------------------------
+        self.cpu_led_pwm = LEDPwm(width=8, duty=26)
+
+        # CPU Activity LED ------------------------------------------------------------------------
         if getattr(self, "cpu", None) is not None:
             buses = []
             for bus_name in ("ibus", "dbus"):
@@ -91,12 +81,20 @@ class BaseSoC(SoCCore):
                     pad          = platform.request("user_led", 0),
                     activity     = activity,
                     sys_clk_freq = sys_clk_freq,
+                    pwm          = self.cpu_led_pwm.pwm,
                 )
 
         # User LEDs (exclude LED0 used for CPU activity) -----------------------------------------
         user_leds = [platform.request("user_led", i) for i in range(1, 5)]
-        self.leds = GPIOOut(pads=Cat(*user_leds))
+        leds_raw = Signal(len(user_leds))
+        self.leds = GPIOOut(pads=leds_raw)
         self.add_csr("leds")
+        self.user_led_pwm = UserLEDPwm(pads=Cat(*user_leds), count=len(user_leds), default_duty=26)
+        self.comb += self.user_led_pwm.raw.eq(leds_raw)
+
+        # Simple MLP accelerator (BRAM-only) ----------------------------------------------------
+        self.mlp_accel = MLP2Accel(in_size=16, hidden_size=8, out_size=4, macs_per_cycle=2)
+        self.add_csr("mlp_accel")
 
         # SDR SDRAM --------------------------------------------------------------------------------
         if with_sdram and not self.integrated_main_ram_size:
