@@ -152,13 +152,16 @@ module ws2812_oneled #(
 endmodule
 
 
-// Status + strip WS2812 driver. LED0 is status/override, LED1..N-1 are user controlled.
+// Status + strip WS2812 driver.
+// STATUS_LED=1: LED0 is status/override, LED1..N-1 are user controlled.
+// STATUS_LED=0: LED0..N-1 are user controlled.
 module status_ws2812_strip #(
   parameter integer CLK_HZ = 27_000_000,
   parameter integer FLASH_MS = 80,
   parameter integer IDLE_MS  = 1000,
   parameter real BLINK_HZ = 0.5,
-  parameter integer LED_COUNT = 150
+  parameter integer LED_COUNT = 150,
+  parameter integer STATUS_LED = 1
 )(
   input  wire        clk_g,
   input  wire        activity_pulse,
@@ -168,14 +171,16 @@ module status_ws2812_strip #(
   input  wire [23:0] override_color_grb,
   input  wire [7:0]  override_brightness,
 
-  // Strip write port (LED1..N-1)
+  // Strip write port
   input  wire        strip_write,
-  input  wire [15:0] strip_index,      // 0 = LED1, 1 = LED2, ...
+  input  wire [15:0] strip_index,      // STATUS_LED=1: 0=LED1, 1=LED2,... STATUS_LED=0: 0=LED0, 1=LED1,...
   input  wire [23:0] strip_color_grb,
 
   output reg         ws2812_din = 1'b0
 );
-  localparam integer STRIP_COUNT = (LED_COUNT > 1) ? (LED_COUNT - 1) : 0;
+  localparam integer STRIP_COUNT = (STATUS_LED != 0) ?
+                                   ((LED_COUNT > 1) ? (LED_COUNT - 1) : 0) :
+                                   LED_COUNT;
 
   // === timers ===
   localparam integer FLASH_CYC = (CLK_HZ/1000)*FLASH_MS;
@@ -222,8 +227,9 @@ module status_ws2812_strip #(
 
   wire [23:0] chosen0 = override_en ? override_color_grb : policy_color;
   wire [23:0] led0_color = scale_grb(chosen0, override_en ? override_brightness : 8'd255);
+  wire [23:0] first_color = (STATUS_LED != 0) ? led0_color : strip_mem[0];
 
-  // Strip memory (LED1..N-1)
+  // Strip memory (LED1..N-1 or LED0..N-1 when STATUS_LED=0)
   reg [23:0] strip_mem [0:STRIP_COUNT-1];
   integer i;
   initial begin
@@ -269,7 +275,7 @@ module status_ws2812_strip #(
         led_idx <= 8'd0;
         bit_idx <= 6'd0;
         cyc <= 16'd0;
-        sh <= led0_color;
+        sh <= first_color;
         sending <= 1'b1;
       end
     end else begin
@@ -286,10 +292,14 @@ module status_ws2812_strip #(
             res_cnt <= TRES;
           end else begin
             led_idx <= led_idx + 1'b1;
-            if (led_idx == {LED_BITS{1'b0}}) begin
-              sh <= strip_mem[0];
+            if (STATUS_LED != 0) begin
+              if (led_idx == {LED_BITS{1'b0}}) begin
+                sh <= strip_mem[0];
+              end else begin
+                sh <= strip_mem[led_idx];
+              end
             end else begin
-              sh <= strip_mem[led_idx];
+              sh <= strip_mem[led_idx + 1'b1];
             end
           end
         end else begin

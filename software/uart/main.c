@@ -34,9 +34,13 @@
 #define CMD_GET_AS5600  0x60
 #define CMD_SET_LASER   0x70
 #define CMD_GET_LASER   0x71
+#define CMD_SET_BT_EN   0x72
+#define CMD_GET_BT_STATE 0x73
+#define CMD_BT_WRITE    0x74
+#define CMD_BT_READ     0x75
 
 #define RSP_ERROR       0x7F
-#define STRIP_LED_COUNT 299
+#define STRIP_LED_COUNT 300
 #define STRIP_INTERP_CHUNK 16
 
 enum {
@@ -966,6 +970,68 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 		rsp[0] = 0;
 #endif
 		send_frame((uint8_t)(cmd | 0x80), rsp, 1);
+		break;
+	case CMD_SET_BT_EN:
+		if (payload_len != 1) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_BT_EN_BASE
+		bt_en_out_write(payload[0] ? 1 : 0);
+#endif
+		send_frame((uint8_t)(cmd | 0x80), NULL, 0);
+		break;
+	case CMD_GET_BT_STATE:
+		if (payload_len != 0) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_HC05_UART_BASE
+		rsp[0] = (uint8_t)bt_en_out_read();
+		rsp[1] = (uint8_t)(hc05_uart_txfull_read() ? 0 : 1);
+		rsp[2] = (uint8_t)(hc05_uart_rxempty_read() ? 0 : 1);
+		rsp[3] = 0;
+#else
+		rsp[0] = 0;
+		rsp[1] = 0;
+		rsp[2] = 0;
+		rsp[3] = 0;
+#endif
+		send_frame((uint8_t)(cmd | 0x80), rsp, 4);
+		break;
+	case CMD_BT_WRITE:
+		if (payload_len != 1) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_HC05_UART_BASE
+		if (hc05_uart_txfull_read()) {
+			last_error = ERR_BAD_INDEX;
+			rsp[0] = 0;
+		} else {
+			hc05_uart_rxtx_write(payload[0]);
+			rsp[0] = 1;
+		}
+#else
+		rsp[0] = 0;
+#endif
+		send_frame((uint8_t)(cmd | 0x80), rsp, 1);
+		break;
+	case CMD_BT_READ:
+		if (payload_len != 0) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_HC05_UART_BASE
+		rsp[0] = (uint8_t)(hc05_uart_rxempty_read() ? 0 : 1);
+		rsp[1] = rsp[0] ? (uint8_t)hc05_uart_rxtx_read() : 0;
+		rsp[2] = 0;
+#else
+		rsp[0] = 0;
+		rsp[1] = 0;
+		rsp[2] = 0;
+#endif
+		send_frame((uint8_t)(cmd | 0x80), rsp, 3);
 		break;
 	case CMD_GET_ADC: {
 		uint8_t adc_rsp[18];

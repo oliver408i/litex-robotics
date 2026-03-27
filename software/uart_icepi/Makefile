@@ -25,7 +25,7 @@ include $(SOC_DIRECTORY)/software/common.mak
 
 OBJECTS = main.o crt0.o
 
-all: blinky.bin
+all: uart_icepi.bin
 
 %.bin: %.elf
 	$(OBJCOPY) -O binary $< $@
@@ -35,7 +35,7 @@ endif
 
 vpath %.a $(PACKAGES:%=../%)
 
-blinky.elf: $(OBJECTS)
+uart_icepi.elf: $(OBJECTS)
 	$(CC) $(LDFLAGS) -T linker.ld -N -o $@ \
 		$(OBJECTS) \
 		$(PACKAGES:%=-L$(BUILD_DIR)/software/%) \
@@ -59,6 +59,6 @@ VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY)
 	$(assemble)
 
 clean:
-	$(RM) $(OBJECTS) blinky.elf blinky.bin .*~ *~
+	$(RM) $(OBJECTS) uart_icepi.elf uart_icepi.bin .*~ *~
 
 .PHONY: all clean

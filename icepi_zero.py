@@ -9,6 +9,7 @@ from litex.soc.cores.clock import ECP5PLL
 from litex.soc.cores.gpio import GPIOOut
 from litex.soc.integration.soc_core import SoCCore
 from litex.soc.integration.builder import Builder
+from litex.build.generic_platform import Pins, Subsignal
 
 from litedram import modules as litedram_modules
 from litedram.phy import GENSDRPHY
@@ -16,11 +17,13 @@ from litedram.phy import GENSDRPHY
 from gateware.led_pwm import LEDPwm
 from gateware.user_led_pwm import UserLEDPwm
 from gateware.cpu_activity_led import CpuActivityLED
-from gateware.mlp_accel import MLP2Accel
+from gateware.ws2812_status_verilog import WS2812StatusVerilog
+#from gateware.mlp_accel import MLP2Accel
+from gateware.mcp3008_verilog import MCP3008ReaderVerilog
 
 # CRG ----------------------------------------------------------------------------------------------
 class _CRG(LiteXModule):
-    def __init__(self, platform, sys_clk_freq):
+    def __init__(self, platform, sys_clk_freq, ext_reset_n=None):
         self.rst = Signal()
         self.cd_sys = ClockDomain()
         # Create a dedicated domain for the SDRAM output clock
@@ -30,7 +33,10 @@ class _CRG(LiteXModule):
         rst   = platform.request("rst")
 
         self.pll = pll = ECP5PLL()
-        self.comb += pll.reset.eq(~rst | self.rst)
+        if ext_reset_n is None:
+            self.comb += pll.reset.eq(~rst | self.rst)
+        else:
+            self.comb += pll.reset.eq(~rst | self.rst | ~ext_reset_n)
         pll.register_clkin(clk50, 50e6)
         
         # System clock (SoC logic)
@@ -43,11 +49,20 @@ class _CRG(LiteXModule):
 
 # BaseSoC ------------------------------------------------------------------------------------------
 class BaseSoC(SoCCore):
-    def __init__(self, sys_clk_freq=50e6, with_sdram=False, with_spi_flash=False, flash_boot_offset=None, **kwargs):
+    def __init__(self, sys_clk_freq=50e6, with_sdram=False, with_spi_flash=False,
+                 flash_boot_offset=None, hc05_baudrate=38400, **kwargs):
         platform = icepi_zero.Platform()
+        platform.add_extension([
+            ("hc05", 0,
+                Subsignal("tx", Pins("N1")),
+                Subsignal("rx", Pins("P1")),
+                Subsignal("en", Pins("N4")),
+            ),
+        ])
 
         # Handle CRG
-        self.crg = _CRG(platform, sys_clk_freq)
+        ext_reset_n = platform.request("ext_reset")
+        self.crg = _CRG(platform, sys_clk_freq, ext_reset_n=ext_reset_n)
 
         # Default memory sizes
         kwargs.setdefault("integrated_rom_size", 0x8000)
@@ -57,7 +72,7 @@ class BaseSoC(SoCCore):
             kwargs.setdefault("integrated_main_ram_size", 0x4000)
 
         kwargs.setdefault("uart_name", "serial")
-        kwargs.setdefault("uart_baudrate", 115200)
+        kwargs.setdefault("uart_baudrate", 1_000_000)
         
         SoCCore.__init__(
             self, platform, sys_clk_freq,
@@ -92,9 +107,33 @@ class BaseSoC(SoCCore):
         self.user_led_pwm = UserLEDPwm(pads=Cat(*user_leds), count=len(user_leds), default_duty=26)
         self.comb += self.user_led_pwm.raw.eq(leds_raw)
 
-        # Simple MLP accelerator (BRAM-only) ----------------------------------------------------
-        self.mlp_accel = MLP2Accel(in_size=16, hidden_size=8, out_size=4, macs_per_cycle=2)
-        self.add_csr("mlp_accel")
+        # WS2812 RGB LED strip --------------------------------------------------------------------
+        self.rgb_led = WS2812StatusVerilog(
+            pad          = platform.request("rgb_led"),
+            sys_clk_freq = sys_clk_freq,
+            platform     = platform,
+            led_count    = 300,
+            status_led   = False,
+        )
+        self.add_csr("rgb_led")
+
+        # MCP3008 ADC ----------------------------------------------------------------------------
+        self.mcp3008 = MCP3008ReaderVerilog(
+            pads         = platform.request("mcp3008"),
+            sys_clk_freq = sys_clk_freq,
+            platform     = platform,
+        )
+        self.add_csr("mcp3008")
+
+        # HC-05 Bluetooth serial ------------------------------------------------------------------
+        hc05_pads = platform.request("hc05")
+        self.add_uart(name="hc05_uart", uart_pads=hc05_pads, baudrate=hc05_baudrate)
+        self.bt_en = GPIOOut(pads=hc05_pads.en)
+        self.add_csr("bt_en")
+
+        # # Simple MLP accelerator (BRAM-only) ----------------------------------------------------
+        # self.mlp_accel = MLP2Accel(in_size=16, hidden_size=8, out_size=4, macs_per_cycle=2)
+        # self.add_csr("mlp_accel")
 
         # SDR SDRAM --------------------------------------------------------------------------------
         if with_sdram and not self.integrated_main_ram_size:
@@ -127,8 +166,11 @@ def main():
     import binascii
     from litex.build.parser import LiteXArgumentParser
     parser = LiteXArgumentParser(platform=icepi_zero.Platform, description="IcePi Zero minimal LiteX SoC.")
+    parser.set_defaults(uart_baudrate=1_000_000)
     parser.add_target_argument("--flash", action="store_true", help="Flash Bitstream.")
     parser.add_target_argument("--sys-clk-freq", default=50e6, type=float)
+    parser.add_target_argument("--hc05-baudrate", default=38400, type=int,
+                               help="Baudrate for the dedicated HC-05 UART.")
     parser.add_target_argument("--with-sdram", action="store_true", help="Use external SDRAM as main RAM.")
     parser.add_target_argument("--with-spi-flash", action="store_true", help="Enable SPI Flash (MMAPed).")
     parser.add_target_argument("--flash-boot-offset", default=None,
@@ -147,6 +189,7 @@ def main():
         with_sdram     = args.with_sdram,
         with_spi_flash = with_spi_flash,
         flash_boot_offset = args.flash_boot_offset,
+        hc05_baudrate  = args.hc05_baudrate,
         **parser.soc_argdict,
     )
     builder = Builder(soc, **parser.builder_argdict)

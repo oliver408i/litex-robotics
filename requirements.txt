@@ -1,0 +1,69 @@
+certifi==2026.1.4
+cffi==2.0.0
+charset-normalizer==3.4.4
+cocotb==2.0.1
+colorama==0.4.6
+find_libpython==0.5.1
+idna==3.11
+# Editable install with no version control (litedram==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litedram
+# Editable install with no version control (liteeth==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/liteeth
+# Editable install with no version control (litei2c==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litei2c
+# Editable install with no version control (liteiclink==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/liteiclink
+# Editable install with no version control (litejesd204b==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litejesd204b
+# Editable install with no version control (litepcie==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litepcie
+# Editable install with no version control (litesata==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litesata
+# Editable install with no version control (litescope==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litescope
+# Editable install with no version control (litesdcard==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litesdcard
+# Editable install with no version control (litespi==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litespi
+# Editable install with no version control (litex==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litex
+# Editable install with no version control (litex-boards==2025.8)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/litex-boards
+meson==1.10.0
+migen @ file:///run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/migen
+numpy==2.4.1
+packaging==25.0
+pycparser==3.0
+pyserial==3.5
+# Editable install with no version control (pythondata-cpu-lm32==0.0.post199)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-lm32
+# Editable install with no version control (pythondata-cpu-minerva==0.0.post294)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-minerva
+# Editable install with no version control (pythondata-cpu-mor1kx==5.2.post151)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-mor1kx
+# Editable install with no version control (pythondata-cpu-naxriscv==1.0.1.post325)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-naxriscv
+# Editable install with no version control (pythondata-cpu-sentinel==0.0.post629)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-sentinel
+# Editable install with no version control (pythondata-cpu-serv==1.2.0.post146)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-serv
+# Editable install with no version control (pythondata-cpu-vexiiriscv==1.0.1.post325)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-vexiiriscv
+# Editable install with no version control (pythondata-cpu-vexriscv==1.0.1.post407)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-vexriscv
+# Editable install with no version control (pythondata-cpu-vexriscv-smp==1.0.1.post325)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-cpu-vexriscv-smp
+# Editable install with no version control (pythondata-misc-tapcfg==0.0.post517)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-misc-tapcfg
+# Editable install with no version control (pythondata-misc-usb_ohci==1.0.1.post325)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-misc-usb_ohci
+# Editable install with no version control (pythondata-software-compiler_rt==0.0.post6206)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-software-compiler_rt
+# Editable install with no version control (pythondata-software-picolibc==1.7.9.post181)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/pythondata-software-picolibc
+PyYAML==6.0.3
+requests==2.32.5
+sounddevice==0.5.4
+urllib3==2.6.3
+# Editable install with no version control (valentyusb==0.0.0)
+-e /run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/litex-setup/valentyusb

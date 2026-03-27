@@ -63,7 +63,7 @@ Commands
   - req payload: none
   - resp payload: [en, brightness, g, r, b]
 - 0x32 SET_STRIP
-  - req payload: [index_lo, index_hi, g, r, b] (index 0 = LED1, 298 = LED299)
+  - req payload: [index_lo, index_hi, g, r, b] (index 0 = LED0, 299 = LED299)
   - resp payload: none
 - 0x33 SET_STRIP_BRI
   - req payload: [index_lo, index_hi, g, r, b, brightness] (brightness 0-255)
@@ -89,6 +89,24 @@ Commands
 - 0x60 GET_AS5600
   - req payload: none
   - resp payload: [present, ok, status, angle_lo, angle_hi, magnitude_lo, magnitude_hi]
+- 0x70 SET_LASER
+  - req payload: [enabled]
+  - resp payload: none
+- 0x71 GET_LASER
+  - req payload: none
+  - resp payload: [enabled]
+- 0x72 SET_BT_EN
+  - req payload: [enabled]
+  - resp payload: none
+- 0x73 GET_BT_STATE
+  - req payload: none
+  - resp payload: [en, tx_ready, rx_ready, rx_overrun]
+- 0x74 BT_WRITE
+  - req payload: [byte]
+  - resp payload: [accepted]
+- 0x75 BT_READ
+  - req payload: none
+  - resp payload: [valid, byte, rx_overrun]
 
 Notes
 - SET_MOTOR/SET_SERVO only update internal state in firmware.
@@ -97,3 +115,4 @@ Notes
 - ADC control requires MCP3008 module enabled (default in this build).
 - E-STOP is latched on press; hold for 2 seconds to release.
 - Integrate your motor/servo drivers by consuming motor_speed and servo_pulse_us.
+- HC-05 commands target a second UART on dedicated pins; the LiteX host console UART remains separate.

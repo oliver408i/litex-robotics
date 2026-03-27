@@ -11,4 +11,5 @@ export OSS_CAD_SUITE_ACTIVE=1
 ZSHRC_DIR="${SCRIPT_DIR}/../scripts/zshrc_oss_venv"
 export ZDOTDIR="${ZSHRC_DIR}"
 
-exec /usr/bin/zsh -i
+#exec /usr/bin/zsh -i
+exec /usr/bin/bash

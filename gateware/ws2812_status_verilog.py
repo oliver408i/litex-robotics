@@ -7,13 +7,14 @@ from litex.soc.interconnect.csr import AutoCSR, CSRStorage
 
 
 class WS2812StatusVerilog(LiteXModule, AutoCSR):
-    def __init__(self, pad, sys_clk_freq, platform, led_count=150):
+    def __init__(self, pad, sys_clk_freq, platform, led_count=150, status_led=True):
         self._neo_en = CSRStorage(reset=1, description="Enable NeoPixel manual override.")
         self._neo_brightness = CSRStorage(8, reset=255, description="NeoPixel brightness (0-255).")
         self._neo_color_hi = CSRStorage(16, reset=0x00ff, description="NeoPixel GRB high bytes (G,R).")
         self._neo_color_lo = CSRStorage(8, reset=0x00, description="NeoPixel B byte.")
         self._neo_activity = CSRStorage(description="Write to pulse activity.")
-        self._strip_index = CSRStorage(16, reset=0, description="NeoPixel strip LED index (0=LED1).")
+        strip_desc = "NeoPixel strip LED index (0=LED1)." if status_led else "NeoPixel strip LED index (0=LED0)."
+        self._strip_index = CSRStorage(16, reset=0, description=strip_desc)
         self._strip_color_hi = CSRStorage(16, reset=0x0000, description="Strip LED GRB high bytes (G,R).")
         self._strip_color_lo = CSRStorage(8, reset=0x00, description="Strip LED B byte.")
         self._strip_write = CSRStorage(description="Write to update strip LED at current index.")
@@ -69,6 +70,7 @@ class WS2812StatusVerilog(LiteXModule, AutoCSR):
             "status_ws2812_strip",
             p_CLK_HZ=int(sys_clk_freq),
             p_LED_COUNT=int(led_count),
+            p_STATUS_LED=int(1 if status_led else 0),
             i_clk_g=ClockSignal("sys"),
             i_activity_pulse=activity_pulse,
             i_override_en=override_en,

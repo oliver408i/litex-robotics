@@ -35,6 +35,10 @@ CMD_GET_ESTOP = 0x50
 CMD_GET_AS5600 = 0x60
 CMD_SET_LASER = 0x70
 CMD_GET_LASER = 0x71
+CMD_SET_BT_EN = 0x72
+CMD_GET_BT_STATE = 0x73
+CMD_BT_WRITE = 0x74
+CMD_BT_READ = 0x75
 
 RSP_ERROR = 0x7F
 
@@ -238,6 +242,21 @@ class UartProtocol:
         data = self.transact(CMD_GET_LASER)
         return data[0]
 
+    def set_bt_en(self, enabled: int):
+        self.transact(CMD_SET_BT_EN, bytes([enabled & 0x01]))
+
+    def get_bt_state(self):
+        data = self.transact(CMD_GET_BT_STATE)
+        return data[0], data[1], data[2], data[3]
+
+    def bt_write(self, value: int) -> bool:
+        data = self.transact(CMD_BT_WRITE, bytes([value & 0xFF]))
+        return bool(data[0])
+
+    def bt_read(self):
+        data = self.transact(CMD_BT_READ)
+        return bool(data[0]), data[1], data[2]
+
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX UART robotics protocol client")
@@ -301,6 +320,12 @@ def main():
     lset = sub.add_parser("laser-set")
     lset.add_argument("enabled", type=int)
     sub.add_parser("laser-get")
+    bten = sub.add_parser("bt-en")
+    bten.add_argument("enabled", type=int)
+    sub.add_parser("bt-state")
+    btwrite = sub.add_parser("bt-write")
+    btwrite.add_argument("value", type=lambda x: int(x, 0))
+    sub.add_parser("bt-read")
 
     args = parser.parse_args()
 
@@ -386,6 +411,17 @@ def main():
         elif args.cmd == "laser-get":
             enabled = client.get_laser()
             print(f"enabled={enabled}")
+        elif args.cmd == "bt-en":
+            client.set_bt_en(args.enabled)
+            print("ok")
+        elif args.cmd == "bt-state":
+            en, tx_ready, rx_ready, overrun = client.get_bt_state()
+            print(f"en={en} tx_ready={tx_ready} rx_ready={rx_ready} overrun={overrun}")
+        elif args.cmd == "bt-write":
+            print("ok" if client.bt_write(args.value) else "busy")
+        elif args.cmd == "bt-read":
+            valid, value, overrun = client.bt_read()
+            print(f"valid={int(valid)} value=0x{value:02x} overrun={overrun}")
     finally:
         client.close()
 
