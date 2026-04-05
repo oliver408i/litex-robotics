@@ -6,6 +6,9 @@ Source: sipeed_tang_nano_20k.py (default options) + litex_boards platform
 - e-stop/button (btn[0]): pin 88
 - UART serial: rx pin 70, tx pin 69
 - HC-05 UART: tx pin 15 (old gpio[15] -> HC-05 RXD), rx pin 14 (old gpio[14] -> HC-05 TXD), en pin 18 (old gpio[18] -> HC-05 EN/KEY)
+- Shared SPI bus: sclk old gpio[2] pin T2, mosi old gpio[8] pin H2, miso old gpio[25] pin J2
+- MCP3008 CS: old gpio[3] pin R2
+- LR1121: cs old gpio[4] pin R1, busy old gpio[12] pin J3, dio9 old gpio[16] pin H3
 - WS2812 rgb_led/strip: pin 79 (LED0-299 user)
 - Laser (direct): pin 41 (old SN74HC595 SER)
 - motor_pwm[0..1]: pins 71, 72 (driven by servo_pwm[5..6] in gateware)

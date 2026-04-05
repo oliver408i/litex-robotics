@@ -18,10 +18,17 @@
 #define CMD_SET_STRIP_BRI   0x33
 #define CMD_SET_STRIP_BULK  0x34
 #define CMD_SET_STRIP_INTERP 0x35
+#define CMD_GET_ADC          0x40
+#define CMD_SET_ADC_CFG      0x41
+#define CMD_CLR_ADC_UPD      0x42
 #define CMD_SET_BT_EN       0x72
 #define CMD_GET_BT_STATE    0x73
 #define CMD_BT_WRITE        0x74
 #define CMD_BT_READ         0x75
+#define CMD_SPI_SET_CS      0x76
+#define CMD_SPI_XFER        0x77
+#define CMD_GET_RADIO_GPIO  0x78
+#define CMD_SET_RADIO_RESET 0x79
 
 #define RSP_ERROR       0x7F
 #define STRIP_LED_COUNT 300
@@ -48,6 +55,11 @@ static uint8_t strip_tgt_brightness[STRIP_LED_COUNT];
 static uint8_t strip_interp_color_step;
 static uint8_t strip_interp_brightness_step;
 static uint16_t strip_interp_index;
+
+static void shared_spi_set_cs(uint32_t sel, uint8_t manual);
+static uint32_t shared_spi_xfer(uint8_t nbits, uint32_t mosi);
+static uint16_t adc_raw_to_mv(uint16_t raw);
+static uint16_t shared_mcp3008_read_mv(uint8_t ch);
 
 static void uart_write_str(const char *s)
 {
@@ -214,6 +226,59 @@ static void neopixel_apply(void)
 	ws2812_strip_set_target(0, neo_grb[0], neo_grb[1], neo_grb[2], neo_brightness);
 }
 
+static void shared_spi_set_cs(uint32_t sel, uint8_t manual)
+{
+#ifdef CSR_SHARED_SPI_BASE
+	shared_spi_cs_write((sel & 0xffffu) | (manual ? (1u << 16) : 0u));
+#else
+	(void)sel;
+	(void)manual;
+#endif
+}
+
+static uint32_t shared_spi_xfer(uint8_t nbits, uint32_t mosi)
+{
+#ifdef CSR_SHARED_SPI_BASE
+	uint32_t timeout = CONFIG_CLOCK_FREQUENCY / 10u;
+	if (nbits == 0 || nbits > 32) {
+		return 0;
+	}
+	shared_spi_mosi_write(mosi);
+	shared_spi_control_write(1u | ((uint32_t)nbits << 8));
+	while (timeout--) {
+		if (shared_spi_status_read() & 0x1u) {
+			return shared_spi_miso_read();
+		}
+	}
+#else
+	(void)nbits;
+	(void)mosi;
+#endif
+	return 0;
+}
+
+static uint16_t adc_raw_to_mv(uint16_t raw)
+{
+	return (uint16_t)(((uint32_t)raw * 3300u) / 1023u);
+}
+
+static uint16_t shared_mcp3008_read_mv(uint8_t ch)
+{
+	uint8_t rx0, rx1, rx2;
+	uint16_t raw;
+	if (ch > 7) {
+		return 0;
+	}
+	shared_spi_set_cs(1u << 0, 1);
+	rx0 = (uint8_t)(shared_spi_xfer(8, 0x01) & 0xffu);
+	rx1 = (uint8_t)(shared_spi_xfer(8, (uint32_t)(0x80u | ((ch & 0x7u) << 4))) & 0xffu);
+	rx2 = (uint8_t)(shared_spi_xfer(8, 0x00) & 0xffu);
+	shared_spi_set_cs(0, 0);
+	(void)rx0;
+	raw = (uint16_t)(((rx1 & 0x03u) << 8) | rx2);
+	return adc_raw_to_mv(raw);
+}
+
 static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_len)
 {
 	switch (cmd) {
@@ -317,6 +382,34 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 		}
 		send_frame((uint8_t)(cmd | 0x80), NULL, 0);
 		break;
+	case CMD_GET_ADC: {
+		uint8_t rsp[18];
+		if (payload_len != 0) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_SHARED_SPI_BASE
+		for (uint8_t ch = 0; ch < 8; ch++) {
+			uint16_t mv = shared_mcp3008_read_mv(ch);
+			rsp[2 * ch] = (uint8_t)(mv & 0xff);
+			rsp[2 * ch + 1] = (uint8_t)((mv >> 8) & 0xff);
+		}
+		rsp[16] = 0xff;
+		rsp[17] = 7;
+#else
+		for (uint8_t i = 0; i < sizeof(rsp); i++) {
+			rsp[i] = 0;
+		}
+#endif
+		send_frame((uint8_t)(cmd | 0x80), rsp, sizeof(rsp));
+		break;
+	}
+	case CMD_SET_ADC_CFG:
+		send_error(cmd, ERR_BAD_CMD);
+		break;
+	case CMD_CLR_ADC_UPD:
+		send_error(cmd, ERR_BAD_CMD);
+		break;
 	case CMD_SET_BT_EN:
 		if (payload_len != 1) {
 			send_error(cmd, ERR_BAD_LEN);
@@ -385,6 +478,67 @@ static void handle_command(uint8_t cmd, const uint8_t *payload, uint8_t payload_
 		send_frame((uint8_t)(cmd | 0x80), rsp, sizeof(rsp));
 		break;
 	}
+	case CMD_SPI_SET_CS:
+		if (payload_len != 2) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+		shared_spi_set_cs(payload[0], payload[1] ? 1 : 0);
+		send_frame((uint8_t)(cmd | 0x80), NULL, 0);
+		break;
+	case CMD_SPI_XFER: {
+		uint8_t rsp[4];
+		uint32_t miso;
+		uint32_t mosi;
+		if (payload_len != 5) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+		if (payload[0] == 0 || payload[0] > 32) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+		mosi = (uint32_t)payload[1] |
+		       ((uint32_t)payload[2] << 8) |
+		       ((uint32_t)payload[3] << 16) |
+		       ((uint32_t)payload[4] << 24);
+		miso = shared_spi_xfer(payload[0], mosi);
+		rsp[0] = (uint8_t)(miso & 0xff);
+		rsp[1] = (uint8_t)((miso >> 8) & 0xff);
+		rsp[2] = (uint8_t)((miso >> 16) & 0xff);
+		rsp[3] = (uint8_t)((miso >> 24) & 0xff);
+		send_frame((uint8_t)(cmd | 0x80), rsp, sizeof(rsp));
+		break;
+	}
+	case CMD_GET_RADIO_GPIO: {
+		uint8_t rsp[2];
+		if (payload_len != 0) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_LR1121_STATUS_BASE
+		{
+			uint32_t v = lr1121_status_in_read();
+			rsp[0] = (uint8_t)(v & 0x1u);
+			rsp[1] = (uint8_t)((v >> 1) & 0x1u);
+		}
+#else
+		rsp[0] = 0;
+		rsp[1] = 0;
+#endif
+		send_frame((uint8_t)(cmd | 0x80), rsp, sizeof(rsp));
+		break;
+	}
+	case CMD_SET_RADIO_RESET:
+		if (payload_len != 1) {
+			send_error(cmd, ERR_BAD_LEN);
+			break;
+		}
+#ifdef CSR_LR1121_RESET_BASE
+		lr1121_reset_out_write(payload[0] ? 1 : 0);
+#endif
+		send_frame((uint8_t)(cmd | 0x80), NULL, 0);
+		break;
 	default:
 		send_error(cmd, ERR_BAD_CMD);
 		break;

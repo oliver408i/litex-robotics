@@ -78,11 +78,9 @@ Commands
   - req payload: none
   - resp payload: [ch0_mv_u16..ch7_mv_u16, update_mask_u8, last_channel_u8]
 - 0x41 SET_ADC_CFG
-  - req payload: [enable, channel_mask, interval_ticks_u32]
-  - resp payload: none
+  - no longer supported in shared-SPI builds
 - 0x42 CLR_ADC_UPD
-  - req payload: [update_mask]
-  - resp payload: none
+  - no longer supported in shared-SPI builds
 - 0x50 GET_ESTOP
   - req payload: none
   - resp payload: [estop_active, debounced_level, raw_active]
@@ -107,6 +105,15 @@ Commands
 - 0x75 BT_READ
   - req payload: none
   - resp payload: [valid, byte, rx_overrun]
+- 0x76 SPI_SET_CS
+  - req payload: [sel_mask, manual_mode]
+  - resp payload: none
+- 0x77 SPI_XFER
+  - req payload: [length_bits, mosi_u32]
+  - resp payload: [miso_u32]
+- 0x78 GET_RADIO_GPIO
+  - req payload: none
+  - resp payload: [lr1121_busy, lr1121_dio9]
 
 Notes
 - SET_MOTOR/SET_SERVO only update internal state in firmware.
@@ -116,3 +123,5 @@ Notes
 - E-STOP is latched on press; hold for 2 seconds to release.
 - Integrate your motor/servo drivers by consuming motor_speed and servo_pulse_us.
 - HC-05 commands target a second UART on dedicated pins; the LiteX host console UART remains separate.
+- Shared SPI is software-driven and intended to be shared by MCP3008 and LR1121.
+- In shared-SPI builds, `GET_ADC` performs direct MCP3008 reads on demand; ADC config/update commands are retired.

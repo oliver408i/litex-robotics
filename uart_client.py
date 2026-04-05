@@ -39,6 +39,10 @@ CMD_SET_BT_EN = 0x72
 CMD_GET_BT_STATE = 0x73
 CMD_BT_WRITE = 0x74
 CMD_BT_READ = 0x75
+CMD_SPI_SET_CS = 0x76
+CMD_SPI_XFER = 0x77
+CMD_GET_RADIO_GPIO = 0x78
+CMD_SET_RADIO_RESET = 0x79
 
 RSP_ERROR = 0x7F
 
@@ -213,14 +217,6 @@ class UartProtocol:
         last_channel = data[17]
         return samples, update_mask, last_channel
 
-    def set_adc_cfg(self, enable: int, channel_mask: int, interval_ticks: int):
-        payload = struct.pack("<BBI", enable & 0x01, channel_mask & 0xFF, interval_ticks & 0xFFFFFFFF)
-        self.transact(CMD_SET_ADC_CFG, payload)
-
-    def clear_adc_update(self, mask: int):
-        payload = struct.pack("<B", mask & 0xFF)
-        self.transact(CMD_CLR_ADC_UPD, payload)
-
     def get_estop(self):
         data = self.transact(CMD_GET_ESTOP)
         return data[0], data[1], data[2]
@@ -256,6 +252,34 @@ class UartProtocol:
     def bt_read(self):
         data = self.transact(CMD_BT_READ)
         return bool(data[0]), data[1], data[2]
+
+    def spi_set_cs(self, sel: int, manual: int):
+        self.transact(CMD_SPI_SET_CS, bytes([sel & 0xFF, manual & 0x01]))
+
+    def spi_xfer(self, nbits: int, mosi: int) -> int:
+        payload = bytes([
+            nbits & 0xFF,
+            mosi & 0xFF,
+            (mosi >> 8) & 0xFF,
+            (mosi >> 16) & 0xFF,
+            (mosi >> 24) & 0xFF,
+        ])
+        data = self.transact(CMD_SPI_XFER, payload)
+        return struct.unpack("<I", data)[0]
+
+    def get_radio_gpio(self):
+        data = self.transact(CMD_GET_RADIO_GPIO)
+        return data[0], data[1]
+
+    def set_radio_reset(self, reset_n: int):
+        self.transact(CMD_SET_RADIO_RESET, bytes([reset_n & 0x01]))
+
+    def spi_xfer_bytes(self, sel: int, tx: bytes):
+        self.spi_set_cs(sel, 1)
+        try:
+            return bytes(self.spi_xfer(8, value) & 0xFF for value in tx)
+        finally:
+            self.spi_set_cs(0, 0)
 
 
 def main():
@@ -309,12 +333,6 @@ def main():
     sinterp.add_argument("color_step", type=int, help="Per-tick color step (0 disables).")
     sinterp.add_argument("brightness_step", type=int, help="Per-tick brightness step (0 disables).")
     sub.add_parser("adc-get")
-    acfg = sub.add_parser("adc-cfg")
-    acfg.add_argument("enable", type=int)
-    acfg.add_argument("channel_mask", type=lambda x: int(x, 0))
-    acfg.add_argument("interval_ticks", type=lambda x: int(x, 0))
-    aclear = sub.add_parser("adc-clear")
-    aclear.add_argument("mask", type=lambda x: int(x, 0))
     sub.add_parser("estop-get")
     sub.add_parser("as5600-get")
     lset = sub.add_parser("laser-set")
@@ -326,6 +344,18 @@ def main():
     btwrite = sub.add_parser("bt-write")
     btwrite.add_argument("value", type=lambda x: int(x, 0))
     sub.add_parser("bt-read")
+    spics = sub.add_parser("spi-cs")
+    spics.add_argument("sel", type=lambda x: int(x, 0))
+    spics.add_argument("manual", type=int)
+    spixfer = sub.add_parser("spi-xfer")
+    spixfer.add_argument("nbits", type=int)
+    spixfer.add_argument("mosi", type=lambda x: int(x, 0))
+    sub.add_parser("radio-gpio")
+    rreset = sub.add_parser("radio-reset")
+    rreset.add_argument("reset_n", type=int)
+    spibytes = sub.add_parser("spi-xfer-bytes")
+    spibytes.add_argument("sel", type=lambda x: int(x, 0), help="CS select mask, e.g. 1 for MCP3008 or 2 for LR1121")
+    spibytes.add_argument("tx", nargs="+", help="Hex bytes like 01 00 00 or 0x01 0x00 0x00")
 
     args = parser.parse_args()
 
@@ -387,12 +417,6 @@ def main():
             samples, update_mask, last_channel = client.get_adc()
             print("samples_mv=" + ",".join(str(x) for x in samples))
             print(f"update_mask=0x{update_mask:02x} last_channel={last_channel}")
-        elif args.cmd == "adc-cfg":
-            client.set_adc_cfg(args.enable, args.channel_mask, args.interval_ticks)
-            print("ok")
-        elif args.cmd == "adc-clear":
-            client.clear_adc_update(args.mask)
-            print("ok")
         elif args.cmd == "estop-get":
             active, debounced, raw = client.get_estop()
             print(f"active={active} debounced={debounced} raw={raw}")
@@ -422,6 +446,23 @@ def main():
         elif args.cmd == "bt-read":
             valid, value, overrun = client.bt_read()
             print(f"valid={int(valid)} value=0x{value:02x} overrun={overrun}")
+        elif args.cmd == "spi-cs":
+            client.spi_set_cs(args.sel, args.manual)
+            print("ok")
+        elif args.cmd == "spi-xfer":
+            miso = client.spi_xfer(args.nbits, args.mosi)
+            print(f"miso=0x{miso:08x}")
+        elif args.cmd == "radio-gpio":
+            busy, dio9 = client.get_radio_gpio()
+            print(f"busy={busy} dio9={dio9}")
+        elif args.cmd == "radio-reset":
+            client.set_radio_reset(args.reset_n)
+            print("ok")
+        elif args.cmd == "spi-xfer-bytes":
+            tx = bytes(int(item, 0) & 0xFF for item in args.tx)
+            rx = client.spi_xfer_bytes(args.sel, tx)
+            print("tx=" + " ".join(f"{b:02x}" for b in tx))
+            print("rx=" + " ".join(f"{b:02x}" for b in rx))
     finally:
         client.close()
 
