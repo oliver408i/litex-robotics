@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+import sys
 
 from migen import Cat, ClockDomain, Signal
 
@@ -10,6 +12,8 @@ from litex.soc.cores.clock import ECP5PLL
 from litex.soc.cores.gpio import GPIOIn, GPIOOut
 from litex.soc.integration.builder import Builder
 from litex.soc.integration.soc_core import SoCCore
+
+from gateware.ws2812_status_verilog import WS2812StatusVerilog
 
 
 class _CRG(LiteXModule):
@@ -52,7 +56,7 @@ class BaseSoC(SoCCore):
         kwargs.setdefault("integrated_rom_size", 0x8000)
         kwargs.setdefault("integrated_main_ram_size", 0x4000)
         kwargs.setdefault("uart_name", "serial")
-        kwargs.setdefault("uart_baudrate", 115200)
+        kwargs.setdefault("uart_baudrate", 1_000_000)
         kwargs.setdefault("cpu_type", "vexriscv")
 
         self.crg = _CRG(platform, sys_clk_freq)
@@ -90,14 +94,27 @@ class BaseSoC(SoCCore):
         self.lr1121_reset = GPIOOut(lr1121_pads.reset_n, reset=1)
         self.add_csr("lr1121_reset")
 
+        self.rgb_led = WS2812StatusVerilog(
+            pad=platform.request("rgb_led"),
+            sys_clk_freq=sys_clk_freq,
+            platform=platform,
+            led_count=300,
+            status_led=False,
+        )
+        self.add_csr("rgb_led")
+
 
 def main():
     from litex.build.parser import LiteXArgumentParser
+
+    # Keep LiteX's nested software builds on the same interpreter that launched us.
+    os.environ["PYTHON"] = sys.executable
 
     parser = LiteXArgumentParser(
         platform=icepi_zero.Platform,
         description="Minimal IcePi Zero LiteX SoC.",
     )
+    parser.set_defaults(uart_baudrate=1_000_000)
     parser.add_target_argument(
         "--device",
         default="LFE5U-25F",
