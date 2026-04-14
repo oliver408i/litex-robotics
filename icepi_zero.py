@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
 from migen import *
 from litex.gen import *
-from functools import reduce
-from operator import or_
 
 from litex_boards.platforms import icepi_zero
 from litex.soc.cores.clock import ECP5PLL
-from litex.soc.cores.gpio import GPIOOut
 from litex.soc.integration.soc_core import SoCCore
 from litex.soc.integration.builder import Builder
-from litex.build.generic_platform import Pins, Subsignal
 
 from litedram import modules as litedram_modules
 from litedram.phy import GENSDRPHY
-
-from gateware.led_pwm import LEDPwm
-from gateware.user_led_pwm import UserLEDPwm
-from gateware.cpu_activity_led import CpuActivityLED
-from gateware.ws2812_status_verilog import WS2812StatusVerilog
-#from gateware.mlp_accel import MLP2Accel
-from gateware.mcp3008_verilog import MCP3008ReaderVerilog
 
 # CRG ----------------------------------------------------------------------------------------------
 class _CRG(LiteXModule):
@@ -50,15 +39,8 @@ class _CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 class BaseSoC(SoCCore):
     def __init__(self, sys_clk_freq=50e6, with_sdram=False, with_spi_flash=False,
-                 flash_boot_offset=None, hc05_baudrate=38400, **kwargs):
+                 flash_boot_offset=None, **kwargs):
         platform = icepi_zero.Platform()
-        platform.add_extension([
-            ("hc05", 0,
-                Subsignal("tx", Pins("N1")),
-                Subsignal("rx", Pins("P1")),
-                Subsignal("en", Pins("N4")),
-            ),
-        ])
 
         # Handle CRG
         ext_reset_n = platform.request("ext_reset")
@@ -79,61 +61,6 @@ class BaseSoC(SoCCore):
             ident="LiteX SoC on IcePi Zero (SDRAM Fixed)",
             **kwargs
         )
-
-        # LED PWM (10% brightness) ----------------------------------------------------------------
-        self.cpu_led_pwm = LEDPwm(width=8, duty=26)
-
-        # CPU Activity LED ------------------------------------------------------------------------
-        if getattr(self, "cpu", None) is not None:
-            buses = []
-            for bus_name in ("ibus", "dbus"):
-                bus = getattr(self.cpu, bus_name, None)
-                if bus is not None and hasattr(bus, "cyc") and hasattr(bus, "stb"):
-                    buses.append(bus.cyc & bus.stb)
-            if buses:
-                activity = reduce(or_, buses)
-                self.cpu_activity = CpuActivityLED(
-                    pad          = platform.request("user_led", 0),
-                    activity     = activity,
-                    sys_clk_freq = sys_clk_freq,
-                    pwm          = self.cpu_led_pwm.pwm,
-                )
-
-        # User LEDs (exclude LED0 used for CPU activity) -----------------------------------------
-        user_leds = [platform.request("user_led", i) for i in range(1, 5)]
-        leds_raw = Signal(len(user_leds))
-        self.leds = GPIOOut(pads=leds_raw)
-        self.add_csr("leds")
-        self.user_led_pwm = UserLEDPwm(pads=Cat(*user_leds), count=len(user_leds), default_duty=26)
-        self.comb += self.user_led_pwm.raw.eq(leds_raw)
-
-        # WS2812 RGB LED strip --------------------------------------------------------------------
-        self.rgb_led = WS2812StatusVerilog(
-            pad          = platform.request("rgb_led"),
-            sys_clk_freq = sys_clk_freq,
-            platform     = platform,
-            led_count    = 300,
-            status_led   = False,
-        )
-        self.add_csr("rgb_led")
-
-        # MCP3008 ADC ----------------------------------------------------------------------------
-        self.mcp3008 = MCP3008ReaderVerilog(
-            pads         = platform.request("mcp3008"),
-            sys_clk_freq = sys_clk_freq,
-            platform     = platform,
-        )
-        self.add_csr("mcp3008")
-
-        # HC-05 Bluetooth serial ------------------------------------------------------------------
-        hc05_pads = platform.request("hc05")
-        self.add_uart(name="hc05_uart", uart_pads=hc05_pads, baudrate=hc05_baudrate)
-        self.bt_en = GPIOOut(pads=hc05_pads.en)
-        self.add_csr("bt_en")
-
-        # # Simple MLP accelerator (BRAM-only) ----------------------------------------------------
-        # self.mlp_accel = MLP2Accel(in_size=16, hidden_size=8, out_size=4, macs_per_cycle=2)
-        # self.add_csr("mlp_accel")
 
         # SDR SDRAM --------------------------------------------------------------------------------
         if with_sdram and not self.integrated_main_ram_size:
@@ -169,8 +96,6 @@ def main():
     parser.set_defaults(uart_baudrate=1_000_000)
     parser.add_target_argument("--flash", action="store_true", help="Flash Bitstream.")
     parser.add_target_argument("--sys-clk-freq", default=50e6, type=float)
-    parser.add_target_argument("--hc05-baudrate", default=38400, type=int,
-                               help="Baudrate for the dedicated HC-05 UART.")
     parser.add_target_argument("--with-sdram", action="store_true", help="Use external SDRAM as main RAM.")
     parser.add_target_argument("--with-spi-flash", action="store_true", help="Enable SPI Flash (MMAPed).")
     parser.add_target_argument("--flash-boot-offset", default=None,
@@ -189,7 +114,6 @@ def main():
         with_sdram     = args.with_sdram,
         with_spi_flash = with_spi_flash,
         flash_boot_offset = args.flash_boot_offset,
-        hc05_baudrate  = args.hc05_baudrate,
         **parser.soc_argdict,
     )
     builder = Builder(soc, **parser.builder_argdict)
