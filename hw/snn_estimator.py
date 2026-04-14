@@ -47,6 +47,7 @@ class SNNTrackingEstimator(LiteXModule, AutoCSR):
         self.debug_membrane1 = CSRStatus(self.data_width)
         self.debug_membrane2 = CSRStatus(self.data_width)
         self.debug_membrane3 = CSRStatus(self.data_width)
+        self.debug_membrane4 = CSRStatus(self.data_width)
         self.debug_input_spikes = CSRStatus(4)
         self.debug_beta_product = CSRStatus(self.data_width)
         self.debug_input_sum = CSRStatus(self.data_width)
@@ -67,6 +68,7 @@ class SNNTrackingEstimator(LiteXModule, AutoCSR):
         debug_membrane1 = Signal((self.data_width, True))
         debug_membrane2 = Signal((self.data_width, True))
         debug_membrane3 = Signal((self.data_width, True))
+        debug_membrane4 = Signal((self.data_width, True))
         debug_input_spikes = Signal(4)
         debug_beta_product = Signal((self.data_width, True))
         debug_input_sum = Signal((self.data_width, True))
@@ -96,6 +98,7 @@ class SNNTrackingEstimator(LiteXModule, AutoCSR):
             o_debug_membrane1=debug_membrane1,
             o_debug_membrane2=debug_membrane2,
             o_debug_membrane3=debug_membrane3,
+            o_debug_membrane4=debug_membrane4,
             o_debug_input_spikes=debug_input_spikes,
             o_debug_beta_product=debug_beta_product,
             o_debug_input_sum=debug_input_sum,
@@ -121,6 +124,7 @@ class SNNTrackingEstimator(LiteXModule, AutoCSR):
             self.debug_membrane1.status.eq(debug_membrane1),
             self.debug_membrane2.status.eq(debug_membrane2),
             self.debug_membrane3.status.eq(debug_membrane3),
+            self.debug_membrane4.status.eq(debug_membrane4),
             self.debug_input_spikes.status.eq(debug_input_spikes),
             self.debug_beta_product.status.eq(debug_beta_product),
             self.debug_input_sum.status.eq(debug_input_sum),

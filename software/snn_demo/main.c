@@ -15,7 +15,7 @@ static const int16_t k_demo_measurements[] = {
 #define MEAS_LOW  -2048
 #define DELTA_HIGH 819
 #define DELTA_LOW -819
-#define SNN_DEMO_VERBOSE 0
+#define SNN_DEMO_VERBOSE 1
 
 static void uart_write_str(const char *s)
 {
@@ -139,6 +139,12 @@ static void snn_push_sample(int16_t measurement)
 	snn_control_write(0x0);
 }
 
+static void snn_push_override_sample(int16_t measurement, uint8_t input_override)
+{
+	snn_input_override_write(input_override);
+	snn_push_sample(measurement);
+}
+
 static uint8_t encode_spikes(int16_t measurement, int16_t prev_measurement)
 {
 	int16_t delta = (int16_t)(measurement - prev_measurement);
@@ -164,7 +170,7 @@ int main(void)
 	uart_init();
 	irq_setie(1);
 
-	uart_write_str("\r\nsnn_demo: feedforward LIF tracking estimator\r\n");
+	uart_write_str("\r\nsnn_demo: LIF tracking estimator\r\n");
 
 #ifndef CSR_SNN_CONTROL_ADDR
 	uart_write_str("ERROR: snn peripheral not present. Rebuild gateware with --with-snn-poc\r\n");
@@ -192,6 +198,7 @@ int main(void)
 			uint16_t mem1_raw;
 			uint16_t mem2_raw;
 			uint16_t mem3_raw;
+			uint16_t mem4_raw;
 			uint16_t spk_raw;
 			uint16_t beta_raw;
 			uint16_t isum_raw;
@@ -217,6 +224,7 @@ int main(void)
 			mem1_raw = snn_debug_membrane1_read();
 			mem2_raw = snn_debug_membrane2_read();
 			mem3_raw = snn_debug_membrane3_read();
+			mem4_raw = snn_debug_membrane4_read();
 			spk_raw = snn_debug_input_spikes_read();
 			beta_raw = snn_debug_beta_product_read();
 			isum_raw = snn_debug_input_sum_read();
@@ -251,6 +259,8 @@ int main(void)
 			uart_write_q4_12(mem2_raw);
 			uart_write_str(" m3=");
 			uart_write_q4_12(mem3_raw);
+			uart_write_str(" m4=");
+			uart_write_q4_12(mem4_raw);
 			uart_write_str(" spk=0x");
 			uart_write_hex16(spk_raw);
 			uart_write_str(" beta=");
@@ -267,6 +277,37 @@ int main(void)
 			uart_write_str("\r\n");
 
 			delay_ms(150);
+		}
+
+		uart_write_str("recurrent probe\r\n");
+		snn_clear_state();
+		for (unsigned int i = 0; i < 12; i++) {
+			uint16_t pos_raw;
+			uint16_t vel_raw;
+			uint16_t cyc_raw;
+			uint16_t mem4_raw;
+
+			snn_push_override_sample(0, 0x4);
+			snn_wait_done();
+			pos_raw = snn_position_read();
+			vel_raw = snn_velocity_read();
+			cyc_raw = snn_cycles_read();
+			mem4_raw = snn_debug_membrane4_read();
+
+			uart_write_str("probe ");
+			uart_write_dec((int32_t)i);
+			uart_write_str(" inj=0x0004");
+			uart_write_str(" pos=");
+			uart_write_q4_12(pos_raw);
+			uart_write_str(" vel=");
+			uart_write_q4_12(vel_raw);
+			uart_write_str(" m4=");
+			uart_write_q4_12(mem4_raw);
+			uart_write_str(" cyc=");
+			uart_write_dec(cyc_raw);
+			uart_write_str("\r\n");
+
+			delay_ms(120);
 		}
 
 		delay_ms(1200);

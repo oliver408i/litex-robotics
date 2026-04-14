@@ -58,18 +58,23 @@ estimator much more realistic for hardware.
 
 ## Hardware Prototype
 
-The currently validated FPGA datapath is a simplified but faithful hardware
-prototype:
+The currently validated FPGA datapath is a small Verilog-first estimator:
 
 - firmware-side 4-bit threshold encoder
-- 8-neuron feedforward LIF bank in Verilog
+- 8-neuron LIF bank in Verilog
+- previous-timestep spike recurrence
 - normalized measurement and delta taps
 - 2-output fixed-point readout in Verilog
 - LiteX CSR wrapper for SoC integration
 
-This prototype intentionally drops recurrence for now. The goal was to get a
-small estimator running correctly on hardware before deciding whether the extra
-state coupling is worth the timing and verification cost.
+The implementation path was intentionally incremental:
+
+- first validate the feedforward membrane update in hardware
+- then validate the normalized direct-feature readout
+- then add a minimal recurrent path using previous-sample spikes
+
+That kept the hardware bring-up tractable while still reaching the key PoC
+goal: a tiny stateful spiking estimator rather than only a feedforward mapper.
 
 ## Hardware-Schedule Model
 
@@ -79,7 +84,7 @@ The simulation includes a hardware-oriented execution path that models:
 - sequential readout accumulation
 - quantized arithmetic at each step
 
-For the current feedforward hardware build, the realized schedule is:
+For the current recurrent hardware build, the realized schedule is:
 
 - `1` cycle to latch input and update the membrane bank
 - `11` readout MAC cycles
@@ -106,24 +111,14 @@ This is intentionally simple for a first FPGA version:
 
 ## Running The Sim
 
-From the repo root:
+The main simulation entry point is
+[sim/run_tracking_poc.py](/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/run_tracking_poc.py).
 
-```bash
-python3 sim/run_tracking_poc.py
-```
+It supports:
 
-To emit a per-timestep trace for one generated test sequence:
-
-```bash
-python3 sim/run_tracking_poc.py --trace-out /tmp/snn_trace.csv
-```
-
-To emit a cycle-level hardware trace with neuron partial sums and readout
-accumulator values:
-
-```bash
-python3 sim/run_tracking_poc.py --hw-trace-out /tmp/snn_hw_trace.csv
-```
+- end-to-end comparison against the Kalman baseline
+- per-timestep trace dumps
+- cycle-level hardware-style trace dumps
 
 The trace CSV includes:
 
@@ -155,16 +150,43 @@ The hardware trace CSV includes:
   can be to fixed-point choices.
 - The SNN path is already largely quantized internally, which makes it a good
   candidate for the first FPGA estimator experiment.
-- The current Verilog feedforward implementation now matches the Python
-  feedforward reference on hardware for the demo sequence, including the
-  normalized direct features and 2-output readout.
+- The current Verilog implementation matches the Python feedforward reference
+  on hardware for the demo sequence, including the normalized direct features
+  and 2-output readout.
+- A basic recurrent path using previous-timestep spikes is now also active in
+  hardware and visible through a dedicated probe stimulus.
 - The timing-friendly sequential MAC readout raises sample latency to `13`
   cycles, but it is a much more practical tradeoff than a single-cycle wide
   readout tree.
+
+## Recurrent Probe
+
+The hardware demo includes a short recurrent probe after the normal tracking
+sequence. It repeatedly injects the positive-delta spike pattern `0x0004` and
+observes the resulting state evolution.
+
+This probe is useful because the normal measurement demo does not strongly
+exercise recurrence on every step. Under the probe, neuron `4` clearly shows
+the effect of previous-sample spike feedback.
+
+Representative hardware output:
+
+```text
+probe 0 inj=0x0004 pos=-0.039 vel=0.135 m4=0.093 cyc=13
+probe 1 inj=0x0004 pos=-0.077 vel=0.403 m4=0.174 cyc=13
+probe 2 inj=0x0004 pos=-0.218 vel=0.454 m4=0.245 cyc=13
+probe 3 inj=0x0004 pos=-0.232 vel=0.680 m4=0.448 cyc=13
+```
+
+That `m4` rise is the main sign that the preliminary recurrent path is alive in
+hardware.
 
 ## Next Steps
 
 - clean up the debug-facing hardware interface now that the datapath is stable
 - add a host-side checker to compare UART output against the reference sequence
 - measure resource use and timing after trimming bring-up-only debug logic
-- decide whether recurrence is worth reintroducing for this PoC
+- decide whether to retrain the readout specifically for the recurrent
+  hardware path
+- decide whether to keep this lightweight previous-spike recurrence or move to
+  a fuller recurrent hardware schedule

@@ -19,6 +19,7 @@ module lif_bank_debug (
     output reg signed [15:0] debug_membrane1,
     output reg signed [15:0] debug_membrane2,
     output reg signed [15:0] debug_membrane3,
+    output reg signed [15:0] debug_membrane4,
     output reg        [3:0]  debug_input_spikes,
     output reg signed [15:0] debug_beta_product,
     output reg signed [15:0] debug_input_sum,
@@ -38,6 +39,7 @@ module lif_bank_debug (
     reg signed [15:0] membrane_next [0:7];
     reg signed [15:0] beta_v [0:7];
     reg signed [15:0] isum_v [0:7];
+    reg signed [15:0] rsum_v [0:7];
     reg signed [15:0] clip_v [0:7];
     reg signed [15:0] feature_v [0:10];
     reg signed [15:0] feature_reg [0:10];
@@ -47,6 +49,8 @@ module lif_bank_debug (
     reg signed [15:0] latched_measurement;
     reg signed [15:0] latched_delta;
     reg [3:0] latched_spikes;
+    reg [7:0] prev_spikes;
+    reg [7:0] next_spikes_v;
     reg signed [23:0] acc;
     reg signed [31:0] feature_acc;
     reg signed [31:0] readout0_acc;
@@ -110,20 +114,51 @@ module lif_bank_debug (
         end
     endfunction
 
+    function signed [15:0] recurrent_weight;
+        input integer n;
+        input integer j;
+        begin
+            case (n)
+                0: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=-16'sd1263; 3: recurrent_weight=16'sd517; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                1: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd213; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                2: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd235; 4: recurrent_weight=16'sd0; 5: recurrent_weight=-16'sd32; 6: recurrent_weight=16'sd482; 7: recurrent_weight=16'sd0; endcase
+                3: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                4: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd578; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                5: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=-16'sd110; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd1098; 7: recurrent_weight=16'sd769; endcase
+                6: case (j) 0: recurrent_weight=-16'sd724; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd146; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                default: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd928; 7: recurrent_weight=16'sd0; endcase
+            endcase
+        end
+    endfunction
+
     always @(*) begin
         for (i = 0; i < 8; i = i + 1) begin
             beta_v[i] = membrane[i] - (membrane[i] >>> 3);
             isum_v[i] = 16'sd0;
+            rsum_v[i] = 16'sd0;
             if (latched_spikes[0]) isum_v[i] = isum_v[i] + weight(i, 0);
             if (latched_spikes[1]) isum_v[i] = isum_v[i] + weight(i, 1);
             if (latched_spikes[2]) isum_v[i] = isum_v[i] + weight(i, 2);
             if (latched_spikes[3]) isum_v[i] = isum_v[i] + weight(i, 3);
-            acc = beta_v[i] + isum_v[i];
+            if (prev_spikes[0]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 0);
+            if (prev_spikes[1]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 1);
+            if (prev_spikes[2]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 2);
+            if (prev_spikes[3]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 3);
+            if (prev_spikes[4]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 4);
+            if (prev_spikes[5]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 5);
+            if (prev_spikes[6]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 6);
+            if (prev_spikes[7]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 7);
+            acc = beta_v[i] + isum_v[i] + rsum_v[i];
             if (acc > MEM_CLIP) clip_v[i] = MEM_CLIP;
             else if (acc < NEG_MEM_CLIP) clip_v[i] = NEG_MEM_CLIP;
             else clip_v[i] = acc[15:0];
-            if (clip_v[i] >= THRESHOLD) membrane_next[i] = clip_v[i] - THRESHOLD;
-            else membrane_next[i] = clip_v[i];
+            if (clip_v[i] >= THRESHOLD) begin
+                membrane_next[i] = clip_v[i] - THRESHOLD;
+                next_spikes_v[i] = 1'b1;
+            end else begin
+                membrane_next[i] = clip_v[i];
+                next_spikes_v[i] = 1'b0;
+            end
         end
 
         feature_acc = (latched_measurement * MEAS_SCALE) >>> 12;
@@ -156,10 +191,11 @@ module lif_bank_debug (
         if (rst || clear_state) begin
             busy <= 0; done <= 0; phase <= 0; cycles <= 0;
             prev_measurement <= 0; latched_measurement <= 0; latched_delta <= 0; latched_spikes <= 0;
+            prev_spikes <= 0;
             readout0_acc <= 0; readout1_acc <= 0; readout_idx <= 0;
             position_out <= 0; velocity_out <= 0; debug_measurement_raw <= 0; debug_delta_raw <= 0;
             debug_measurement_feature <= 0; debug_delta_feature <= 0; debug_membrane0 <= 0; debug_membrane1 <= 0;
-            debug_membrane2 <= 0; debug_membrane3 <= 0; debug_input_spikes <= 0; debug_beta_product <= 0;
+            debug_membrane2 <= 0; debug_membrane3 <= 0; debug_membrane4 <= 0; debug_input_spikes <= 0; debug_beta_product <= 0;
             debug_input_sum <= 0; debug_recurrent_sum <= 0; debug_membrane_clip <= 0; debug_packed <= 0;
             for (i = 0; i < 8; i = i + 1) membrane[i] <= 0;
             for (i = 0; i < 11; i = i + 1) feature_reg[i] <= 0;
@@ -173,6 +209,7 @@ module lif_bank_debug (
             cycles <= cycles + 16'd1;
             if (phase == 1) begin
                 for (i = 0; i < 8; i = i + 1) membrane[i] <= membrane_next[i];
+                prev_spikes <= next_spikes_v;
                 for (i = 0; i < 11; i = i + 1) feature_reg[i] <= feature_v[i];
                 readout0_acc <= 0;
                 readout1_acc <= 0;
@@ -186,10 +223,11 @@ module lif_bank_debug (
                 debug_membrane1 <= membrane_next[1];
                 debug_membrane2 <= membrane_next[2];
                 debug_membrane3 <= membrane_next[3];
+                debug_membrane4 <= membrane_next[4];
                 debug_input_spikes <= latched_spikes;
                 debug_beta_product <= beta_v[0];
                 debug_input_sum <= isum_v[0];
-                debug_recurrent_sum <= 0;
+                debug_recurrent_sum <= rsum_v[0];
                 debug_membrane_clip <= clip_v[0];
                 debug_packed <= {20'd0, 1'b0, 1'b1, 2'd1, latched_spikes, 4'd0};
             end else if (phase == 2) begin
