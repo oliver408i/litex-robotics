@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+import os
+import sys
+
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+LITEX_SETUP_ROOT = os.path.join(REPO_ROOT, "litex-setup")
+
+for rel_path in [
+    "litex",
+    "litex-boards",
+    "migen",
+    "litedram",
+    "litespi",
+]:
+    candidate = os.path.join(LITEX_SETUP_ROOT, rel_path)
+    if os.path.isdir(candidate) and candidate not in sys.path:
+        sys.path.insert(0, candidate)
+
 from migen import *
 from litex.gen import *
 
@@ -9,6 +26,8 @@ from litex.soc.integration.builder import Builder
 
 from litedram import modules as litedram_modules
 from litedram.phy import GENSDRPHY
+
+from hw.snn_estimator import SNNTrackingEstimator
 
 # CRG ----------------------------------------------------------------------------------------------
 class _CRG(LiteXModule):
@@ -39,7 +58,7 @@ class _CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 class BaseSoC(SoCCore):
     def __init__(self, sys_clk_freq=50e6, with_sdram=False, with_spi_flash=False,
-                 flash_boot_offset=None, **kwargs):
+                 flash_boot_offset=None, with_snn_poc=False, **kwargs):
         platform = icepi_zero.Platform()
 
         # Handle CRG
@@ -87,17 +106,47 @@ class BaseSoC(SoCCore):
                 flash_origin = self.bus.regions["spiflash"].origin
                 self.add_constant("FLASH_BOOT_ADDRESS", flash_origin + flash_boot_offset)
 
+        # SNN PoC ---------------------------------------------------------------------------------
+        if with_snn_poc:
+            self.snn = SNNTrackingEstimator(platform)
+            self.add_csr("snn")
+
+            # Expose a couple of quick sanity signals on the user LEDs when available.
+            try:
+                self.comb += [
+                    platform.request("user_led", 0).eq(self.snn.status.fields.busy),
+                    platform.request("user_led", 1).eq(self.snn.status.fields.done),
+                ]
+            except Exception:
+                pass
+
 # Build --------------------------------------------------------------------------------------------
 def main():
-    import os
     import binascii
     from litex.build.parser import LiteXArgumentParser
+
+    # Keep LiteX's nested software builds on the same interpreter and local checkout.
+    os.environ["PYTHON"] = sys.executable
+    extra_pythonpaths = [
+        os.path.join(LITEX_SETUP_ROOT, "litex"),
+        os.path.join(LITEX_SETUP_ROOT, "litex-boards"),
+        os.path.join(LITEX_SETUP_ROOT, "migen"),
+        os.path.join(LITEX_SETUP_ROOT, "litedram"),
+        os.path.join(LITEX_SETUP_ROOT, "litespi"),
+    ]
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    combined_pythonpath = os.pathsep.join(
+        [path for path in extra_pythonpaths + [existing_pythonpath] if path]
+    )
+    os.environ["PYTHONPATH"] = combined_pythonpath
+
     parser = LiteXArgumentParser(platform=icepi_zero.Platform, description="IcePi Zero minimal LiteX SoC.")
     parser.set_defaults(uart_baudrate=1_000_000)
     parser.add_target_argument("--flash", action="store_true", help="Flash Bitstream.")
     parser.add_target_argument("--sys-clk-freq", default=50e6, type=float)
     parser.add_target_argument("--with-sdram", action="store_true", help="Use external SDRAM as main RAM.")
     parser.add_target_argument("--with-spi-flash", action="store_true", help="Enable SPI Flash (MMAPed).")
+    parser.add_target_argument("--with-snn-poc", action="store_true", help="Enable the SNN tracking estimator peripheral.")
     parser.add_target_argument("--flash-boot-offset", default=None,
                                type=lambda x: int(x, 0),
                                help="Enable BIOS autoboot from SPI flash at this offset.")
@@ -114,6 +163,7 @@ def main():
         with_sdram     = args.with_sdram,
         with_spi_flash = with_spi_flash,
         flash_boot_offset = args.flash_boot_offset,
+        with_snn_poc   = args.with_snn_poc,
         **parser.soc_argdict,
     )
     builder = Builder(soc, **parser.builder_argdict)
