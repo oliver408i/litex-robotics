@@ -141,6 +141,16 @@ The hardware trace CSV includes:
 - per-readout product
 - per-readout accumulator state
 
+The current hardware coefficient set can also be regenerated and checked
+against the Verilog core with
+[tools/export_snn_coeffs.py](/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/tools/export_snn_coeffs.py).
+
+Feedforward-vs-recurrent hardware-style RMSE can be compared with
+[tools/compare_snn_variants.py](/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/tools/compare_snn_variants.py).
+
+Small recurrent-parameter sweeps can be explored with
+[tools/sweep_recurrence_variants.py](/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/tools/sweep_recurrence_variants.py).
+
 ## Current Observations
 
 - The tiny SNN estimator is worse than the floating-point Kalman baseline, as
@@ -155,6 +165,20 @@ The hardware trace CSV includes:
   and 2-output readout.
 - A basic recurrent path using previous-timestep spikes is now also active in
   hardware and visible through a dedicated probe stimulus.
+- The current Verilog coefficient tables match the regenerated recurrent Python
+  model exactly, so the hardware image is reproducible from the software flow.
+- On the current synthetic dataset, the lightweight recurrent path improves
+  position RMSE slightly (`0.31193` vs `0.31353`) and worsens velocity RMSE
+  slightly (`0.55804` vs `0.55593`) relative to the feedforward variant.
+- A small software-only sweep suggests there is still headroom in the recurrent
+  design space. Two notable candidates are:
+  - stronger recurrence only: `recurrent_scale=0.5`, which improves both
+    position and velocity RMSE modestly (`0.31041 / 0.55636`)
+  - denser + stronger recurrence: `recurrent_density=0.5`,
+    `recurrent_scale=0.5`, which gives the best combined RMSE in the sweep
+    (`0.30851 / 0.55756`) but with a less clean velocity improvement story
+- The current checked-in hardware now uses the safer of those two options:
+  `recurrent_scale=0.5` with the same overall architecture and timing model.
 - The timing-friendly sequential MAC readout raises sample latency to `13`
   cycles, but it is a much more practical tradeoff than a single-cycle wide
   readout tree.
@@ -172,10 +196,10 @@ the effect of previous-sample spike feedback.
 Representative hardware output:
 
 ```text
-probe 0 inj=0x0004 pos=-0.039 vel=0.135 m4=0.093 cyc=13
-probe 1 inj=0x0004 pos=-0.077 vel=0.403 m4=0.174 cyc=13
-probe 2 inj=0x0004 pos=-0.218 vel=0.454 m4=0.245 cyc=13
-probe 3 inj=0x0004 pos=-0.232 vel=0.680 m4=0.448 cyc=13
+probe 0 inj=0x0004 pos=-0.041 vel=0.126 m4=0.093 cyc=13
+probe 1 inj=0x0004 pos=-0.080 vel=0.387 m4=0.174 cyc=13
+probe 2 inj=0x0004 pos=-0.189 vel=0.489 m4=0.244 cyc=13
+probe 3 inj=0x0004 pos=-0.209 vel=0.705 m4=0.508 cyc=13
 ```
 
 That `m4` rise is the main sign that the preliminary recurrent path is alive in
@@ -186,7 +210,7 @@ hardware.
 - clean up the debug-facing hardware interface now that the datapath is stable
 - add a host-side checker to compare UART output against the reference sequence
 - measure resource use and timing after trimming bring-up-only debug logic
-- decide whether to retrain the readout specifically for the recurrent
-  hardware path
+- decide whether the next hardware experiment should be the more aggressive
+  `recurrent_density=0.5` plus `recurrent_scale=0.5` candidate
 - decide whether to keep this lightweight previous-spike recurrence or move to
   a fuller recurrent hardware schedule

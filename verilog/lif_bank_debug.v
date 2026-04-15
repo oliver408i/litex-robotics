@@ -84,31 +84,31 @@ module lif_bank_debug (
         begin
             if (out_idx == 0) begin
                 case (idx)
-                    0: readout_weight = -16'sd1012;
-                    1: readout_weight =  16'sd1021;
-                    2: readout_weight = -16'sd62;
-                    3: readout_weight = -16'sd232;
-                    4: readout_weight =  16'sd20;
-                    5: readout_weight =  16'sd441;
-                    6: readout_weight = -16'sd12;
-                    7: readout_weight =  16'sd1298;
-                    8: readout_weight =  16'sd12219;
-                    9: readout_weight = -16'sd9146;
-                    default: readout_weight = 16'sd22;
+                    0: readout_weight = -16'sd855;
+                    1: readout_weight =  16'sd1039;
+                    2: readout_weight = -16'sd135;
+                    3: readout_weight = -16'sd236;
+                    4: readout_weight =  16'sd32;
+                    5: readout_weight =  16'sd303;
+                    6: readout_weight =  16'sd12;
+                    7: readout_weight =  16'sd1275;
+                    8: readout_weight =  16'sd12213;
+                    9: readout_weight = -16'sd9185;
+                    default: readout_weight = 16'sd20;
                 endcase
             end else begin
                 case (idx)
-                    0: readout_weight = 16'sd71;
-                    1: readout_weight = -16'sd2223;
-                    2: readout_weight = 16'sd427;
-                    3: readout_weight = 16'sd201;
-                    4: readout_weight = -16'sd1;
-                    5: readout_weight = 16'sd746;
-                    6: readout_weight = -16'sd470;
-                    7: readout_weight = -16'sd361;
-                    8: readout_weight = 16'sd3016;
-                    9: readout_weight = 16'sd681;
-                    default: readout_weight = -16'sd690;
+                    0: readout_weight = 16'sd267;
+                    1: readout_weight = -16'sd2172;
+                    2: readout_weight = 16'sd318;
+                    3: readout_weight = 16'sd163;
+                    4: readout_weight = 16'sd45;
+                    5: readout_weight = 16'sd519;
+                    6: readout_weight = -16'sd434;
+                    7: readout_weight = -16'sd418;
+                    8: readout_weight = 16'sd3009;
+                    9: readout_weight = 16'sd711;
+                    default: readout_weight = -16'sd704;
                 endcase
             end
         end
@@ -119,14 +119,14 @@ module lif_bank_debug (
         input integer j;
         begin
             case (n)
-                0: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=-16'sd1263; 3: recurrent_weight=16'sd517; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                1: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd213; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                2: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd235; 4: recurrent_weight=16'sd0; 5: recurrent_weight=-16'sd32; 6: recurrent_weight=16'sd482; 7: recurrent_weight=16'sd0; endcase
+                0: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=-16'sd1804; 3: recurrent_weight=16'sd739; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                1: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd305; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                2: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd335; 4: recurrent_weight=16'sd0; 5: recurrent_weight=-16'sd45; 6: recurrent_weight=16'sd689; 7: recurrent_weight=16'sd0; endcase
                 3: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                4: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd578; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                5: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=-16'sd110; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd1098; 7: recurrent_weight=16'sd769; endcase
-                6: case (j) 0: recurrent_weight=-16'sd724; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd146; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                default: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd928; 7: recurrent_weight=16'sd0; endcase
+                4: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd825; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                5: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=-16'sd157; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd1568; 7: recurrent_weight=16'sd1099; endcase
+                6: case (j) 0: recurrent_weight=-16'sd1034; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd208; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
+                default: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd1326; 7: recurrent_weight=16'sd0; endcase
             endcase
         end
     endfunction

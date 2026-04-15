@@ -54,9 +54,9 @@ It:
 The normal tracking demo should print lines like:
 
 ```text
-sample 0 in=0.483 pos=0.321 vel=0.293 cyc=13
-sample 1 in=0.444 pos=0.513 vel=0.227 cyc=13
-sample 2 in=0.417 pos=0.481 vel=0.185 cyc=13
+sample 0 in=0.483 pos=0.319 vel=0.285 cyc=13
+sample 1 in=0.444 pos=0.513 vel=0.218 cyc=13
+sample 2 in=0.417 pos=0.480 vel=0.178 cyc=13
 ```
 
 The exact last digit may vary by a few thousandths depending on build and
@@ -71,6 +71,13 @@ You can also check a captured UART log against the expected demo sequence:
 python3 tools/check_snn_demo_log.py /path/to/uart.log
 ```
 
+The fixed coefficient tables embedded in the Verilog core can be regenerated
+and checked with:
+
+```bash
+python3 tools/export_snn_coeffs.py
+```
+
 ## Recurrent Probe
 
 After the main measurement sequence, the firmware runs a short recurrent probe
@@ -79,10 +86,10 @@ that repeatedly injects the positive-delta spike bit pattern `0x0004`.
 Representative output:
 
 ```text
-probe 0 inj=0x0004 pos=-0.039 vel=0.135 m4=0.093 cyc=13
-probe 1 inj=0x0004 pos=-0.077 vel=0.403 m4=0.174 cyc=13
-probe 2 inj=0x0004 pos=-0.218 vel=0.454 m4=0.245 cyc=13
-probe 3 inj=0x0004 pos=-0.232 vel=0.680 m4=0.448 cyc=13
+probe 0 inj=0x0004 pos=-0.041 vel=0.126 m4=0.093 cyc=13
+probe 1 inj=0x0004 pos=-0.080 vel=0.387 m4=0.174 cyc=13
+probe 2 inj=0x0004 pos=-0.189 vel=0.489 m4=0.244 cyc=13
+probe 3 inj=0x0004 pos=-0.209 vel=0.705 m4=0.508 cyc=13
 ```
 
 The most important checks are:
