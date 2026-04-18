@@ -78,6 +78,29 @@ and checked with:
 python3 tools/export_snn_coeffs.py
 ```
 
+## Verbose Field Guide
+
+When `SNN_DEMO_VERBOSE` is enabled in
+[software/snn_demo/main.c](/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/software/snn_demo/main.c),
+each sample line includes extra internal values. These are all signed `Q4.12`
+unless noted otherwise.
+
+- `in`: input measurement sent to the estimator
+- `pos`: output position estimate from the readout
+- `vel`: output velocity estimate from the readout
+- `cyc`: cycles used for that sample; currently expected to be `13`
+- `raw`: latched measurement value inside the hardware block
+- `draw`: latched measurement delta, computed as current measurement minus previous measurement
+- `feat`: normalized measurement feature used by the readout, approximately `raw / 2.5` with clipping
+- `dfeat`: normalized delta feature used by the readout, approximately `draw / 5.0` with clipping
+- `m0`..`m4`: post-update membrane values for selected neurons after leak, input sum, recurrent sum, clipping, and threshold/reset
+- `spk`: 4-bit externally supplied encoder spike pattern; for example `0x0004` means the positive-delta spike is active
+- `beta`: leak term for neuron 0, roughly the previous membrane multiplied by the leak factor
+- `isum`: input-weight contribution for neuron 0 from the current 4-bit spike input
+- `rsum`: recurrent-weight contribution for neuron 0 from the previous timestep's neuron spikes
+- `mclip`: neuron 0 membrane after adding leak, input, and recurrence, then applying membrane clipping but before threshold subtraction
+- `status`: raw `snn_status` register value; in normal completion prints it should indicate `done=1`
+
 ## Recurrent Probe
 
 After the main measurement sequence, the firmware runs a short recurrent probe
