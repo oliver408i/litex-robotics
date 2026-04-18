@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "./litex-setup/litex-boards",
+        "./litex-setup"
+    ]
+}

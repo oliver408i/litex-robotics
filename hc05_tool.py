@@ -345,7 +345,7 @@ def run_repl(tool):
 def main():
     parser = argparse.ArgumentParser(description="CLI/REPL for the HC-05 FPGA debug protocol.")
     parser.add_argument("--port", required=True, help="Host serial port connected to the LiteX console UART.")
-    parser.add_argument("--baud", type=int, default=115200, help="LiteX console UART baudrate.")
+    parser.add_argument("--baud", type=int, default=1000000, help="LiteX console UART baudrate.")
     parser.add_argument("--timeout", type=float, default=1.0, help="Serial timeout in seconds.")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Optional one-shot REPL command.")
     args = parser.parse_args()
