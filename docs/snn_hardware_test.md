@@ -51,19 +51,18 @@ It:
 
 ## Quick Check
 
-The normal tracking demo should print lines like:
+The normal tracking demo should print CSV rows like:
 
 ```text
-sample 0 in=0.483 pos=0.319 vel=0.285 cyc=13
-sample 1 in=0.444 pos=0.513 vel=0.218 cyc=13
-sample 2 in=0.417 pos=0.480 vel=0.178 cyc=13
+S,0,1980,1980,4,1305,1167,13,1980,1980,792,396,-866,-1716,742,-2102,379,0,-866,0,-866,2
 ```
 
 The exact last digit may vary by a few thousandths depending on build and
-rounding, but:
+rounding after Q4.12 conversion, but:
 
 - `cyc` should be `13`
-- `pos` and `vel` should stay close to the reference values above
+- decoded `position` and `velocity` should stay close to the reference values
+  checked by the log checker
 
 You can also check a captured UART log against the expected demo sequence:
 
@@ -77,6 +76,80 @@ and checked with:
 ```bash
 python3 tools/export_snn_coeffs.py
 ```
+
+## Machine-Friendly UART Stream
+
+The standalone firmware now defaults to a line-oriented telemetry protocol for
+host tools. It prints a comment header, then one CSV row per SNN sample:
+
+```text
+type,t,measurement,delta,input_spikes,position,velocity,cycles,raw,draw,feat,dfeat,m0,m1,m2,m3,m4,beta,isum,rsum,mclip,status
+S,0,1980,1980,4,1305,1167,13,1980,1980,792,396,-866,-1716,742,-2102,379,0,-866,0,-866,2
+```
+
+All numeric signal fields are raw signed `Q4.12` integers unless noted by the
+field name. `type` is `S` for the built-in sample sequence, `P` for the
+recurrent probe, and `H` for host-driven samples.
+
+To watch and decode the stream:
+
+```bash
+python3 tools/stream_snn_uart.py --port /dev/ttyUSB0 --baud 1000000
+```
+
+To record decoded rows with extra floating-point columns:
+
+```bash
+python3 tools/stream_snn_uart.py --port /dev/ttyUSB0 --baud 1000000 --output snn_stream.csv
+```
+
+If `matplotlib` is installed, add `--plot` for live measurement, output, and
+membrane traces. The plot defaults to `S` rows, which are the normal demo
+sequence. Use `--plot-types P` for the recurrent probe, or `--plot-types S,P`
+to show both with line breaks between row groups.
+
+The same UART link can also be used to send host-driven samples to the firmware:
+
+```text
+H
+C
+D
+M <measurement_raw>
+S <measurement_raw> <input_spikes>
+?
+```
+
+`H` enters host-input mode without clearing state. `C` clears the SNN and
+host-mode measurement history, then stays in host-input mode. `D` returns to
+the built-in demo stream. `M` lets firmware compute the spike bits from the
+measurement history. `S` supplies explicit spike bits. `?` prints the current
+mode and command summary.
+
+To replay a raw-measurement CSV through the FPGA and plot the returned `H`
+rows:
+
+```bash
+python3 tools/stream_snn_uart.py --port /dev/ttyUSB0 --baud 1000000 \
+    --replay my_samples.csv --plot --output host_replay.csv
+```
+
+The replay CSV should include a `measurement` or `measurement_raw` column.
+
+For a quick live-generated host stream, use `--generate`. Values are configured
+in Q4.12 floating-point units and converted to raw samples before being sent:
+
+```bash
+python3 tools/stream_snn_uart.py --port /dev/ttyUSB0 --baud 1000000 \
+    --generate sine --generate-amplitude 0.5 --generate-noise 0.03 \
+    --plot --output generated_replay.csv
+```
+
+Supported generated waveforms are `sine`, `square`, `ramp`, and `walk`. Use
+`--generate-count 0` to stream until interrupted. On completion or `Ctrl-C`,
+generated mode prints error metrics comparing the FPGA position output against
+the clean generated signal, and velocity output against the clean signal's
+step-to-step delta. It also prints the input noise level actually sent to the
+FPGA.
 
 ## Verbose Field Guide
 

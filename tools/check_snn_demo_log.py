@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 import sys
 
 
+FRAC_BITS = 12
 EXPECTED = [
     (0.483, 0.319, 0.285, 13),
     (0.444, 0.513, 0.218, 13),
@@ -39,6 +41,30 @@ LINE_RE = re.compile(
     r"sample\s+(?P<idx>\d+)\s+in=(?P<inp>-?\d+\.\d+)\s+"
     r"pos=(?P<pos>-?\d+\.\d+)\s+vel=(?P<vel>-?\d+\.\d+)\s+cyc=(?P<cyc>\d+)"
 )
+CSV_FIELDS = [
+    "type",
+    "t",
+    "measurement",
+    "delta",
+    "input_spikes",
+    "position",
+    "velocity",
+    "cycles",
+    "raw",
+    "draw",
+    "feat",
+    "dfeat",
+    "m0",
+    "m1",
+    "m2",
+    "m3",
+    "m4",
+    "beta",
+    "isum",
+    "rsum",
+    "mclip",
+    "status",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,12 +79,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def q4_12(raw: int) -> float:
+    return raw / float(1 << FRAC_BITS)
+
+
+def parse_csv_line(line: str) -> tuple[int, float, float, float, int] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("type,"):
+        return None
+    parts = next(csv.reader([stripped]))
+    if len(parts) < len(CSV_FIELDS) or parts[0] != "S":
+        return None
+    values = dict(zip(CSV_FIELDS, parts))
+    return (
+        int(values["t"], 0),
+        q4_12(int(values["measurement"], 0)),
+        q4_12(int(values["position"], 0)),
+        q4_12(int(values["velocity"], 0)),
+        int(values["cycles"], 0),
+    )
+
+
 def main() -> int:
     args = parse_args()
     seen = {}
 
     with open(args.logfile, "r", encoding="ascii", errors="ignore") as infile:
         for line in infile:
+            parsed_csv = parse_csv_line(line)
+            if parsed_csv is not None:
+                idx = parsed_csv[0]
+                if idx < len(EXPECTED) and idx not in seen:
+                    seen[idx] = parsed_csv[1:]
+                continue
+
             match = LINE_RE.search(line)
             if not match:
                 continue
