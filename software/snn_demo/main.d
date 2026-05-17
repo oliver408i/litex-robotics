@@ -12,6 +12,7 @@ main.o: main.c \
  ../../litex-setup/litex/litex/soc/cores/cpu/vexriscv/system.h \
  ../../litex-setup/litex/litex/soc/cores/cpu/vexriscv/csr-defs.h \
  ../../litex-setup/litex/litex/soc/software/include/hw/common.h \
+ ../../build/icepi_zero/software/include/generated/mem.h \
  ../../litex-setup/litex/litex/soc/software/include/irq.h \
  ../../litex-setup/litex/litex/soc/cores/cpu/vexriscv/irq.h \
  ../../litex-setup/litex/litex/soc/software/libbase/uart.h
@@ -28,6 +29,7 @@ main.o: main.c \
 ../../litex-setup/litex/litex/soc/cores/cpu/vexriscv/system.h:
 ../../litex-setup/litex/litex/soc/cores/cpu/vexriscv/csr-defs.h:
 ../../litex-setup/litex/litex/soc/software/include/hw/common.h:
+../../build/icepi_zero/software/include/generated/mem.h:
 ../../litex-setup/litex/litex/soc/software/include/irq.h:
 ../../litex-setup/litex/litex/soc/cores/cpu/vexriscv/irq.h:
 ../../litex-setup/litex/litex/soc/software/libbase/uart.h:

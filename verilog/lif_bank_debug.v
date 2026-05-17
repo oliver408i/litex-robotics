@@ -3,10 +3,16 @@ module lif_bank_debug (
     input  wire        rst,
     input  wire        start,
     input  wire        clear_state,
+    input  wire        weight_write,
+    input  wire        weight_commit,
+    input  wire        weight_clear,
+    input  wire [6:0]  weight_addr,
+    input  wire signed [15:0] weight_data,
     input  wire signed [15:0] measurement_in,
     input  wire [3:0]  input_override,
     output reg         busy,
     output reg         done,
+    output reg         model_ready,
     output reg  [1:0]  phase,
     output reg  [15:0] cycles,
     output reg signed [15:0] position_out,
@@ -58,76 +64,33 @@ module lif_bank_debug (
     reg [3:0] readout_idx;
     reg signed [31:0] readout0_term;
     reg signed [31:0] readout1_term;
+    reg signed [15:0] input_weight [0:31];
+    reg signed [15:0] recurrent_weight [0:63];
+    reg signed [15:0] readout_weight [0:21];
     integer i;
     integer j;
 
-    function signed [15:0] weight;
+    function signed [15:0] input_weight_at;
         input integer n;
         input integer j;
         begin
-            case (n)
-                0: case (j) 0: weight=-16'sd866; 1: weight=-16'sd1716; 2: weight=16'sd742; 3: weight=-16'sd2102; endcase
-                1: case (j) 0: weight=16'sd176; 1: weight=-16'sd660; 2: weight=-16'sd2173; 3: weight=16'sd37; endcase
-                2: case (j) 0: weight=-16'sd2273; 1: weight=-16'sd326; 2: weight=-16'sd2114; 3: weight=-16'sd2012; endcase
-                3: case (j) 0: weight=-16'sd371; 1: weight=16'sd1607; 2: weight=-16'sd1849; 3: weight=-16'sd1360; endcase
-                4: case (j) 0: weight=16'sd626; 1: weight=16'sd2201; 2: weight=16'sd379; 3: weight=-16'sd508; endcase
-                5: case (j) 0: weight=16'sd2341; 1: weight=-16'sd2229; 2: weight=16'sd1762; 3: weight=-16'sd1034; endcase
-                6: case (j) 0: weight=-16'sd1749; 1: weight=-16'sd1879; 2: weight=-16'sd941; 3: weight=16'sd1554; endcase
-                default: case (j) 0: weight=-16'sd1569; 1: weight=16'sd401; 2: weight=16'sd683; 3: weight=-16'sd627; endcase
-            endcase
+            input_weight_at = input_weight[(n * 4) + j];
         end
     endfunction
 
-    function signed [15:0] readout_weight;
+    function signed [15:0] readout_weight_at;
         input integer out_idx;
         input integer idx;
         begin
-            if (out_idx == 0) begin
-                case (idx)
-                    0: readout_weight = -16'sd855;
-                    1: readout_weight =  16'sd1039;
-                    2: readout_weight = -16'sd135;
-                    3: readout_weight = -16'sd236;
-                    4: readout_weight =  16'sd32;
-                    5: readout_weight =  16'sd303;
-                    6: readout_weight =  16'sd12;
-                    7: readout_weight =  16'sd1275;
-                    8: readout_weight =  16'sd12213;
-                    9: readout_weight = -16'sd9185;
-                    default: readout_weight = 16'sd20;
-                endcase
-            end else begin
-                case (idx)
-                    0: readout_weight = 16'sd267;
-                    1: readout_weight = -16'sd2172;
-                    2: readout_weight = 16'sd318;
-                    3: readout_weight = 16'sd163;
-                    4: readout_weight = 16'sd45;
-                    5: readout_weight = 16'sd519;
-                    6: readout_weight = -16'sd434;
-                    7: readout_weight = -16'sd418;
-                    8: readout_weight = 16'sd3009;
-                    9: readout_weight = 16'sd711;
-                    default: readout_weight = -16'sd704;
-                endcase
-            end
+            readout_weight_at = readout_weight[(out_idx * 11) + idx];
         end
     endfunction
 
-    function signed [15:0] recurrent_weight;
+    function signed [15:0] recurrent_weight_at;
         input integer n;
         input integer j;
         begin
-            case (n)
-                0: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=-16'sd1804; 3: recurrent_weight=16'sd739; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                1: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd305; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                2: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd335; 4: recurrent_weight=16'sd0; 5: recurrent_weight=-16'sd45; 6: recurrent_weight=16'sd689; 7: recurrent_weight=16'sd0; endcase
-                3: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                4: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd825; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                5: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=-16'sd157; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd1568; 7: recurrent_weight=16'sd1099; endcase
-                6: case (j) 0: recurrent_weight=-16'sd1034; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=-16'sd208; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=16'sd0; 7: recurrent_weight=16'sd0; endcase
-                default: case (j) 0: recurrent_weight=16'sd0; 1: recurrent_weight=16'sd0; 2: recurrent_weight=16'sd0; 3: recurrent_weight=16'sd0; 4: recurrent_weight=16'sd0; 5: recurrent_weight=16'sd0; 6: recurrent_weight=-16'sd1326; 7: recurrent_weight=16'sd0; endcase
-            endcase
+            recurrent_weight_at = recurrent_weight[(n * 8) + j];
         end
     endfunction
 
@@ -136,18 +99,18 @@ module lif_bank_debug (
             beta_v[i] = membrane[i] - (membrane[i] >>> 3);
             isum_v[i] = 16'sd0;
             rsum_v[i] = 16'sd0;
-            if (latched_spikes[0]) isum_v[i] = isum_v[i] + weight(i, 0);
-            if (latched_spikes[1]) isum_v[i] = isum_v[i] + weight(i, 1);
-            if (latched_spikes[2]) isum_v[i] = isum_v[i] + weight(i, 2);
-            if (latched_spikes[3]) isum_v[i] = isum_v[i] + weight(i, 3);
-            if (prev_spikes[0]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 0);
-            if (prev_spikes[1]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 1);
-            if (prev_spikes[2]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 2);
-            if (prev_spikes[3]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 3);
-            if (prev_spikes[4]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 4);
-            if (prev_spikes[5]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 5);
-            if (prev_spikes[6]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 6);
-            if (prev_spikes[7]) rsum_v[i] = rsum_v[i] + recurrent_weight(i, 7);
+            if (latched_spikes[0]) isum_v[i] = isum_v[i] + input_weight_at(i, 0);
+            if (latched_spikes[1]) isum_v[i] = isum_v[i] + input_weight_at(i, 1);
+            if (latched_spikes[2]) isum_v[i] = isum_v[i] + input_weight_at(i, 2);
+            if (latched_spikes[3]) isum_v[i] = isum_v[i] + input_weight_at(i, 3);
+            if (prev_spikes[0]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 0);
+            if (prev_spikes[1]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 1);
+            if (prev_spikes[2]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 2);
+            if (prev_spikes[3]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 3);
+            if (prev_spikes[4]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 4);
+            if (prev_spikes[5]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 5);
+            if (prev_spikes[6]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 6);
+            if (prev_spikes[7]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 7);
             acc = beta_v[i] + isum_v[i] + rsum_v[i];
             if (acc > MEM_CLIP) clip_v[i] = MEM_CLIP;
             else if (acc < NEG_MEM_CLIP) clip_v[i] = NEG_MEM_CLIP;
@@ -183,8 +146,8 @@ module lif_bank_debug (
         feature_v[9] = delta_feature_v;
         feature_v[10] = 16'sd4096;
 
-        readout0_term = (feature_reg[readout_idx] * readout_weight(0, readout_idx)) >>> 12;
-        readout1_term = (feature_reg[readout_idx] * readout_weight(1, readout_idx)) >>> 12;
+        readout0_term = (feature_reg[readout_idx] * readout_weight_at(0, readout_idx)) >>> 12;
+        readout1_term = (feature_reg[readout_idx] * readout_weight_at(1, readout_idx)) >>> 12;
     end
 
     always @(posedge clk) begin
@@ -199,7 +162,31 @@ module lif_bank_debug (
             debug_input_sum <= 0; debug_recurrent_sum <= 0; debug_membrane_clip <= 0; debug_packed <= 0;
             for (i = 0; i < 8; i = i + 1) membrane[i] <= 0;
             for (i = 0; i < 11; i = i + 1) feature_reg[i] <= 0;
-        end else if (start && !busy) begin
+            if (rst) begin
+                model_ready <= 0;
+                for (i = 0; i < 32; i = i + 1) input_weight[i] <= 0;
+                for (i = 0; i < 64; i = i + 1) recurrent_weight[i] <= 0;
+                for (i = 0; i < 22; i = i + 1) readout_weight[i] <= 0;
+            end
+        end else if (weight_clear && !busy) begin
+            model_ready <= 0;
+            done <= 0;
+            for (i = 0; i < 32; i = i + 1) input_weight[i] <= 0;
+            for (i = 0; i < 64; i = i + 1) recurrent_weight[i] <= 0;
+            for (i = 0; i < 22; i = i + 1) readout_weight[i] <= 0;
+        end else if (weight_write && !busy) begin
+            model_ready <= 0;
+            done <= 0;
+            if (weight_addr < 7'd32)
+                input_weight[weight_addr] <= weight_data;
+            else if (weight_addr < 7'd96)
+                recurrent_weight[weight_addr - 7'd32] <= weight_data;
+            else if (weight_addr < 7'd118)
+                readout_weight[weight_addr - 7'd96] <= weight_data;
+        end else if (weight_commit && !busy) begin
+            model_ready <= 1;
+            done <= 0;
+        end else if (start && !busy && model_ready) begin
             busy <= 1; done <= 0; phase <= 1; cycles <= 0;
             latched_measurement <= measurement_in;
             latched_delta <= measurement_in - prev_measurement;

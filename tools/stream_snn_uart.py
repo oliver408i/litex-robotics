@@ -301,6 +301,57 @@ def emit_command(ser, command: str) -> None:
     ser.flush()
 
 
+def send_model_file(
+    ser,
+    path: str,
+    response_timeout: float,
+    quiet: bool,
+    raw: bool,
+) -> None:
+    commands: list[str] = []
+    with open(path, "r", encoding="ascii", errors="ignore") as infile:
+        for line in infile:
+            command = line.strip()
+            if not command or command.startswith("#"):
+                continue
+            commands.append(command)
+
+    if not commands:
+        raise SystemExit(f"{path}: no model commands found")
+
+    if not quiet:
+        print(f"loading model from {path} ({len(commands)} commands)")
+
+    for index, command in enumerate(commands, start=1):
+        emit_command(ser, command)
+        deadline = time.monotonic() + response_timeout
+        got_response = False
+        saw_error = False
+
+        while time.monotonic() < deadline:
+            raw_line = ser.readline()
+            if not raw_line:
+                continue
+            line = raw_line.decode("ascii", errors="ignore").rstrip()
+            if raw:
+                print(line)
+            if line.startswith("# error:"):
+                saw_error = True
+                got_response = True
+                break
+            if line.startswith("#"):
+                got_response = True
+                break
+
+        if saw_error:
+            raise SystemExit(f"model load failed after command {index}: {command}")
+        if not got_response:
+            raise SystemExit(f"timed out waiting for model-load response after command {index}: {command}")
+
+    if not quiet:
+        print("model load complete")
+
+
 def clear_serial_input(ser) -> None:
     try:
         ser.reset_input_buffer()
@@ -334,6 +385,7 @@ def send_replay(
     quiet: bool,
     raw: bool,
     response_timeout: float,
+    load_model: str | None,
 ) -> int:
     serial = import_serial()
     expected_t = 0
@@ -344,6 +396,8 @@ def send_replay(
 
     with serial.Serial(port, baudrate=baud, timeout=timeout) as ser:
         clear_serial_input(ser)
+        if load_model is not None:
+            send_model_file(ser, load_model, response_timeout, quiet, raw)
         emit_command(ser, "C")
         try:
             for sample in samples:
@@ -486,6 +540,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-delay", type=float, default=0.02, help="delay between replay commands")
     parser.add_argument("--response-timeout", type=float, default=1.0, help="seconds to wait for each replay H row")
     parser.add_argument("--override-spikes", type=lambda value: int(value, 0), help="send S commands with this spike pattern")
+    parser.add_argument("--load-model", help="UART command file, such as model.uart, to send before streaming")
     return parser.parse_args()
 
 
@@ -544,14 +599,20 @@ def main() -> int:
                 args.quiet,
                 args.raw,
                 args.response_timeout,
+                args.load_model,
             )
 
         if args.input:
+            if args.load_model:
+                raise SystemExit("--load-model requires --port")
             infile = open(args.input, "r", encoding="ascii", errors="ignore")
             lines = iter_text_lines(infile)
         elif args.port:
             serial = import_serial()
             ser = serial.Serial(args.port, baudrate=args.baud, timeout=args.timeout)
+            if args.load_model:
+                clear_serial_input(ser)
+                send_model_file(ser, args.load_model, args.response_timeout, args.quiet, args.raw)
             if args.host_mode:
                 clear_serial_input(ser)
                 emit_command(ser, "C")
