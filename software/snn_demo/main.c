@@ -329,7 +329,7 @@ static void snn_emit_header(void)
 	uart_write_str("# snn_demo protocol v2 raw_q4_12 dynamic_model\r\n");
 	uart_write_str("# model: X clear, W <addr 0..117> <weight_q4_12>, L cache+commit\r\n");
 	uart_write_str("# run: C clear_state, M <measurement_raw>, S <measurement_raw> <spikes>, D demo_once, P probe_once, ?\r\n");
-	uart_write_str("type,t,measurement,delta,input_spikes,position,velocity,cycles,raw,draw,feat,dfeat,m0,m1,m2,m3,m4,beta,isum,rsum,mclip,status\r\n");
+	uart_write_str("type,t,measurement,delta,input_spikes,position,delta_estimate,cycles,raw,draw,feat,dfeat,m0,m1,m2,m3,m4,beta,isum,rsum,mclip,status\r\n");
 #endif
 }
 
@@ -411,7 +411,7 @@ static void snn_emit_sample_row(char type, uint32_t t, int16_t measurement, int1
 	uart_write_q4_12(((uint16_t)measurement) & 0xffff);
 	uart_write_str(" pos=");
 	uart_write_q4_12(pos_raw);
-	uart_write_str(" vel=");
+	uart_write_str(" dest=");
 	uart_write_q4_12(vel_raw);
 	uart_write_str(" cyc=");
 	uart_write_dec(cyc_raw);

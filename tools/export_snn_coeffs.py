@@ -20,10 +20,10 @@ def _to_fixed(value: float, frac_bits: int) -> int:
     return int(round(value * (1 << frac_bits)))
 
 
-def build_model(train_count: int, length: int, seed: int):
+def build_model(train_count: int, length: int, seed: int, dataset_kwargs: dict[str, object]):
     cfg = ReservoirConfig(recurrent_scale=0.5)
     model = create_random_reservoir(cfg)
-    train_set = generate_dataset(train_count, length=length, seed=seed)
+    train_set = generate_dataset(train_count, length=length, seed=seed, **dataset_kwargs)
     train_readout(model, train_set)
     return model
 
@@ -66,6 +66,23 @@ def main() -> int:
     parser.add_argument("--train-count", type=int, default=24)
     parser.add_argument("--length", type=int, default=300)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--dt", type=float, default=0.02, help="dataset timestep")
+    parser.add_argument(
+        "--mode",
+        choices=("tracking", "sine", "square", "ramp", "walk"),
+        default="tracking",
+        help="training dataset mode",
+    )
+    parser.add_argument("--accel-limit", type=float, default=1.0, help="tracking-mode acceleration limit")
+    parser.add_argument("--segment-min", type=int, default=12, help="tracking-mode minimum segment length")
+    parser.add_argument("--segment-max", type=int, default=48, help="tracking-mode maximum segment length")
+    parser.add_argument("--noise", type=float, default=0.08, help="measurement noise sigma")
+    parser.add_argument("--bias-walk-sigma", type=float, default=0.002, help="tracking-mode bias random-walk sigma")
+    parser.add_argument("--initial-position-span", type=float, default=1.0, help="tracking-mode initial position span")
+    parser.add_argument("--initial-velocity-span", type=float, default=0.8, help="tracking-mode initial velocity span")
+    parser.add_argument("--offset", type=float, default=0.0, help="waveform offset")
+    parser.add_argument("--amplitude", type=float, default=0.5, help="waveform amplitude, or walk step sigma")
+    parser.add_argument("--period", type=float, default=48.0, help="waveform period in samples")
     parser.add_argument(
         "--format",
         choices=("uart", "json", "tables"),
@@ -79,7 +96,22 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    model = build_model(args.train_count, args.length, args.seed)
+    dataset_kwargs = {
+        "dt": args.dt,
+        "mode": args.mode,
+        "accel_limit": args.accel_limit,
+        "segment_min": args.segment_min,
+        "segment_max": args.segment_max,
+        "measurement_sigma": args.noise,
+        "bias_walk_sigma": args.bias_walk_sigma,
+        "initial_position_span": args.initial_position_span,
+        "initial_velocity_span": args.initial_velocity_span,
+        "signal_offset": args.offset,
+        "signal_amplitude": args.amplitude,
+        "signal_period": args.period,
+    }
+
+    model = build_model(args.train_count, args.length, args.seed, dataset_kwargs)
     generated = quantized_tables(model)
     image = linear_model_image(generated)
     output_format = "tables" if args.print_tables else args.format

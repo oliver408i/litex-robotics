@@ -7,10 +7,16 @@ import argparse
 import csv
 from dataclasses import dataclass
 import math
-import random
+from pathlib import Path
 import sys
 import time
 from typing import Iterable, TextIO
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from sim.generate_tracking_data import generate_tracking_sequence
 
 
 FRAC_BITS = 12
@@ -21,7 +27,7 @@ FIELDNAMES = [
     "delta",
     "input_spikes",
     "position",
-    "velocity",
+    "delta_estimate",
     "cycles",
     "raw",
     "draw",
@@ -42,7 +48,7 @@ Q_FIELDS = {
     "measurement",
     "delta",
     "position",
-    "velocity",
+    "delta_estimate",
     "raw",
     "draw",
     "feat",
@@ -84,7 +90,7 @@ class SNNRow:
 class GeneratedSample:
     raw: int
     clean_position: float
-    clean_velocity: float
+    clean_delta: float
 
 
 @dataclass
@@ -120,20 +126,20 @@ class ErrorStats:
 @dataclass
 class GeneratedMetrics:
     position: ErrorStats
-    velocity: ErrorStats
+    delta: ErrorStats
     input_noise: ErrorStats
 
     @classmethod
     def create(cls) -> "GeneratedMetrics":
         return cls(
             position=ErrorStats("position_vs_clean"),
-            velocity=ErrorStats("velocity_vs_clean_delta"),
+            delta=ErrorStats("delta_estimate_vs_truth_delta"),
             input_noise=ErrorStats("input_noise"),
         )
 
     def add(self, row: SNNRow, sample: GeneratedSample) -> None:
         self.position.add(row.q("position"), sample.clean_position)
-        self.velocity.add(row.q("velocity"), sample.clean_velocity)
+        self.delta.add(row.q("delta_estimate"), sample.clean_delta)
         self.input_noise.add(row.q("measurement"), sample.clean_position)
 
     def print(self) -> None:
@@ -141,7 +147,7 @@ class GeneratedMetrics:
             return
         print("\nGenerated-mode accuracy vs clean signal")
         print(self.position.line())
-        print(self.velocity.line())
+        print(self.delta.line())
         print(self.input_noise.line())
 
 
@@ -162,7 +168,7 @@ class LivePlot:
         self.lines = {
             "measurement": self.axes[0].plot([], [], label="measurement")[0],
             "position": self.axes[0].plot([], [], label="position")[0],
-            "velocity": self.axes[1].plot([], [], label="velocity")[0],
+            "delta_estimate": self.axes[1].plot([], [], label="delta estimate")[0],
             "m0": self.axes[2].plot([], [], label="m0")[0],
             "m1": self.axes[2].plot([], [], label="m1")[0],
             "m2": self.axes[2].plot([], [], label="m2")[0],
@@ -283,7 +289,7 @@ def print_summary(row: SNNRow) -> None:
     print(
         f"{row.values['type']} t={row.raw('t'):04d} "
         f"in={row.q('measurement'):+.3f} pos={row.q('position'):+.3f} "
-        f"vel={row.q('velocity'):+.3f} spk=0x{row.raw('input_spikes'):x} "
+        f"dest={row.q('delta_estimate'):+.3f} spk=0x{row.raw('input_spikes'):x} "
         f"cyc={row.raw('cycles')}"
     )
 
@@ -463,45 +469,53 @@ def load_replay_samples(path: str) -> list[int]:
 def generate_samples(
     mode: str,
     count: int,
+    dt: float,
     offset: float,
     amplitude: float,
     period: float,
     noise: float,
+    accel_limit: float,
+    segment_min: int,
+    segment_max: int,
+    bias_walk_sigma: float,
+    initial_position_span: float,
+    initial_velocity_span: float,
     seed: int,
 ) -> Iterable[GeneratedSample]:
     if count < 0:
         raise SystemExit("--generate-count must be >= 0")
-    if period <= 0.0:
-        raise SystemExit("--generate-period must be > 0")
+    chunk_len = count if count > 0 else 300
+    emitted = 0
+    chunk = 0
 
-    rng = random.Random(seed)
-    t = 0
-    value = offset
-    prev_clean = 0.0
-
-    while count == 0 or t < count:
-        if mode == "sine":
-            clean = offset + amplitude * math.sin((2.0 * math.pi * t) / period)
-        elif mode == "square":
-            phase = (t % int(max(1, period))) / max(1.0, period)
-            clean = offset + (amplitude if phase < 0.5 else -amplitude)
-        elif mode == "ramp":
-            phase = (t % int(max(1, period))) / max(1.0, period)
-            clean = offset + amplitude * ((2.0 * phase) - 1.0)
-        elif mode == "walk":
-            value += rng.gauss(0.0, amplitude)
-            clean = value
-        else:
-            raise SystemExit(f"unsupported generator mode: {mode}")
-
-        noisy = clean + rng.gauss(0.0, noise)
-        yield GeneratedSample(
-            raw=float_to_fixed(noisy),
-            clean_position=clean,
-            clean_velocity=clean - prev_clean,
+    while count == 0 or emitted < count:
+        length = chunk_len if count == 0 else min(chunk_len, count - emitted)
+        sequence = generate_tracking_sequence(
+            length=length,
+            dt=dt,
+            mode=mode,
+            accel_limit=accel_limit,
+            segment_min=segment_min,
+            segment_max=segment_max,
+            measurement_sigma=noise,
+            bias_walk_sigma=bias_walk_sigma,
+            initial_position_span=initial_position_span,
+            initial_velocity_span=initial_velocity_span,
+            signal_offset=offset,
+            signal_amplitude=amplitude,
+            signal_period=period,
+            seed=seed + chunk,
         )
-        prev_clean = clean
-        t += 1
+        previous_position = 0.0
+        for measurement, position in zip(sequence.measurement, sequence.true_position):
+            yield GeneratedSample(
+                raw=float_to_fixed(measurement),
+                clean_position=position,
+                clean_delta=position - previous_position,
+            )
+            previous_position = position
+            emitted += 1
+        chunk += 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -528,14 +542,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay", help="CSV file of raw measurement samples to send to firmware")
     parser.add_argument(
         "--generate",
-        choices=("sine", "square", "ramp", "walk"),
+        choices=("tracking", "sine", "square", "ramp", "walk"),
         help="live-generate host samples instead of reading a replay CSV",
     )
     parser.add_argument("--generate-count", type=int, default=300, help="generated sample count; 0 streams until interrupted")
+    parser.add_argument("--generate-dt", type=float, default=0.02, help="generated sequence timestep")
     parser.add_argument("--generate-offset", type=float, default=0.0, help="generated signal offset in Q4.12 float units")
     parser.add_argument("--generate-amplitude", type=float, default=0.5, help="generated signal amplitude in Q4.12 float units")
     parser.add_argument("--generate-period", type=float, default=48.0, help="generated signal period in samples")
     parser.add_argument("--generate-noise", type=float, default=0.0, help="Gaussian noise sigma in Q4.12 float units")
+    parser.add_argument("--generate-accel-limit", type=float, default=1.0, help="tracking-mode acceleration limit")
+    parser.add_argument("--generate-segment-min", type=int, default=12, help="tracking-mode minimum segment length")
+    parser.add_argument("--generate-segment-max", type=int, default=48, help="tracking-mode maximum segment length")
+    parser.add_argument("--generate-bias-walk-sigma", type=float, default=0.002, help="tracking-mode bias random-walk sigma")
+    parser.add_argument("--generate-initial-position-span", type=float, default=1.0, help="tracking-mode initial position span")
+    parser.add_argument("--generate-initial-velocity-span", type=float, default=0.8, help="tracking-mode initial velocity span")
     parser.add_argument("--generate-seed", type=int, default=1, help="random seed for generated noise")
     parser.add_argument("--replay-delay", type=float, default=0.02, help="delay between replay commands")
     parser.add_argument("--response-timeout", type=float, default=1.0, help="seconds to wait for each replay H row")
@@ -580,10 +601,17 @@ def main() -> int:
                 samples = generate_samples(
                     args.generate,
                     args.generate_count,
+                    args.generate_dt,
                     args.generate_offset,
                     args.generate_amplitude,
                     args.generate_period,
                     args.generate_noise,
+                    args.generate_accel_limit,
+                    args.generate_segment_min,
+                    args.generate_segment_max,
+                    args.generate_bias_walk_sigma,
+                    args.generate_initial_position_span,
+                    args.generate_initial_velocity_span,
                     args.generate_seed,
                 )
             return send_replay(
