@@ -75,6 +75,30 @@ These resources are aliases or grouped views built on top of the platform pins:
 | `mcp3008` | `mosi` | `H2` |
 | `mcp3008` | `miso` | `J2` |
 
+### LCD / Touch Project Mapping
+
+This project uses an ST7796S SPI LCD controller with a 320x480 panel and an
+FT6336U capacitive touch controller. The first bring-up target is an LCD test
+pattern. The eventual software target is LVGL running on the LiteX CPU.
+
+The LCD SPI clock and data pins are shared with the MCP3008 SPI bus. The
+MCP3008 is not used by the final LCD project, but it can be enabled with the
+known-good Verilog sampler as a bring-up test for the shared SPI wiring.
+
+| Device | Signal | FPGA Pin | Notes |
+| --- | --- | --- | --- |
+| shared SPI | `sclk` | `T2` | Shared with `mcp3008.sclk` |
+| shared SPI | `mosi` | `H2` | Shared with `mcp3008.mosi` |
+| shared SPI | `miso` | `J2` | Shared with `mcp3008.miso`; not required for basic LCD writes |
+| ST7796S LCD | `cs_n[0]` | `H3` | `LCD_CS` |
+| MCP3008 | `cs_n[1]` | `R2` | Used only as a shared-SPI bus test in this LCD bring-up |
+| ST7796S LCD | `reset` | `J3` | `LCD_RST` |
+| ST7796S LCD | `dc` / `rs` | `G1` | `LCD_RS`; command/data select |
+| LCD backlight | `led` | `P1` | `backlightLED` |
+| FT6336U touch | `scl` | `N1` | `CTP_SCL` |
+| FT6336U touch | `sda` | `N4` | `CTP_SDA` |
+| FT6336U touch | `int` | `E3` | `CTP_INT` |
+
 ### USB 0
 
 | Resource | Signal | FPGA Pin(s) |
