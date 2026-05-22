@@ -45,7 +45,17 @@ module lif_bank_debug (
     reg signed [15:0] membrane_next [0:7];
     reg signed [15:0] beta_v [0:7];
     reg signed [15:0] isum_v [0:7];
+    reg signed [15:0] rsum_lo_v [0:7];
+    reg signed [15:0] rsum_hi_v [0:7];
     reg signed [15:0] rsum_v [0:7];
+    // Pipeline registers between stage A (carry-chain heavy partial sums)
+    // and stage B (combine + clip + threshold). Splits the long
+    // prev_spikes -> rsum -> clip -> next_spikes critical path in two.
+    reg signed [15:0] beta_r [0:7];
+    reg signed [15:0] isum_r [0:7];
+    reg signed [15:0] rsum_lo_r [0:7];
+    reg signed [15:0] rsum_hi_r [0:7];
+    reg               phase1_step;
     reg signed [15:0] clip_v [0:7];
     reg signed [15:0] feature_v [0:10];
     reg signed [15:0] feature_reg [0:10];
@@ -94,24 +104,35 @@ module lif_bank_debug (
         end
     endfunction
 
+    // Stage A: short carry chains from prev_spikes/latched_spikes/membrane.
+    // rsum is computed as two parallel half-sums so neither cascade is
+    // longer than 4 conditional adds.
     always @(*) begin
         for (i = 0; i < 8; i = i + 1) begin
             beta_v[i] = membrane[i] - (membrane[i] >>> 3);
             isum_v[i] = 16'sd0;
-            rsum_v[i] = 16'sd0;
             if (latched_spikes[0]) isum_v[i] = isum_v[i] + input_weight_at(i, 0);
             if (latched_spikes[1]) isum_v[i] = isum_v[i] + input_weight_at(i, 1);
             if (latched_spikes[2]) isum_v[i] = isum_v[i] + input_weight_at(i, 2);
             if (latched_spikes[3]) isum_v[i] = isum_v[i] + input_weight_at(i, 3);
-            if (prev_spikes[0]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 0);
-            if (prev_spikes[1]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 1);
-            if (prev_spikes[2]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 2);
-            if (prev_spikes[3]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 3);
-            if (prev_spikes[4]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 4);
-            if (prev_spikes[5]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 5);
-            if (prev_spikes[6]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 6);
-            if (prev_spikes[7]) rsum_v[i] = rsum_v[i] + recurrent_weight_at(i, 7);
-            acc = beta_v[i] + isum_v[i] + rsum_v[i];
+            rsum_lo_v[i] = 16'sd0;
+            if (prev_spikes[0]) rsum_lo_v[i] = rsum_lo_v[i] + recurrent_weight_at(i, 0);
+            if (prev_spikes[1]) rsum_lo_v[i] = rsum_lo_v[i] + recurrent_weight_at(i, 1);
+            if (prev_spikes[2]) rsum_lo_v[i] = rsum_lo_v[i] + recurrent_weight_at(i, 2);
+            if (prev_spikes[3]) rsum_lo_v[i] = rsum_lo_v[i] + recurrent_weight_at(i, 3);
+            rsum_hi_v[i] = 16'sd0;
+            if (prev_spikes[4]) rsum_hi_v[i] = rsum_hi_v[i] + recurrent_weight_at(i, 4);
+            if (prev_spikes[5]) rsum_hi_v[i] = rsum_hi_v[i] + recurrent_weight_at(i, 5);
+            if (prev_spikes[6]) rsum_hi_v[i] = rsum_hi_v[i] + recurrent_weight_at(i, 6);
+            if (prev_spikes[7]) rsum_hi_v[i] = rsum_hi_v[i] + recurrent_weight_at(i, 7);
+        end
+    end
+
+    // Stage B: combine pipelined partial sums and finish clip/threshold.
+    always @(*) begin
+        for (i = 0; i < 8; i = i + 1) begin
+            rsum_v[i] = rsum_lo_r[i] + rsum_hi_r[i];
+            acc = beta_r[i] + isum_r[i] + rsum_v[i];
             if (acc > MEM_CLIP) clip_v[i] = MEM_CLIP;
             else if (acc < NEG_MEM_CLIP) clip_v[i] = NEG_MEM_CLIP;
             else clip_v[i] = acc[15:0];
@@ -153,6 +174,7 @@ module lif_bank_debug (
     always @(posedge clk) begin
         if (rst || clear_state) begin
             busy <= 0; done <= 0; phase <= 0; cycles <= 0;
+            phase1_step <= 0;
             prev_measurement <= 0; latched_measurement <= 0; latched_delta <= 0; latched_spikes <= 0;
             prev_spikes <= 0;
             readout0_acc <= 0; readout1_acc <= 0; readout_idx <= 0;
@@ -161,6 +183,10 @@ module lif_bank_debug (
             debug_membrane2 <= 0; debug_membrane3 <= 0; debug_membrane4 <= 0; debug_input_spikes <= 0; debug_beta_product <= 0;
             debug_input_sum <= 0; debug_recurrent_sum <= 0; debug_membrane_clip <= 0; debug_packed <= 0;
             for (i = 0; i < 8; i = i + 1) membrane[i] <= 0;
+            for (i = 0; i < 8; i = i + 1) begin
+                beta_r[i] <= 0; isum_r[i] <= 0;
+                rsum_lo_r[i] <= 0; rsum_hi_r[i] <= 0;
+            end
             for (i = 0; i < 11; i = i + 1) feature_reg[i] <= 0;
             if (rst) begin
                 model_ready <= 0;
@@ -188,6 +214,7 @@ module lif_bank_debug (
             done <= 0;
         end else if (start && !busy && model_ready) begin
             busy <= 1; done <= 0; phase <= 1; cycles <= 0;
+            phase1_step <= 1'b0;
             latched_measurement <= measurement_in;
             latched_delta <= measurement_in - prev_measurement;
             prev_measurement <= measurement_in;
@@ -195,28 +222,41 @@ module lif_bank_debug (
         end else if (busy) begin
             cycles <= cycles + 16'd1;
             if (phase == 1) begin
-                for (i = 0; i < 8; i = i + 1) membrane[i] <= membrane_next[i];
-                prev_spikes <= next_spikes_v;
-                for (i = 0; i < 11; i = i + 1) feature_reg[i] <= feature_v[i];
-                readout0_acc <= 0;
-                readout1_acc <= 0;
-                readout_idx <= 0;
-                phase <= 2;
-                debug_measurement_raw <= latched_measurement;
-                debug_delta_raw <= latched_delta;
-                debug_measurement_feature <= meas_feature_v;
-                debug_delta_feature <= delta_feature_v;
-                debug_membrane0 <= membrane_next[0];
-                debug_membrane1 <= membrane_next[1];
-                debug_membrane2 <= membrane_next[2];
-                debug_membrane3 <= membrane_next[3];
-                debug_membrane4 <= membrane_next[4];
-                debug_input_spikes <= latched_spikes;
-                debug_beta_product <= beta_v[0];
-                debug_input_sum <= isum_v[0];
-                debug_recurrent_sum <= rsum_v[0];
-                debug_membrane_clip <= clip_v[0];
-                debug_packed <= {20'd0, 1'b0, 1'b1, 2'd1, latched_spikes, 4'd0};
+                if (phase1_step == 1'b0) begin
+                    // Stage A: capture short-chain partial sums.
+                    for (i = 0; i < 8; i = i + 1) begin
+                        beta_r[i]    <= beta_v[i];
+                        isum_r[i]    <= isum_v[i];
+                        rsum_lo_r[i] <= rsum_lo_v[i];
+                        rsum_hi_r[i] <= rsum_hi_v[i];
+                    end
+                    phase1_step <= 1'b1;
+                end else begin
+                    // Stage B: combine, clip, threshold, register state.
+                    for (i = 0; i < 8; i = i + 1) membrane[i] <= membrane_next[i];
+                    prev_spikes <= next_spikes_v;
+                    for (i = 0; i < 11; i = i + 1) feature_reg[i] <= feature_v[i];
+                    readout0_acc <= 0;
+                    readout1_acc <= 0;
+                    readout_idx <= 0;
+                    phase <= 2;
+                    phase1_step <= 1'b0;
+                    debug_measurement_raw <= latched_measurement;
+                    debug_delta_raw <= latched_delta;
+                    debug_measurement_feature <= meas_feature_v;
+                    debug_delta_feature <= delta_feature_v;
+                    debug_membrane0 <= membrane_next[0];
+                    debug_membrane1 <= membrane_next[1];
+                    debug_membrane2 <= membrane_next[2];
+                    debug_membrane3 <= membrane_next[3];
+                    debug_membrane4 <= membrane_next[4];
+                    debug_input_spikes <= latched_spikes;
+                    debug_beta_product <= beta_r[0];
+                    debug_input_sum <= isum_r[0];
+                    debug_recurrent_sum <= rsum_v[0];
+                    debug_membrane_clip <= clip_v[0];
+                    debug_packed <= {20'd0, 1'b0, 1'b1, 2'd1, latched_spikes, 4'd0};
+                end
             end else if (phase == 2) begin
                 readout0_acc <= readout0_acc + readout0_term;
                 readout1_acc <= readout1_acc + readout1_term;
