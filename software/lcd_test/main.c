@@ -14,18 +14,18 @@
 
 #define FT6336U_I2C_ADDR  0x38
 
-#define LCD_PADS_CS_N      (1u << CSR_LCD_PADS_CTRL_CS_N_OFFSET)
-#define LCD_PADS_DC        (1u << CSR_LCD_PADS_CTRL_DC_OFFSET)
 #define LCD_PADS_RESET_N   (1u << CSR_LCD_PADS_CTRL_RESET_N_OFFSET)
 #define LCD_PADS_BACKLIGHT (1u << CSR_LCD_PADS_CTRL_BACKLIGHT_OFFSET)
 
-#define LCD_OP_START       (1u << CSR_LCD_OP_START_OFFSET)
-#define LCD_OP_SINGLE      ((1u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
-#define LCD_OP_DMA         ((2u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
-#define LCD_OP_FILL        ((3u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
-#define LCD_BUSY           (1u << CSR_LCD_STATUS_BUSY_OFFSET)
+#define LCD_OP_START          (1u << CSR_LCD_OP_START_OFFSET)
+#define LCD_OP_CMD            ((1u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
+#define LCD_OP_CMD_DATA_DMA   ((2u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
+#define LCD_OP_CMD_DATA_FILL  ((3u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
+#define LCD_OP_FILL_RECT      ((4u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
+#define LCD_OP_DMA_RECT       ((5u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
+#define LCD_BUSY              (1u << CSR_LCD_STATUS_BUSY_OFFSET)
 
-static uint32_t lcd_pads_state = LCD_PADS_CS_N | LCD_PADS_RESET_N;
+static uint32_t lcd_pads_state = LCD_PADS_RESET_N;
 
 static void log_char(char c)
 {
@@ -93,60 +93,33 @@ static void lcd_wait_idle(void)
 		;
 }
 
-static void lcd_send_byte(uint8_t b)
-{
-	lcd_wait_idle();
-	lcd_byte_write(b);
-	lcd_op_write(LCD_OP_SINGLE);
-}
-
-static void lcd_send_dma(const void *src, uint32_t len)
-{
-	lcd_wait_idle();
-	lcd_dma_src_write((uint32_t)src);
-	lcd_dma_len_write(len);
-	lcd_op_write(LCD_OP_DMA);
-}
-
-static void lcd_send_fill(uint16_t color, uint32_t pixels)
-{
-	lcd_wait_idle();
-	lcd_fill_color_write(color);
-	lcd_fill_count_write(pixels);
-	lcd_op_write(LCD_OP_FILL);
-}
-
-static void lcd_select(void)   { lcd_pads_set(LCD_PADS_CS_N, 0); }
-static void lcd_deselect(void) { lcd_wait_idle(); lcd_pads_set(LCD_PADS_CS_N, 1); }
-static void lcd_dc(int v)      { lcd_wait_idle(); lcd_pads_set(LCD_PADS_DC, v); }
 static void lcd_reset_n(int v) { lcd_pads_set(LCD_PADS_RESET_N, v); }
 static void lcd_backlight(int v){ lcd_pads_set(LCD_PADS_BACKLIGHT, v); }
 
 static void lcd_write_cmd(uint8_t cmd)
 {
-	lcd_select();
-	lcd_dc(0);
-	lcd_send_byte(cmd);
-	lcd_deselect();
+	lcd_wait_idle();
+	lcd_cmd_byte_write(cmd);
+	lcd_op_write(LCD_OP_CMD);
 }
 
 static void lcd_cmd_data(uint8_t cmd, const uint8_t *data, unsigned int len)
 {
-	lcd_select();
-	lcd_dc(0);
-	lcd_send_byte(cmd);
+	lcd_wait_idle();
+	lcd_cmd_byte_write(cmd);
 	if(len) {
-		lcd_dc(1);
-		for(unsigned int i = 0; i < len; i++)
-			lcd_send_byte(data[i]);
+		lcd_dma_src_write((uint32_t)data);
+		lcd_dma_len_write(len);
+		lcd_op_write(LCD_OP_CMD_DATA_DMA);
+	} else {
+		lcd_op_write(LCD_OP_CMD);
 	}
-	lcd_deselect();
 }
 
 static void lcd_hw_reset(void)
 {
 	log_puts("lcd: hardware reset"); log_nl();
-	lcd_pads_state = LCD_PADS_CS_N | LCD_PADS_RESET_N;
+	lcd_pads_state = LCD_PADS_RESET_N;
 	lcd_pads_apply();
 	busy_wait(20);
 	lcd_reset_n(0);
@@ -155,14 +128,17 @@ static void lcd_hw_reset(void)
 	busy_wait(120);
 }
 
-static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+static void lcd_fill_rect_silent(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color)
 {
-	uint8_t caset[] = {x0 >> 8, x0 & 0xff, x1 >> 8, x1 & 0xff};
-	uint8_t raset[] = {y0 >> 8, y0 & 0xff, y1 >> 8, y1 & 0xff};
+	uint16_t x1 = (uint16_t)(x + w - 1);
+	uint16_t y1 = (uint16_t)(y + h - 1);
 
-	lcd_cmd_data(0x2a, caset, sizeof(caset));
-	lcd_cmd_data(0x2b, raset, sizeof(raset));
-	lcd_write_cmd(0x2c);
+	lcd_wait_idle();
+	lcd_rect_x_write(((uint32_t)x1 << 16) | (uint32_t)(uint16_t)x);
+	lcd_rect_y_write(((uint32_t)y1 << 16) | (uint32_t)(uint16_t)y);
+	lcd_fill_color_write(color);
+	lcd_fill_count_write((uint32_t)w * (uint32_t)h);
+	lcd_op_write(LCD_OP_FILL_RECT);
 }
 
 static void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
@@ -173,11 +149,7 @@ static void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16
 	log_puts(" h="); log_uint(h);
 	log_puts(" color=0x"); log_hex16(color); log_nl();
 
-	lcd_set_window(x, y, x + w - 1, y + h - 1);
-	lcd_select();
-	lcd_dc(1);
-	lcd_send_fill(color, (uint32_t)w * h);
-	lcd_deselect();
+	lcd_fill_rect_silent((int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h, color);
 }
 
 static void lcd_init(void)
@@ -271,22 +243,17 @@ static void lcd_dma_buf_init_gradient(void)
 	}
 }
 
-static void lcd_fill_rect_silent(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color)
-{
-	lcd_set_window(x, y, x + w - 1, y + h - 1);
-	lcd_select();
-	lcd_dc(1);
-	lcd_send_fill(color, (uint32_t)w * h);
-	lcd_deselect();
-}
-
 static void lcd_dma_rect(int16_t x, int16_t y, int16_t w, int16_t h, const void *buf, uint32_t len)
 {
-	lcd_set_window(x, y, x + w - 1, y + h - 1);
-	lcd_select();
-	lcd_dc(1);
-	lcd_send_dma(buf, len);
-	lcd_deselect();
+	uint16_t x1 = (uint16_t)(x + w - 1);
+	uint16_t y1 = (uint16_t)(y + h - 1);
+
+	lcd_wait_idle();
+	lcd_rect_x_write(((uint32_t)x1 << 16) | (uint32_t)(uint16_t)x);
+	lcd_rect_y_write(((uint32_t)y1 << 16) | (uint32_t)(uint16_t)y);
+	lcd_dma_src_write((uint32_t)buf);
+	lcd_dma_len_write(len);
+	lcd_op_write(LCD_OP_DMA_RECT);
 }
 
 static void lcd_dma_self_test(uint16_t x, uint16_t y)
