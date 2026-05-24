@@ -3,16 +3,35 @@
 
 #include <irq.h>
 #include <libbase/uart.h>
-#include <libbase/i2c.h>
 #include <system.h>
 #include <generated/csr.h>
+#include <generated/mem.h>
 #include <generated/soc.h>
 
 #ifndef CSR_LCD_BASE
 #error "Build the SoC with --with-lcd before compiling software/lcd_test."
 #endif
+#ifndef CTP_I2C_BASE
+#error "Build the SoC with --with-lcd before compiling software/lcd_test (ctp_i2c missing)."
+#endif
 
 #define FT6336U_I2C_ADDR  0x38
+
+/* HW I2C master (wishbone-mapped at CTP_I2C_BASE). Two word registers:
+ *   offset 0: XFER  - write to issue start/stop/read/write commands;
+ *                     read for received data byte and slave-ACK bit.
+ *   offset 1: CONFIG - clock divider for SCL.
+ */
+#define CTP_I2C_REG(off) (*(volatile uint32_t *)(CTP_I2C_BASE + ((off) << 2)))
+#define I2C_XFER_OFFSET     0
+#define I2C_CONFIG_OFFSET   1
+
+#define I2C_ACK    (1u << 8)
+#define I2C_READ   (1u << 9)
+#define I2C_WRITE  (1u << 10)
+#define I2C_START  (1u << 11)
+#define I2C_STOP   (1u << 12)
+#define I2C_IDLE   (1u << 13)
 
 #define LCD_PADS_RESET_N   (1u << CSR_LCD_PADS_CTRL_RESET_N_OFFSET)
 #define LCD_PADS_BACKLIGHT (1u << CSR_LCD_PADS_CTRL_BACKLIGHT_OFFSET)
@@ -24,6 +43,7 @@
 #define LCD_OP_FILL_RECT      ((4u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
 #define LCD_OP_DMA_RECT       ((5u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
 #define LCD_BUSY              (1u << CSR_LCD_STATUS_BUSY_OFFSET)
+#define LCD_CAN_ACCEPT        (1u << CSR_LCD_STATUS_CAN_ACCEPT_OFFSET)
 
 static uint32_t lcd_pads_state = LCD_PADS_RESET_N;
 
@@ -93,19 +113,29 @@ static void lcd_wait_idle(void)
 		;
 }
 
+/* Wait until the engine's queue slot is free. Returns as soon as the
+ * next op can be staged, even if a previous op is still shifting on
+ * SPI. Use this on the hot path instead of lcd_wait_idle so CPU CSR
+ * setup for op N+1 overlaps with the engine running op N. */
+static void lcd_wait_can_accept(void)
+{
+	while(!(lcd_status_read() & LCD_CAN_ACCEPT))
+		;
+}
+
 static void lcd_reset_n(int v) { lcd_pads_set(LCD_PADS_RESET_N, v); }
 static void lcd_backlight(int v){ lcd_pads_set(LCD_PADS_BACKLIGHT, v); }
 
 static void lcd_write_cmd(uint8_t cmd)
 {
-	lcd_wait_idle();
+	lcd_wait_can_accept();
 	lcd_cmd_byte_write(cmd);
 	lcd_op_write(LCD_OP_CMD);
 }
 
 static void lcd_cmd_data(uint8_t cmd, const uint8_t *data, unsigned int len)
 {
-	lcd_wait_idle();
+	lcd_wait_can_accept();
 	lcd_cmd_byte_write(cmd);
 	if(len) {
 		lcd_dma_src_write((uint32_t)data);
@@ -133,7 +163,7 @@ static void lcd_fill_rect_silent(int16_t x, int16_t y, int16_t w, int16_t h, uin
 	uint16_t x1 = (uint16_t)(x + w - 1);
 	uint16_t y1 = (uint16_t)(y + h - 1);
 
-	lcd_wait_idle();
+	lcd_wait_can_accept();
 	lcd_rect_x_write(((uint32_t)x1 << 16) | (uint32_t)(uint16_t)x);
 	lcd_rect_y_write(((uint32_t)y1 << 16) | (uint32_t)(uint16_t)y);
 	lcd_fill_color_write(color);
@@ -203,6 +233,7 @@ static void lcd_init(void)
 	busy_wait(120);
 	log_puts("lcd: display on"); log_nl();
 	lcd_write_cmd(0x29);
+	lcd_wait_idle();   /* ensure 0x29 has reached the panel before backlight */
 	busy_wait(20);
 	lcd_backlight(1);
 }
@@ -248,7 +279,7 @@ static void lcd_dma_rect(int16_t x, int16_t y, int16_t w, int16_t h, const void 
 	uint16_t x1 = (uint16_t)(x + w - 1);
 	uint16_t y1 = (uint16_t)(y + h - 1);
 
-	lcd_wait_idle();
+	lcd_wait_can_accept();
 	lcd_rect_x_write(((uint32_t)x1 << 16) | (uint32_t)(uint16_t)x);
 	lcd_rect_y_write(((uint32_t)y1 << 16) | (uint32_t)(uint16_t)y);
 	lcd_dma_src_write((uint32_t)buf);
@@ -361,10 +392,86 @@ static void lcd_animate(void)
 	}
 }
 
+/* ---- Hardware I2C driver (FT6336U) ----------------------------------- */
+
+static inline void ctp_i2c_wait_idle(void)
+{
+	while(!(CTP_I2C_REG(I2C_XFER_OFFSET) & I2C_IDLE))
+		;
+}
+
+static void ctp_i2c_init(void)
+{
+	/* SCL period = 2*(load+1) sys cycles per half-bit; the state machine
+	 * also takes multiple ticks per logical bit, so the actual SCL rate
+	 * is ~sys_clk / (2*(load+1)). For 100 kHz at 50 MHz sys, load = 249. */
+	uint32_t load = (CONFIG_CLOCK_FREQUENCY / (2u * 100000u)) - 1u;
+	CTP_I2C_REG(I2C_CONFIG_OFFSET) = load;
+}
+
+/* Issue START followed by the address byte. Returns 1 if the slave ACKed. */
+static int ctp_i2c_addr(uint8_t addr7, int read)
+{
+	ctp_i2c_wait_idle();
+	CTP_I2C_REG(I2C_XFER_OFFSET) = I2C_START;
+	ctp_i2c_wait_idle();
+	uint32_t byte = (uint32_t)((addr7 << 1) | (read ? 1u : 0u));
+	CTP_I2C_REG(I2C_XFER_OFFSET) = I2C_WRITE | byte;
+	ctp_i2c_wait_idle();
+	return (CTP_I2C_REG(I2C_XFER_OFFSET) & I2C_ACK) != 0;
+}
+
+static int ctp_i2c_write_byte(uint8_t b)
+{
+	ctp_i2c_wait_idle();
+	CTP_I2C_REG(I2C_XFER_OFFSET) = I2C_WRITE | (uint32_t)b;
+	ctp_i2c_wait_idle();
+	return (CTP_I2C_REG(I2C_XFER_OFFSET) & I2C_ACK) != 0;
+}
+
+/* `ack` = whether we ACK the byte we're about to receive (ACK = continue
+ * reading, NACK = last byte before STOP). */
+static uint8_t ctp_i2c_read_byte(int ack)
+{
+	ctp_i2c_wait_idle();
+	CTP_I2C_REG(I2C_XFER_OFFSET) = I2C_READ | (ack ? I2C_ACK : 0u);
+	ctp_i2c_wait_idle();
+	return (uint8_t)(CTP_I2C_REG(I2C_XFER_OFFSET) & 0xff);
+}
+
+static void ctp_i2c_stop(void)
+{
+	ctp_i2c_wait_idle();
+	CTP_I2C_REG(I2C_XFER_OFFSET) = I2C_STOP;
+	ctp_i2c_wait_idle();
+}
+
 static bool ft6336u_read(uint8_t reg, uint8_t *buf, unsigned int len)
 {
-	return i2c_read(FT6336U_I2C_ADDR, reg, buf, len, /* send_stop */ true,
-	                /* addr_size */ 1);
+	if(!ctp_i2c_addr(FT6336U_I2C_ADDR, /* read */ 0)) {
+		ctp_i2c_stop();
+		return false;
+	}
+	if(!ctp_i2c_write_byte(reg)) {
+		ctp_i2c_stop();
+		return false;
+	}
+	if(!ctp_i2c_addr(FT6336U_I2C_ADDR, /* read */ 1)) {
+		ctp_i2c_stop();
+		return false;
+	}
+	for(unsigned int i = 0; i < len; i++)
+		buf[i] = ctp_i2c_read_byte(i < (len - 1));
+	ctp_i2c_stop();
+	return true;
+}
+
+/* Address-poll: send START + address-write, NACK -> not present. */
+static bool ft6336u_present(void)
+{
+	int ack = ctp_i2c_addr(FT6336U_I2C_ADDR, /* read */ 0);
+	ctp_i2c_stop();
+	return ack != 0;
 }
 
 static void ft6336u_probe(void)
@@ -372,7 +479,7 @@ static void ft6336u_probe(void)
 	uint8_t chip_id = 0, vendor_id = 0, fw_ver = 0;
 
 	log_puts("ft6336u: probing 0x"); log_hex8(FT6336U_I2C_ADDR); log_nl();
-	if(!i2c_poll(FT6336U_I2C_ADDR)) {
+	if(!ft6336u_present()) {
 		log_puts("ft6336u: no ACK at slave addr (check wiring / power / reset)");
 		log_nl();
 		return;
@@ -442,6 +549,7 @@ int main(void)
 	lcd_dma_self_test(LCD_WIDTH / 2 - LCD_DMA_TEST_W / 2,
 	                  LCD_HEIGHT / 2 - LCD_DMA_TEST_H / 2);
 
+	ctp_i2c_init();
 	ft6336u_probe();
 	ft6336u_touch_test(/* duration_ms */ 8000);
 

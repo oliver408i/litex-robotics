@@ -8,6 +8,7 @@ from migen.genlib.cdc import PulseSynchronizer
 from litex.gen import LiteXModule
 from litex.soc.interconnect import wishbone
 from litex.soc.interconnect.csr import AutoCSR, CSRStorage, CSRStatus, CSRField
+from litex.soc.interconnect.csr_eventmanager import EventManager, EventSourcePulse
 
 
 # Op kinds (op.kind field).
@@ -69,8 +70,19 @@ class LCDEngine(LiteXModule, AutoCSR):
             CSRField("start", size=1, offset=8, pulse=True, description="Pulse to launch op."),
         ])
         self.status = CSRStatus(fields=[
-            CSRField("busy", size=1, offset=0, description="Engine running."),
+            CSRField("busy",       size=1, offset=0,
+                     description="Engine has unfinished work (running or queued)."),
+            CSRField("can_accept", size=1, offset=1,
+                     description="Queue slot free; safe to write CSRs and fire op.start."),
         ])
+
+        # Op-completion event. One pulse per completed op (after the last
+        # sub-frame of a RECT op, or after a CMD/CMD_DATA op finishes its
+        # only sub-frame). Lets firmware run an IRQ-driven flush_ready
+        # path (e.g. for LVGL) instead of polling.
+        self.ev = EventManager()
+        self.ev.done = EventSourcePulse(description="Op completed.")
+        self.ev.finalize()
 
         self.comb += [
             ctrl_pads.reset_n.eq(self.pads_ctrl.fields.reset_n),
@@ -146,8 +158,62 @@ class LCDEngine(LiteXModule, AutoCSR):
             ctrl_pads.dc.eq(dc_reg),
         ]
 
-        # ---- Latched op state -------------------------------------------
-        kind         = Signal(3)
+        # ---- Op state (active = running, queue = next op waiting) -------
+        # FSM reads only the active (a_*) registers. Live CSR storage is
+        # touched exclusively by the q_load capture below, so software is
+        # free to overwrite CSRs the moment it has fired op.start.
+        a_kind       = Signal(3)
+        a_cmd_byte   = Signal(8)
+        a_dma_src    = Signal(32)
+        a_dma_len    = Signal(24)
+        a_fill_color = Signal(16)
+        a_fill_count = Signal(24)
+        a_rect_x     = Signal(32)
+        a_rect_y     = Signal(32)
+
+        q_kind       = Signal(3)
+        q_cmd_byte   = Signal(8)
+        q_dma_src    = Signal(32)
+        q_dma_len    = Signal(24)
+        q_fill_color = Signal(16)
+        q_fill_count = Signal(24)
+        q_rect_x     = Signal(32)
+        q_rect_y     = Signal(32)
+        q_valid      = Signal()
+
+        q_load    = Signal()   # this cycle: latch CSRs into queue
+        q_consume = Signal()   # this cycle: FSM is promoting queue -> active
+
+        # Capture CSRs into the queue slot when op.start fires and the slot
+        # is (or is becoming) free. If start lands on the same cycle the
+        # FSM consumes the queue, the new op atomically refills the slot.
+        self.comb += q_load.eq(
+            self.op.fields.start
+          & (self.op.fields.kind != KIND_IDLE)
+          & (~q_valid | q_consume)
+        )
+        self.sync += [
+            If(q_load,
+                q_valid.eq(1),
+                q_kind.eq(self.op.fields.kind),
+                q_cmd_byte.eq(self.cmd_byte.storage),
+                q_dma_src.eq(self.dma_src.storage),
+                q_dma_len.eq(self.dma_len.storage),
+                q_fill_color.eq(self.fill_color.storage),
+                q_fill_count.eq(self.fill_count.storage),
+                q_rect_x.eq(self.rect_x.storage),
+                q_rect_y.eq(self.rect_y.storage),
+            ).Elif(q_consume,
+                q_valid.eq(0),
+            )
+        ]
+
+        # Op-completion pulse: 1 sys cycle when the engine finishes the
+        # last sub-frame of an op. Drives the EventManager source.
+        op_done = Signal()
+        self.comb += self.ev.done.trigger.eq(op_done)
+
+        # ---- Per-op transient state -------------------------------------
         frame_phase  = Signal(2)   # 0=CASET, 1=RASET, 2=RAMWR (RECT only)
         cur_cmd      = Signal(8)
         cur_ptype    = Signal(2)
@@ -161,7 +227,7 @@ class LCDEngine(LiteXModule, AutoCSR):
         gap_count        = Signal(3)
 
         is_rect_op = Signal()
-        self.comb += is_rect_op.eq((kind == KIND_FILL_RECT) | (kind == KIND_DMA_RECT))
+        self.comb += is_rect_op.eq((a_kind == KIND_FILL_RECT) | (a_kind == KIND_DMA_RECT))
 
         # ---- In-flight byte counter -------------------------------------
         # rx_pending = bytes pushed into the FIFO that have not yet
@@ -194,9 +260,7 @@ class LCDEngine(LiteXModule, AutoCSR):
         # in RASET phase.
         inline_byte = Signal(8)
         coord_src   = Signal(32)
-        self.comb += coord_src.eq(Mux(frame_phase == 0,
-                                      self.rect_x.storage,
-                                      self.rect_y.storage))
+        self.comb += coord_src.eq(Mux(frame_phase == 0, a_rect_x, a_rect_y))
         self.comb += Case(coord_byte_idx, {
             0: inline_byte.eq(coord_src[ 8:16]),
             1: inline_byte.eq(coord_src[ 0: 8]),
@@ -207,33 +271,51 @@ class LCDEngine(LiteXModule, AutoCSR):
         # ---- FSM --------------------------------------------------------
         self.fsm = fsm = FSM(reset_state="IDLE")
 
-        fsm.act("IDLE",
-            If(self.op.fields.start & (self.op.fields.kind != KIND_IDLE),
-                NextValue(kind,        self.op.fields.kind),
-                NextValue(frame_phase, 0),
-                NextValue(gap_count,   0),
+        # Promote the queued op into the active slot and start it.
+        # Used from both IDLE (first op) and FRAME_END (op done with a
+        # queued follow-up). q_consume is comb-asserted so the queue's
+        # sync block clears q_valid this cycle, freeing the slot for a
+        # concurrent q_load.
+        def promote_queue():
+            return [
+                NextValue(a_kind,       q_kind),
+                NextValue(a_cmd_byte,   q_cmd_byte),
+                NextValue(a_dma_src,    q_dma_src),
+                NextValue(a_dma_len,    q_dma_len),
+                NextValue(a_fill_color, q_fill_color),
+                NextValue(a_fill_count, q_fill_count),
+                NextValue(a_rect_x,     q_rect_x),
+                NextValue(a_rect_y,     q_rect_y),
+                NextValue(frame_phase,  0),
+                NextValue(gap_count,    0),
+                q_consume.eq(1),
                 NextState("FRAME_SETUP"),
-            )
+            ]
+
+        fsm.act("IDLE",
+            If(q_valid, *promote_queue()),
         )
 
         # Configure cur_cmd / payload state for the current sub-frame and
-        # drive CS_N=0, DC=0 for the upcoming cmd byte.
+        # drive CS_N=0, DC=0 for the upcoming cmd byte. All inputs come
+        # from the active (latched) op state; CSR storage is not read
+        # from here on, so software may already be staging the next op.
         fsm.act("FRAME_SETUP",
             NextValue(cs_n_reg, 0),
             NextValue(dc_reg,   0),
-            If(kind == KIND_CMD,
-                NextValue(cur_cmd,   self.cmd_byte.storage),
+            If(a_kind == KIND_CMD,
+                NextValue(cur_cmd,   a_cmd_byte),
                 NextValue(cur_ptype, PT_NONE),
-            ).Elif(kind == KIND_CMD_DATA_DMA,
-                NextValue(cur_cmd,        self.cmd_byte.storage),
+            ).Elif(a_kind == KIND_CMD_DATA_DMA,
+                NextValue(cur_cmd,        a_cmd_byte),
                 NextValue(cur_ptype,      PT_DMA),
-                NextValue(tx_remaining,   self.dma_len.storage),
-                NextValue(addr_byte,      self.dma_src.storage),
-                NextValue(word_byte_idx,  self.dma_src.storage[0:2]),
-            ).Elif(kind == KIND_CMD_DATA_FILL,
-                NextValue(cur_cmd,           self.cmd_byte.storage),
+                NextValue(tx_remaining,   a_dma_len),
+                NextValue(addr_byte,      a_dma_src),
+                NextValue(word_byte_idx,  a_dma_src[0:2]),
+            ).Elif(a_kind == KIND_CMD_DATA_FILL,
+                NextValue(cur_cmd,           a_cmd_byte),
                 NextValue(cur_ptype,         PT_FILL),
-                NextValue(tx_remaining,      self.fill_count.storage << 1),
+                NextValue(tx_remaining,      a_fill_count << 1),
                 NextValue(fill_msb_pending,  1),
             ).Else(  # FILL_RECT / DMA_RECT
                 If(frame_phase == 0,  # CASET
@@ -248,15 +330,15 @@ class LCDEngine(LiteXModule, AutoCSR):
                     NextValue(coord_byte_idx,  0),
                 ).Else(  # RAMWR + payload
                     NextValue(cur_cmd, ST7796_RAMWR),
-                    If(kind == KIND_FILL_RECT,
+                    If(a_kind == KIND_FILL_RECT,
                         NextValue(cur_ptype,         PT_FILL),
-                        NextValue(tx_remaining,      self.fill_count.storage << 1),
+                        NextValue(tx_remaining,      a_fill_count << 1),
                         NextValue(fill_msb_pending,  1),
                     ).Else(  # KIND_DMA_RECT
                         NextValue(cur_ptype,      PT_DMA),
-                        NextValue(tx_remaining,   self.dma_len.storage),
-                        NextValue(addr_byte,      self.dma_src.storage),
-                        NextValue(word_byte_idx,  self.dma_src.storage[0:2]),
+                        NextValue(tx_remaining,   a_dma_len),
+                        NextValue(addr_byte,      a_dma_src),
+                        NextValue(word_byte_idx,  a_dma_src[0:2]),
                     ),
                 ),
             ),
@@ -335,8 +417,8 @@ class LCDEngine(LiteXModule, AutoCSR):
         # color streams out MSB-first across the wire.
         fsm.act("PAYLOAD_FILL",
             tx_byte.eq(Mux(fill_msb_pending,
-                           self.fill_color.storage[8:16],
-                           self.fill_color.storage[0:8])),
+                           a_fill_color[8:16],
+                           a_fill_color[0:8])),
             If(tx_remaining == 0,
                 NextState("DRAIN"),
             ).Elif(tx_fifo.writable,
@@ -367,7 +449,9 @@ class LCDEngine(LiteXModule, AutoCSR):
         )
 
         # Deassert CS for a short gap. For RECT ops, advance to the next
-        # sub-frame; otherwise return to IDLE.
+        # sub-frame; otherwise either promote a queued op straight into
+        # the active slot (no IDLE round-trip) or settle back to IDLE.
+        # Fires op_done exactly once per completed op.
         fsm.act("FRAME_END",
             NextValue(cs_n_reg, 1),
             NextValue(dc_reg,   0),
@@ -378,10 +462,20 @@ class LCDEngine(LiteXModule, AutoCSR):
                     NextValue(frame_phase, frame_phase + 1),
                     NextState("FRAME_SETUP"),
                 ).Else(
-                    NextValue(frame_phase, 0),
-                    NextState("IDLE"),
+                    op_done.eq(1),
+                    If(q_valid,
+                        *promote_queue(),
+                    ).Else(
+                        NextValue(frame_phase, 0),
+                        NextState("IDLE"),
+                    ),
                 ),
             )
         )
 
-        self.comb += self.status.fields.busy.eq(~fsm.ongoing("IDLE"))
+        # busy = engine is running an op OR has one waiting in the queue.
+        # can_accept = queue slot is free (safe to stage and start a new op).
+        self.comb += [
+            self.status.fields.busy.eq(~fsm.ongoing("IDLE") | q_valid),
+            self.status.fields.can_accept.eq(~q_valid),
+        ]
