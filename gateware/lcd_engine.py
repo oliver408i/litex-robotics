@@ -56,13 +56,19 @@ class LCDEngine(LiteXModule, AutoCSR):
             CSRField("reset_n",   size=1, offset=0, reset=1, description="LCD reset#, active low."),
             CSRField("backlight", size=1, offset=1, reset=0, description="Backlight enable."),
         ])
-        self.cmd_byte   = CSRStorage(8,  reset_less=True, description="Command byte (sent with DC=0).")
-        self.dma_src    = CSRStorage(32, description="DMA byte-address source.")
-        self.dma_len    = CSRStorage(24, description="DMA byte length.")
-        self.fill_color = CSRStorage(16, description="Fill color, MSB first on wire.")
-        self.fill_count = CSRStorage(24, description="Fill pixel count (2 bytes each).")
-        self.rect_x     = CSRStorage(32, description="Rect cols: (x1<<16) | x0.")
-        self.rect_y     = CSRStorage(32, description="Rect rows: (y1<<16) | y0.")
+        self.cmd_byte      = CSRStorage(8,  reset_less=True, description="Command byte (sent with DC=0).")
+        self.dma_src       = CSRStorage(32, description="DMA byte-address source.")
+        self.dma_row_bytes = CSRStorage(24, description=
+                             "Bytes per row of useful payload data.")
+        self.dma_row_count = CSRStorage(16, reset=1, description=
+                             "Number of rows. 1 = contiguous run (back-compat with old dma_len).")
+        self.dma_stride    = CSRStorage(24, description=
+                             "Bytes from start-of-row to start-of-next-row in source memory. "
+                             "Ignored when dma_row_count == 1.")
+        self.fill_color    = CSRStorage(16, description="Fill color, MSB first on wire.")
+        self.fill_count    = CSRStorage(24, description="Fill pixel count (2 bytes each).")
+        self.rect_x        = CSRStorage(32, description="Rect cols: (x1<<16) | x0.")
+        self.rect_y        = CSRStorage(32, description="Rect rows: (y1<<16) | y0.")
         self.op = CSRStorage(fields=[
             CSRField("kind",  size=3, offset=0, description=
                      "0=idle, 1=CMD, 2=CMD_DATA_DMA, 3=CMD_DATA_FILL, "
@@ -162,24 +168,28 @@ class LCDEngine(LiteXModule, AutoCSR):
         # FSM reads only the active (a_*) registers. Live CSR storage is
         # touched exclusively by the q_load capture below, so software is
         # free to overwrite CSRs the moment it has fired op.start.
-        a_kind       = Signal(3)
-        a_cmd_byte   = Signal(8)
-        a_dma_src    = Signal(32)
-        a_dma_len    = Signal(24)
-        a_fill_color = Signal(16)
-        a_fill_count = Signal(24)
-        a_rect_x     = Signal(32)
-        a_rect_y     = Signal(32)
+        a_kind          = Signal(3)
+        a_cmd_byte      = Signal(8)
+        a_dma_src       = Signal(32)
+        a_dma_row_bytes = Signal(24)
+        a_dma_row_count = Signal(16)
+        a_dma_stride    = Signal(24)
+        a_fill_color    = Signal(16)
+        a_fill_count    = Signal(24)
+        a_rect_x        = Signal(32)
+        a_rect_y        = Signal(32)
 
-        q_kind       = Signal(3)
-        q_cmd_byte   = Signal(8)
-        q_dma_src    = Signal(32)
-        q_dma_len    = Signal(24)
-        q_fill_color = Signal(16)
-        q_fill_count = Signal(24)
-        q_rect_x     = Signal(32)
-        q_rect_y     = Signal(32)
-        q_valid      = Signal()
+        q_kind          = Signal(3)
+        q_cmd_byte      = Signal(8)
+        q_dma_src       = Signal(32)
+        q_dma_row_bytes = Signal(24)
+        q_dma_row_count = Signal(16)
+        q_dma_stride    = Signal(24)
+        q_fill_color    = Signal(16)
+        q_fill_count    = Signal(24)
+        q_rect_x        = Signal(32)
+        q_rect_y        = Signal(32)
+        q_valid         = Signal()
 
         q_load    = Signal()   # this cycle: latch CSRs into queue
         q_consume = Signal()   # this cycle: FSM is promoting queue -> active
@@ -198,7 +208,9 @@ class LCDEngine(LiteXModule, AutoCSR):
                 q_kind.eq(self.op.fields.kind),
                 q_cmd_byte.eq(self.cmd_byte.storage),
                 q_dma_src.eq(self.dma_src.storage),
-                q_dma_len.eq(self.dma_len.storage),
+                q_dma_row_bytes.eq(self.dma_row_bytes.storage),
+                q_dma_row_count.eq(self.dma_row_count.storage),
+                q_dma_stride.eq(self.dma_stride.storage),
                 q_fill_color.eq(self.fill_color.storage),
                 q_fill_count.eq(self.fill_count.storage),
                 q_rect_x.eq(self.rect_x.storage),
@@ -214,10 +226,15 @@ class LCDEngine(LiteXModule, AutoCSR):
         self.comb += self.ev.done.trigger.eq(op_done)
 
         # ---- Per-op transient state -------------------------------------
-        frame_phase  = Signal(2)   # 0=CASET, 1=RASET, 2=RAMWR (RECT only)
-        cur_cmd      = Signal(8)
-        cur_ptype    = Signal(2)
-        tx_remaining = Signal(25)  # payload bytes still to push into the FIFO
+        frame_phase       = Signal(2)   # 0=CASET, 1=RASET, 2=RAMWR (RECT only)
+        cur_cmd           = Signal(8)
+        cur_ptype         = Signal(2)
+        # Two-axis "bytes remaining" so the same FSM serves FILL/INLINE
+        # (single contiguous run) and strided DMA (row_count rows of
+        # row_bytes, with stride bytes between row starts in source mem).
+        # Done = (tx_row_remaining == 0) and (tx_rows_remaining == 0).
+        tx_row_remaining  = Signal(25)
+        tx_rows_remaining = Signal(16)
 
         addr_byte        = Signal(32)
         cached_word      = Signal(32)
@@ -278,16 +295,18 @@ class LCDEngine(LiteXModule, AutoCSR):
         # concurrent q_load.
         def promote_queue():
             return [
-                NextValue(a_kind,       q_kind),
-                NextValue(a_cmd_byte,   q_cmd_byte),
-                NextValue(a_dma_src,    q_dma_src),
-                NextValue(a_dma_len,    q_dma_len),
-                NextValue(a_fill_color, q_fill_color),
-                NextValue(a_fill_count, q_fill_count),
-                NextValue(a_rect_x,     q_rect_x),
-                NextValue(a_rect_y,     q_rect_y),
-                NextValue(frame_phase,  0),
-                NextValue(gap_count,    0),
+                NextValue(a_kind,          q_kind),
+                NextValue(a_cmd_byte,      q_cmd_byte),
+                NextValue(a_dma_src,       q_dma_src),
+                NextValue(a_dma_row_bytes, q_dma_row_bytes),
+                NextValue(a_dma_row_count, q_dma_row_count),
+                NextValue(a_dma_stride,    q_dma_stride),
+                NextValue(a_fill_color,    q_fill_color),
+                NextValue(a_fill_count,    q_fill_count),
+                NextValue(a_rect_x,        q_rect_x),
+                NextValue(a_rect_y,        q_rect_y),
+                NextValue(frame_phase,     0),
+                NextValue(gap_count,       0),
                 q_consume.eq(1),
                 NextState("FRAME_SETUP"),
             ]
@@ -300,6 +319,11 @@ class LCDEngine(LiteXModule, AutoCSR):
         # drive CS_N=0, DC=0 for the upcoming cmd byte. All inputs come
         # from the active (latched) op state; CSR storage is not read
         # from here on, so software may already be staging the next op.
+        # For DMA: tx_row_remaining starts at row_bytes (one row); the
+        # remaining rows (row_count - 1) live in tx_rows_remaining and get
+        # consumed each time we cross a row boundary in PAYLOAD_DMA.
+        # For FILL/INLINE: tx_rows_remaining is 0; tx_row_remaining is the
+        # single contiguous byte count.
         fsm.act("FRAME_SETUP",
             NextValue(cs_n_reg, 0),
             NextValue(dc_reg,   0),
@@ -307,38 +331,44 @@ class LCDEngine(LiteXModule, AutoCSR):
                 NextValue(cur_cmd,   a_cmd_byte),
                 NextValue(cur_ptype, PT_NONE),
             ).Elif(a_kind == KIND_CMD_DATA_DMA,
-                NextValue(cur_cmd,        a_cmd_byte),
-                NextValue(cur_ptype,      PT_DMA),
-                NextValue(tx_remaining,   a_dma_len),
-                NextValue(addr_byte,      a_dma_src),
-                NextValue(word_byte_idx,  a_dma_src[0:2]),
+                NextValue(cur_cmd,            a_cmd_byte),
+                NextValue(cur_ptype,          PT_DMA),
+                NextValue(tx_row_remaining,   a_dma_row_bytes),
+                NextValue(tx_rows_remaining,  a_dma_row_count - 1),
+                NextValue(addr_byte,          a_dma_src),
+                NextValue(word_byte_idx,      a_dma_src[0:2]),
             ).Elif(a_kind == KIND_CMD_DATA_FILL,
                 NextValue(cur_cmd,           a_cmd_byte),
                 NextValue(cur_ptype,         PT_FILL),
-                NextValue(tx_remaining,      a_fill_count << 1),
+                NextValue(tx_row_remaining,  a_fill_count << 1),
+                NextValue(tx_rows_remaining, 0),
                 NextValue(fill_msb_pending,  1),
             ).Else(  # FILL_RECT / DMA_RECT
                 If(frame_phase == 0,  # CASET
-                    NextValue(cur_cmd,         ST7796_CASET),
-                    NextValue(cur_ptype,       PT_INLINE),
-                    NextValue(tx_remaining,    4),
-                    NextValue(coord_byte_idx,  0),
+                    NextValue(cur_cmd,            ST7796_CASET),
+                    NextValue(cur_ptype,          PT_INLINE),
+                    NextValue(tx_row_remaining,   4),
+                    NextValue(tx_rows_remaining,  0),
+                    NextValue(coord_byte_idx,     0),
                 ).Elif(frame_phase == 1,  # RASET
-                    NextValue(cur_cmd,         ST7796_RASET),
-                    NextValue(cur_ptype,       PT_INLINE),
-                    NextValue(tx_remaining,    4),
-                    NextValue(coord_byte_idx,  0),
+                    NextValue(cur_cmd,            ST7796_RASET),
+                    NextValue(cur_ptype,          PT_INLINE),
+                    NextValue(tx_row_remaining,   4),
+                    NextValue(tx_rows_remaining,  0),
+                    NextValue(coord_byte_idx,     0),
                 ).Else(  # RAMWR + payload
                     NextValue(cur_cmd, ST7796_RAMWR),
                     If(a_kind == KIND_FILL_RECT,
-                        NextValue(cur_ptype,         PT_FILL),
-                        NextValue(tx_remaining,      a_fill_count << 1),
-                        NextValue(fill_msb_pending,  1),
+                        NextValue(cur_ptype,           PT_FILL),
+                        NextValue(tx_row_remaining,    a_fill_count << 1),
+                        NextValue(tx_rows_remaining,   0),
+                        NextValue(fill_msb_pending,    1),
                     ).Else(  # KIND_DMA_RECT
-                        NextValue(cur_ptype,      PT_DMA),
-                        NextValue(tx_remaining,   a_dma_len),
-                        NextValue(addr_byte,      a_dma_src),
-                        NextValue(word_byte_idx,  a_dma_src[0:2]),
+                        NextValue(cur_ptype,          PT_DMA),
+                        NextValue(tx_row_remaining,   a_dma_row_bytes),
+                        NextValue(tx_rows_remaining,  a_dma_row_count - 1),
+                        NextValue(addr_byte,          a_dma_src),
+                        NextValue(word_byte_idx,      a_dma_src[0:2]),
                     ),
                 ),
             ),
@@ -388,27 +418,46 @@ class LCDEngine(LiteXModule, AutoCSR):
         )
 
         # Pipelined DMA push: drives one byte per cycle when the FIFO has
-        # room. On a word boundary with bytes still to go, jump out to
-        # DMA_FETCH (the FIFO covers the fetch latency). When the last
-        # byte has been pushed, drop into DRAIN.
+        # room. On a word boundary mid-row, jump out to DMA_FETCH (the
+        # FIFO covers the fetch latency). On a row boundary with more
+        # rows queued, advance addr_byte to the next row's start using
+        # the stride and refresh the word cache.
         fsm.act("PAYLOAD_DMA",
             tx_byte.eq(cur_word_byte),
-            If(tx_remaining == 0,
+            If(tx_row_remaining == 0,
+                # All rows exhausted (drained the last byte of the last
+                # row on the previous cycle).
                 NextState("DRAIN"),
             ).Elif(tx_fifo.writable,
                 tx_we.eq(1),
-                NextValue(tx_remaining, tx_remaining - 1),
-                NextValue(addr_byte,    addr_byte + 1),
-                If(word_byte_idx == 3,
-                    NextValue(word_byte_idx, 0),
-                    # Only fetch a new word if there is a byte beyond the
-                    # one we just pushed (tx_remaining == 1 means this
-                    # push was the last).
-                    If(tx_remaining != 1,
+                NextValue(tx_row_remaining, tx_row_remaining - 1),
+                If(tx_row_remaining == 1,
+                    # This push completes the current row.
+                    If(tx_rows_remaining != 0,
+                        # More rows to come: jump addr to next row start.
+                        # addr_byte currently points at the last byte of
+                        # the current row; advancing it by 1 puts us at
+                        # row_start + row_bytes, and we want to land at
+                        # row_start + stride - so add (stride - row_bytes + 1).
+                        NextValue(addr_byte,
+                                  addr_byte + a_dma_stride - a_dma_row_bytes + 1),
+                        NextValue(word_byte_idx,
+                                  (addr_byte + a_dma_stride - a_dma_row_bytes + 1)[0:2]),
+                        NextValue(tx_row_remaining,  a_dma_row_bytes),
+                        NextValue(tx_rows_remaining, tx_rows_remaining - 1),
                         NextState("DMA_FETCH"),
                     ),
+                    # else: last byte of last row, no addr advance needed;
+                    # next cycle hits tx_row_remaining == 0 -> DRAIN.
                 ).Else(
-                    NextValue(word_byte_idx, word_byte_idx + 1),
+                    # Mid-row push: normal byte-walk + word-boundary fetch.
+                    NextValue(addr_byte, addr_byte + 1),
+                    If(word_byte_idx == 3,
+                        NextValue(word_byte_idx, 0),
+                        NextState("DMA_FETCH"),
+                    ).Else(
+                        NextValue(word_byte_idx, word_byte_idx + 1),
+                    ),
                 ),
             )
         )
@@ -419,11 +468,11 @@ class LCDEngine(LiteXModule, AutoCSR):
             tx_byte.eq(Mux(fill_msb_pending,
                            a_fill_color[8:16],
                            a_fill_color[0:8])),
-            If(tx_remaining == 0,
+            If(tx_row_remaining == 0,
                 NextState("DRAIN"),
             ).Elif(tx_fifo.writable,
                 tx_we.eq(1),
-                NextValue(tx_remaining,     tx_remaining - 1),
+                NextValue(tx_row_remaining, tx_row_remaining - 1),
                 NextValue(fill_msb_pending, ~fill_msb_pending),
             )
         )
@@ -431,12 +480,12 @@ class LCDEngine(LiteXModule, AutoCSR):
         # Pipelined inline (rect coord) push.
         fsm.act("PAYLOAD_INLINE",
             tx_byte.eq(inline_byte),
-            If(tx_remaining == 0,
+            If(tx_row_remaining == 0,
                 NextState("DRAIN"),
             ).Elif(tx_fifo.writable,
                 tx_we.eq(1),
-                NextValue(tx_remaining,    tx_remaining - 1),
-                NextValue(coord_byte_idx,  coord_byte_idx + 1),
+                NextValue(tx_row_remaining, tx_row_remaining - 1),
+                NextValue(coord_byte_idx,   coord_byte_idx + 1),
             )
         )
 

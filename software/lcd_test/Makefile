@@ -22,7 +22,12 @@ BUILDINC_DIRECTORY := $(BUILD_DIR)/software/include
 
 include $(SOC_DIRECTORY)/software/common.mak
 
-OBJECTS = main.o crt0.o
+# Shared firmware modules: LCD bring-up, HW I2C / FT6336U, UART log.
+COMMON_DIR := ../common
+CFLAGS    += -I$(COMMON_DIR)
+COMMON_OBJS = lcd.o touch.o log.o
+
+OBJECTS = main.o crt0.o $(COMMON_OBJS)
 
 all: lcd_test.bin
 
@@ -49,7 +54,7 @@ endif
 
 -include $(OBJECTS:.o=.d)
 
-VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY)
+VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY):$(COMMON_DIR)
 
 %.o: %.c
 	$(compile)

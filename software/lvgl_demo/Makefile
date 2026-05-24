@@ -37,13 +37,18 @@ LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' \
 LVGL_OBJS := $(patsubst $(LVGL_DIR)/src/%.c,$(LVGL_BUILD)/%.o,$(LVGL_SRCS))
 
 CFLAGS += -I$(LVGL_DIR) -I$(LVGL_DIR)/src -I. -DLV_CONF_INCLUDE_SIMPLE
+
+# Shared firmware modules: LCD bring-up, HW I2C / FT6336U, UART log.
+COMMON_DIR := ../common
+CFLAGS    += -I$(COMMON_DIR)
+COMMON_OBJS = lcd.o touch.o log.o
 # LVGL doesn't satisfy LiteX's stricter warning set; relax those without
 # silencing real bugs.
 CFLAGS += -Wno-strict-prototypes -Wno-old-style-definition -Wno-missing-prototypes
 # Help the linker drop the large slice of LVGL we don't reference.
 CFLAGS += -ffunction-sections -fdata-sections
 
-OBJECTS = main.o crt0.o
+OBJECTS = main.o crt0.o $(COMMON_OBJS)
 
 all: lvgl_demo.bin
 
@@ -71,7 +76,7 @@ endif
 -include $(OBJECTS:.o=.d)
 -include $(LVGL_OBJS:.o=.d)
 
-VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY)
+VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY):$(COMMON_DIR)
 
 %.o: %.c
 	$(compile)
