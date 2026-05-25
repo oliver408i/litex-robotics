@@ -1,10 +1,7 @@
 # Common firmware modules
 
 Shared C modules under `software/common/` that any firmware target on
-this board can `#include` and link against. Factored out of
-`software/lcd_test` and `software/lvgl_demo` so the next firmware
-target doesn't fork the same ~300 lines of LCD bring-up and HW I2C
-driver again.
+this board can `#include` and link against.
 
 ## What's there
 

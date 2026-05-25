@@ -2,6 +2,9 @@
 __pycache__
 build
 .codex
+.claude
+.agents
+.vscode
 node_modules
 IDE
 litex-setup
