@@ -2,7 +2,7 @@
 """IcePi Zero SoC for the SNN tracking-estimator project."""
 from icepi_zero_base import BaseSoC, make_parser, resolve_spi_flash, run_build
 
-from hw.snn_estimator import SNNTrackingEstimator
+from gateware.snn_estimator import SNNTrackingEstimator
 
 
 class SNNSoC(BaseSoC):
