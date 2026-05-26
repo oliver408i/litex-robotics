@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# vvp shim that lets cocotb's libcocotbvpi_icarus dlopen system libpython3.12.
+#
+# The stock oss-cad-suite vvp wrapper invokes its bundled ld-linux with
+# --library-path pointing only at its own (older) libs. When vvp dlopens
+# cocotb's icarus VPI module, that .so depends on /usr/lib64/libpython3.12,
+# which requires GLIBC_2.38 — a symbol the bundled libm.so.6 doesn't export.
+#
+# Mixing the bundled loader with system libc clashes on GLIBC_PRIVATE
+# symbols, so we instead use the system loader entirely. System lib paths
+# come first; bundled libs are a fallback for anything Fedora doesn't have
+# (e.g. libreadline.so.8 if vvp was built against it).
+set -euo pipefail
+
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SHIM_DIR/../../.." && pwd)"
+OCS_TOP="$REPO_ROOT/oss-cad-suite/oss-cad-suite"
+
+if [[ ! -x "$OCS_TOP/libexec/vvp" ]]; then
+    echo "vvp-shim: cannot find $OCS_TOP/libexec/vvp" >&2
+    exit 127
+fi
+
+exec /lib64/ld-linux-x86-64.so.2 \
+    --inhibit-cache \
+    --library-path "/usr/lib64:/lib64:$OCS_TOP/lib" \
+    "$OCS_TOP/libexec/vvp" "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Forward to oss-cad-suite's iverilog. Lives alongside the patched vvp so
+# cocotb finds both via ICARUS_BIN_DIR. iverilog itself doesn't dlopen
+# libpython so it doesn't need the glibc-compat treatment vvp needs.
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SHIM_DIR/../../.." && pwd)"
+exec "$REPO_ROOT/oss-cad-suite/oss-cad-suite/bin/iverilog" "$@"

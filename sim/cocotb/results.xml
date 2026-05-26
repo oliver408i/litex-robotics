@@ -1,0 +1,7 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1779773495" />
+    <testcase name="tiny_network_matches_simulator" classname="test_snn_mlp_core" file="/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/cocotb/test_snn_mlp_core.py" lineno="158" time="0.00046515464782714844" sim_time_ns="0.0" ratio_time="0.0" />
+    <testcase name="mnist_matches_simulator" classname="test_snn_mlp_core" file="/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/cocotb/test_snn_mlp_core.py" lineno="242" time="78.07869243621826" sim_time_ns="12750025.0" ratio_time="163297.11221041993" />
+  </testsuite>
+</testsuites>

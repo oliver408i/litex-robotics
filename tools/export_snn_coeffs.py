@@ -13,7 +13,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sim.generate_tracking_data import generate_dataset
-from sim.lif_reservoir_1d import ReservoirConfig, create_random_reservoir, train_readout
+from sim.lif_reservoir_1d import (
+    ReservoirConfig,
+    ReservoirModel,
+    create_random_reservoir,
+    train_readout,
+)
 
 
 def _to_fixed(value: float, frac_bits: int) -> int:
@@ -26,6 +31,33 @@ def build_model(train_count: int, length: int, seed: int, dataset_kwargs: dict[s
     train_set = generate_dataset(train_count, length=length, seed=seed, **dataset_kwargs)
     train_readout(model, train_set)
     return model
+
+
+def load_from_pt(pt_path: Path) -> ReservoirModel:
+    """Build a ReservoirModel from a snntorch-trained checkpoint."""
+    import torch  # lazy: only required for --from-pt
+    state = torch.load(pt_path, map_location="cpu", weights_only=False)
+    if state.get("format") != "snn-tracker-v1":
+        raise ValueError(f"unrecognized checkpoint format: {state.get('format')!r}")
+    cfg = ReservoirConfig(
+        input_size=int(state["n_in"]),
+        neuron_count=int(state["n_neurons"]),
+        beta=float(state["beta"]),
+        threshold=float(state["threshold"]),
+        membrane_clip=float(state["mem_clip"]),
+        weight_clip=float(state["weight_clip"]),
+        feature_clip=float(state["feature_clip"]),
+        readout_acc_clip=float(state["readout_acc_clip"]),
+        measurement_scale=float(state["meas_scale"]),
+        delta_scale=float(state["delta_scale"]),
+        frac_bits=int(state["frac_bits"]),
+    )
+    return ReservoirModel(
+        config=cfg,
+        input_weights=state["W_in"].tolist(),
+        recurrent_weights=state["W_rec"].tolist(),
+        readout_weights=state["W_read"].tolist(),
+    )
 
 
 def quantized_tables(model) -> dict[str, object]:
@@ -94,24 +126,32 @@ def main() -> int:
         action="store_true",
         help="Alias for --format tables.",
     )
+    parser.add_argument(
+        "--from-pt",
+        type=Path,
+        default=None,
+        help="Load weights from a tools/train_snn_torch.py checkpoint instead of training a random reservoir.",
+    )
     args = parser.parse_args()
 
-    dataset_kwargs = {
-        "dt": args.dt,
-        "mode": args.mode,
-        "accel_limit": args.accel_limit,
-        "segment_min": args.segment_min,
-        "segment_max": args.segment_max,
-        "measurement_sigma": args.noise,
-        "bias_walk_sigma": args.bias_walk_sigma,
-        "initial_position_span": args.initial_position_span,
-        "initial_velocity_span": args.initial_velocity_span,
-        "signal_offset": args.offset,
-        "signal_amplitude": args.amplitude,
-        "signal_period": args.period,
-    }
-
-    model = build_model(args.train_count, args.length, args.seed, dataset_kwargs)
+    if args.from_pt is not None:
+        model = load_from_pt(args.from_pt)
+    else:
+        dataset_kwargs = {
+            "dt": args.dt,
+            "mode": args.mode,
+            "accel_limit": args.accel_limit,
+            "segment_min": args.segment_min,
+            "segment_max": args.segment_max,
+            "measurement_sigma": args.noise,
+            "bias_walk_sigma": args.bias_walk_sigma,
+            "initial_position_span": args.initial_position_span,
+            "initial_velocity_span": args.initial_velocity_span,
+            "signal_offset": args.offset,
+            "signal_amplitude": args.amplitude,
+            "signal_period": args.period,
+        }
+        model = build_model(args.train_count, args.length, args.seed, dataset_kwargs)
     generated = quantized_tables(model)
     image = linear_model_image(generated)
     output_format = "tables" if args.print_tables else args.format
