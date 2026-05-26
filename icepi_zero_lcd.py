@@ -44,11 +44,12 @@ class LCDSoC(BaseSoC):
         platform.add_extension(_lcd_io)
 
         super().__init__(
-            sys_clk_freq      = sys_clk_freq,
-            with_spi_flash    = with_spi_flash,
-            flash_boot_offset = flash_boot_offset,
-            spi_clk_freq      = lcd_spi_clk_freq,
-            platform          = platform,
+            sys_clk_freq             = sys_clk_freq,
+            with_spi_flash           = with_spi_flash,
+            flash_boot_offset        = flash_boot_offset,
+            spi_clk_freq             = lcd_spi_clk_freq,
+            platform                 = platform,
+            force_lcd_backlight_off  = False,  # this project owns P1 via lcd_ctrl
             **kwargs,
         )
 

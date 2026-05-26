@@ -73,9 +73,21 @@ class BaseSoC(SoCCore):
                  with_spi_flash=False, flash_boot_offset=None,
                  spi_clk_freq=None,
                  platform=None,
+                 force_lcd_backlight_off=True,
                  **kwargs):
         if platform is None:
             platform = icepi_zero.Platform()
+
+        # The on-board LCD backlight is on P1. Without anyone driving it, the
+        # pin floats high and the panel goes full white — annoying on every
+        # non-LCD project. Drive it low by default; the LCD project opts out
+        # (`force_lcd_backlight_off=False`) because it requests P1 itself as
+        # part of lcd_ctrl.
+        if force_lcd_backlight_off:
+            from litex.build.generic_platform import IOStandard, Pins
+            platform.add_extension([
+                ("lcd_backlight", 0, Pins("P1"), IOStandard("LVCMOS33")),
+            ])
 
         ext_reset_n = platform.request("ext_reset")
         self.crg = _CRG(platform, sys_clk_freq,
@@ -92,6 +104,10 @@ class BaseSoC(SoCCore):
             ident="LiteX SoC on IcePi Zero",
             **kwargs
         )
+
+        # Tie backlight low if this project hasn't claimed P1 for itself.
+        if force_lcd_backlight_off:
+            self.comb += platform.request("lcd_backlight").eq(0)
 
         # SDR SDRAM --------------------------------------------------------------------------------
         sdram_pads = platform.request("sdram")
