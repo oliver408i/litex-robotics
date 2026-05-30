@@ -10,6 +10,15 @@ from icepi_zero_base import BaseSoC, make_parser, resolve_spi_flash, run_build
 
 from gateware.snn_mlp import SNNMLP
 
+# MAC parallelism for the SNN core. N_MAC=2 is the sweet spot on this board:
+# two Q4.12 weights pack exactly into one 32-bit Wishbone word, so it halves
+# both core cycles AND SDRAM weight traffic with zero plumbing changes. Going
+# higher does NOT help here — the 16-bit SDR SDRAM (~100 MB/s) is the wall, and
+# at N_MAC=2 the core is already faster than the DRAM can feed it. See
+# docs/snn_mnist.md for the bandwidth analysis. Must match the --n-mac passed
+# to tools/pack_snn_mnist_weights.py.
+N_MAC = 2
+
 
 class SNNMnistSoC(BaseSoC):
     def __init__(self, sys_clk_freq=50e6, with_spi_flash=False, flash_boot_offset=None, **kwargs):
@@ -20,7 +29,7 @@ class SNNMnistSoC(BaseSoC):
             **kwargs,
         )
 
-        self.snn = SNNMLP(self.platform)
+        self.snn = SNNMLP(self.platform, n_mac=N_MAC)
         self.add_csr("snn")
         self.bus.add_master(name="snn_wb", master=self.snn.wb)
 

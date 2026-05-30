@@ -1,0 +1,6 @@
+lvgl_build/
+*.o
+*.d
+*.elf
+*.elf.map
+*.bin
