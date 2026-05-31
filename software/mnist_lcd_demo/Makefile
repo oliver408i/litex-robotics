@@ -48,6 +48,13 @@ CFLAGS += -Wno-strict-prototypes -Wno-old-style-definition -Wno-missing-prototyp
 # Help the linker drop the large slice of LVGL we don't reference.
 CFLAGS += -ffunction-sections -fdata-sections
 
+# Debug HUD: the on-screen FPS box (bottom-right) + memory box (bottom-left).
+# Off by default so shipping builds are clean. Re-enable for bring-up with:
+#   make DEBUG_HUD=1
+ifdef DEBUG_HUD
+CFLAGS += -DMNIST_DEBUG_HUD
+endif
+
 OBJECTS = main.o crt0.o $(COMMON_OBJS)
 
 all: mnist_lcd_demo.bin

@@ -118,6 +118,14 @@ def main():
                                help="LCD engine SPI core clock (Hz). SCK = this / 2. Default 100 MHz -> 50 MHz SCK.")
     args = parser.parse_args()
 
+    # Boot the demo straight from SPI flash by default so the board runs
+    # standalone after power-on (no host attached). The BIOS still falls back
+    # to serial boot if no valid image is present, so `litex_term --kernel`
+    # dev flow keeps working. Flash the firmware to the same offset with
+    # --flash-firmware. Pass --flash-boot-offset to override the default.
+    if args.flash_boot_offset is None:
+        args.flash_boot_offset = args.firmware_offset
+
     soc = MnistLCDSoC(
         sys_clk_freq      = args.sys_clk_freq,
         with_spi_flash    = resolve_spi_flash(args),
