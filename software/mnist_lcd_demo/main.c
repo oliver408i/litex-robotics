@@ -535,8 +535,15 @@ int main(void)
 	log_puts("mnist_lcd_demo starting"); log_nl();
 	log_puts("sys clk : "); log_uint(CONFIG_CLOCK_FREQUENCY); log_puts(" Hz"); log_nl();
 
+#ifdef LCD_BOOT_SPLASH
+	/* Panel was already brought up and the splash painted by the LCD
+	 * engine's HW boot sequencer (reading from flash before the CPU ran).
+	 * Take the engine back instead of re-running lcd_init(). */
+	lcd_boot_takeover();
+#else
 	lcd_pads_apply();
 	lcd_init();
+#endif
 	busy_wait(200);                  /* FT6336U wants ~200 ms after reset */
 	touch_init();
 	ft6336u_probe();

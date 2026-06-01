@@ -50,7 +50,9 @@ class LCDEngine(LiteXModule, AutoCSR):
       rect_y = (y1 << 16) | y0
     """
 
-    def __init__(self, pads, ctrl_pads, platform, sclk_div=1):
+    def __init__(self, pads, ctrl_pads, platform, sclk_div=1,
+                 with_boot_splash=False, sys_clk_freq=50e6,
+                 splash_init_addr=0, splash_image_addr=0):
         # Slow / non-per-transfer pads, still firmware-driven.
         self.pads_ctrl = CSRStorage(fields=[
             CSRField("reset_n",   size=1, offset=0, reset=1, description="LCD reset#, active low."),
@@ -80,6 +82,10 @@ class LCDEngine(LiteXModule, AutoCSR):
                      description="Engine has unfinished work (running or queued)."),
             CSRField("can_accept", size=1, offset=1,
                      description="Queue slot free; safe to write CSRs and fire op.start."),
+            CSRField("boot_done",  size=1, offset=2,
+                     description="HW boot-splash sequencer has finished (panel up, "
+                                 "splash painted). Always 0 when the boot-splash "
+                                 "feature is not built in."),
         ])
 
         # Op-completion event. One pulse per completed op (after the last
@@ -90,9 +96,37 @@ class LCDEngine(LiteXModule, AutoCSR):
         self.ev.done = EventSourcePulse(description="Op completed.")
         self.ev.finalize()
 
+        # ---- HW boot-splash ownership ----------------------------------
+        # When built in (with_boot_splash), the sequencer at the end of this
+        # module brings the panel up and paints a splash straight from SPI
+        # flash at reset, before the CPU runs. While it owns the engine
+        # (boot_active) it drives reset_n / backlight and the op interface;
+        # firmware hands control back by writing boot_ctl.release.
+        #
+        # With the feature disabled boot_active is a constant 0, so every mux
+        # below collapses to the plain CSR path -- the engine is byte-for-byte
+        # the original.
+        boot_active   = Signal()
+        seq_reset_n   = Signal(reset=1)
+        seq_backlight = Signal(reset=0)
+        boot_done     = Signal()
+        engine_busy   = Signal()
+        if with_boot_splash:
+            self.boot_ctl = CSRStorage(fields=[
+                CSRField("release", size=1, offset=0, description=
+                         "Firmware writes 1 to hand the engine back from the boot "
+                         "sequencer (panel stays lit; CPU ops take over)."),
+            ])
+            self.comb += boot_active.eq(~self.boot_ctl.fields.release)
+        else:
+            self.comb += boot_active.eq(0)
+        self.comb += self.status.fields.boot_done.eq(boot_done)
+
         self.comb += [
-            ctrl_pads.reset_n.eq(self.pads_ctrl.fields.reset_n),
-            ctrl_pads.backlight.eq(self.pads_ctrl.fields.backlight),
+            ctrl_pads.reset_n.eq(Mux(boot_active, seq_reset_n,
+                                     self.pads_ctrl.fields.reset_n)),
+            ctrl_pads.backlight.eq(Mux(boot_active, seq_backlight,
+                                       self.pads_ctrl.fields.backlight)),
         ]
 
         verilog_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "verilog"))
@@ -191,30 +225,68 @@ class LCDEngine(LiteXModule, AutoCSR):
         q_rect_y        = Signal(32)
         q_valid         = Signal()
 
-        q_load    = Signal()   # this cycle: latch CSRs into queue
+        q_load    = Signal()   # this cycle: latch op inputs into queue
         q_consume = Signal()   # this cycle: FSM is promoting queue -> active
 
-        # Capture CSRs into the queue slot when op.start fires and the slot
-        # is (or is becoming) free. If start lands on the same cycle the
-        # FSM consumes the queue, the new op atomically refills the slot.
+        # Sequencer-driven op inputs (only meaningful while boot_active; left
+        # at 0 otherwise). The boot sequencer at the end of this module drives
+        # these to replay panel init + paint the splash.
+        seq_start         = Signal()
+        seq_kind          = Signal(3)
+        seq_cmd_byte      = Signal(8)
+        seq_dma_src       = Signal(32)
+        seq_dma_row_bytes = Signal(24)
+        seq_dma_row_count = Signal(16)
+        seq_dma_stride    = Signal(24)
+        seq_rect_x        = Signal(32)
+        seq_rect_y        = Signal(32)
+
+        # Effective op inputs: the boot sequencer while it owns the engine,
+        # otherwise the CSRs (the normal CPU path). boot_active is a constant
+        # 0 when the splash is not built in, so these collapse to the CSRs.
+        eff_start         = Signal()
+        eff_kind          = Signal(3)
+        eff_cmd_byte      = Signal(8)
+        eff_dma_src       = Signal(32)
+        eff_dma_row_bytes = Signal(24)
+        eff_dma_row_count = Signal(16)
+        eff_dma_stride    = Signal(24)
+        eff_rect_x        = Signal(32)
+        eff_rect_y        = Signal(32)
+        self.comb += [
+            eff_start.eq        (Mux(boot_active, seq_start,         self.op.fields.start)),
+            eff_kind.eq         (Mux(boot_active, seq_kind,          self.op.fields.kind)),
+            eff_cmd_byte.eq     (Mux(boot_active, seq_cmd_byte,      self.cmd_byte.storage)),
+            eff_dma_src.eq      (Mux(boot_active, seq_dma_src,       self.dma_src.storage)),
+            eff_dma_row_bytes.eq(Mux(boot_active, seq_dma_row_bytes, self.dma_row_bytes.storage)),
+            eff_dma_row_count.eq(Mux(boot_active, seq_dma_row_count, self.dma_row_count.storage)),
+            eff_dma_stride.eq   (Mux(boot_active, seq_dma_stride,    self.dma_stride.storage)),
+            eff_rect_x.eq       (Mux(boot_active, seq_rect_x,        self.rect_x.storage)),
+            eff_rect_y.eq       (Mux(boot_active, seq_rect_y,        self.rect_y.storage)),
+        ]
+
+        # Capture op inputs into the queue slot when start fires and the slot
+        # is (or is becoming) free. If start lands on the same cycle the FSM
+        # consumes the queue, the new op atomically refills the slot. The boot
+        # sequencer never issues FILL ops, so fill_* always come from the CSRs.
         self.comb += q_load.eq(
-            self.op.fields.start
-          & (self.op.fields.kind != KIND_IDLE)
+            eff_start
+          & (eff_kind != KIND_IDLE)
           & (~q_valid | q_consume)
         )
         self.sync += [
             If(q_load,
                 q_valid.eq(1),
-                q_kind.eq(self.op.fields.kind),
-                q_cmd_byte.eq(self.cmd_byte.storage),
-                q_dma_src.eq(self.dma_src.storage),
-                q_dma_row_bytes.eq(self.dma_row_bytes.storage),
-                q_dma_row_count.eq(self.dma_row_count.storage),
-                q_dma_stride.eq(self.dma_stride.storage),
+                q_kind.eq(eff_kind),
+                q_cmd_byte.eq(eff_cmd_byte),
+                q_dma_src.eq(eff_dma_src),
+                q_dma_row_bytes.eq(eff_dma_row_bytes),
+                q_dma_row_count.eq(eff_dma_row_count),
+                q_dma_stride.eq(eff_dma_stride),
                 q_fill_color.eq(self.fill_color.storage),
                 q_fill_count.eq(self.fill_count.storage),
-                q_rect_x.eq(self.rect_x.storage),
-                q_rect_y.eq(self.rect_y.storage),
+                q_rect_x.eq(eff_rect_x),
+                q_rect_y.eq(eff_rect_y),
             ).Elif(q_consume,
                 q_valid.eq(0),
             )
@@ -524,7 +596,144 @@ class LCDEngine(LiteXModule, AutoCSR):
 
         # busy = engine is running an op OR has one waiting in the queue.
         # can_accept = queue slot is free (safe to stage and start a new op).
+        self.comb += engine_busy.eq(~fsm.ongoing("IDLE") | q_valid)
         self.comb += [
-            self.status.fields.busy.eq(~fsm.ongoing("IDLE") | q_valid),
+            self.status.fields.busy.eq(engine_busy),
             self.status.fields.can_accept.eq(~q_valid),
         ]
+
+        # ---- HW boot-splash sequencer -----------------------------------
+        # Runs once out of reset, no CPU involved: pulse the panel reset,
+        # replay the ST7796S init recipe (per-command payload bytes DMA'd
+        # from the init region of the flash splash blob), DMA the full-frame
+        # splash image from flash, light the backlight, then hold the panel
+        # lit in DONE until firmware releases the engine (boot_ctl.release).
+        #
+        # It drives the same seq_*/queue path the CPU uses via the eff_*
+        # muxes above, so the core op FSM is untouched -- nothing here changes
+        # the engine's behaviour once firmware has taken over.
+        if with_boot_splash:
+            from gateware.st7796_boot import (LCD_WIDTH as _W, LCD_HEIGHT as _H,
+                                              BYTES_PER_PIXEL as _BPP, init_table)
+            cyc_per_ms = int(sys_clk_freq // 1000)
+            table   = init_table()
+            n_steps = len(table)
+
+            tbl_cmd    = Array(Constant(c, 8)  for (c, l, o, d) in table)
+            tbl_len    = Array(Constant(l, 8)  for (c, l, o, d) in table)
+            tbl_off    = Array(Constant(o, 16) for (c, l, o, d) in table)
+            tbl_dlycyc = Array(Constant(d * cyc_per_ms, 32) for (c, l, o, d) in table)
+
+            step     = Signal(max=n_steps + 1)
+            dly      = Signal(32)
+            has_data = Signal()
+            self.comb += has_data.eq(tbl_len[step] != 0)
+
+            img_row_bytes = _W * _BPP
+
+            self.boot_fsm = bfsm = FSM(reset_state="RST_H0")
+
+            # Panel reset pulse: high (20 ms) -> low (20 ms) -> high (120 ms),
+            # mirroring lcd_hw_reset() in software/common/lcd.c.
+            bfsm.act("RST_H0",
+                NextValue(seq_reset_n, 1),
+                NextValue(dly, 20 * cyc_per_ms),
+                NextState("RST_H0_W"),
+            )
+            bfsm.act("RST_H0_W",
+                NextValue(dly, dly - 1),
+                If(dly == 0, NextState("RST_LO")),
+            )
+            bfsm.act("RST_LO",
+                NextValue(seq_reset_n, 0),
+                NextValue(dly, 20 * cyc_per_ms),
+                NextState("RST_LO_W"),
+            )
+            bfsm.act("RST_LO_W",
+                NextValue(dly, dly - 1),
+                If(dly == 0, NextState("RST_H1")),
+            )
+            bfsm.act("RST_H1",
+                NextValue(seq_reset_n, 1),
+                NextValue(dly, 120 * cyc_per_ms),
+                NextState("RST_H1_W"),
+            )
+            bfsm.act("RST_H1_W",
+                NextValue(dly, dly - 1),
+                If(dly == 0,
+                    NextValue(step, 0),
+                    NextState("INIT_ISSUE"),
+                ),
+            )
+
+            # Issue one init command (with optional flash-sourced payload),
+            # wait for it to complete, then honour the recipe's post-delay.
+            bfsm.act("INIT_ISSUE",
+                If(step == n_steps,
+                    NextState("IMG_ISSUE"),
+                ).Else(
+                    seq_cmd_byte.eq(tbl_cmd[step]),
+                    If(has_data,
+                        seq_kind.eq(KIND_CMD_DATA_DMA),
+                        seq_dma_src.eq(splash_init_addr + tbl_off[step]),
+                        seq_dma_row_bytes.eq(tbl_len[step]),
+                        seq_dma_row_count.eq(1),
+                    ).Else(
+                        seq_kind.eq(KIND_CMD),
+                    ),
+                    seq_start.eq(1),
+                    NextState("INIT_GO"),
+                ),
+            )
+            bfsm.act("INIT_GO", If(engine_busy, NextState("INIT_DONE")))
+            bfsm.act("INIT_DONE",
+                If(~engine_busy,
+                    NextValue(dly, tbl_dlycyc[step]),
+                    NextState("INIT_DLY"),
+                ),
+            )
+            bfsm.act("INIT_DLY",
+                If(dly == 0,
+                    NextValue(step, step + 1),
+                    NextState("INIT_ISSUE"),
+                ).Else(
+                    NextValue(dly, dly - 1),
+                ),
+            )
+
+            # Full-frame splash image, DMA'd straight from flash.
+            bfsm.act("IMG_ISSUE",
+                seq_kind.eq(KIND_DMA_RECT),
+                seq_rect_x.eq(((_W - 1) << 16) | 0),
+                seq_rect_y.eq(((_H - 1) << 16) | 0),
+                seq_dma_src.eq(splash_image_addr),
+                seq_dma_row_bytes.eq(img_row_bytes),
+                seq_dma_row_count.eq(_H),
+                seq_dma_stride.eq(img_row_bytes),
+                seq_start.eq(1),
+                NextState("IMG_GO"),
+            )
+            bfsm.act("IMG_GO", If(engine_busy, NextState("IMG_DONE")))
+            bfsm.act("IMG_DONE",
+                If(~engine_busy,
+                    NextValue(dly, 20 * cyc_per_ms),
+                    NextState("BL_DLY"),
+                ),
+            )
+            # Backlight on only after the image has landed, so the reveal is
+            # the splash -- not the panel's power-on RAM garbage.
+            bfsm.act("BL_DLY",
+                NextValue(dly, dly - 1),
+                If(dly == 0, NextState("LIT")),
+            )
+            bfsm.act("LIT",
+                NextValue(seq_backlight, 1),
+                NextState("DONE"),
+            )
+            # Terminal: hold panel lit + out of reset, flag boot_done. Stays
+            # here (still boot_active) until firmware releases the engine.
+            bfsm.act("DONE",
+                NextValue(seq_backlight, 1),
+                NextValue(seq_reset_n, 1),
+                boot_done.eq(1),
+            )

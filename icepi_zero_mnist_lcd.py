@@ -60,7 +60,8 @@ _lcd_io = [
 
 class MnistLCDSoC(BaseSoC):
     def __init__(self, sys_clk_freq=50e6, with_spi_flash=False, flash_boot_offset=None,
-                 lcd_spi_clk_freq=100e6, **kwargs):
+                 lcd_spi_clk_freq=100e6, with_boot_splash=False,
+                 splash_flash_offset=0x100000, **kwargs):
         from litex_boards.platforms import icepi_zero as icepi_zero_platform
         platform = icepi_zero_platform.Platform()
         platform.add_extension(_lcd_io)
@@ -75,12 +76,34 @@ class MnistLCDSoC(BaseSoC):
             **kwargs,
         )
 
+        # --- HW boot splash addresses (optional) ------------------------------
+        # The boot sequencer reads the splash blob straight from memory-mapped
+        # SPI flash, so the feature needs flash enabled. Resolve the absolute
+        # bus addresses of the init region + image from the flash region origin
+        # (see gateware/st7796_boot.py for the blob layout).
+        boot_splash_kwargs = {}
+        if with_boot_splash:
+            if "spiflash" not in self.bus.regions:
+                raise ValueError("--boot-splash requires SPI flash; pass a flash "
+                                 "arg (e.g. --flash-boot-offset) so it gets built in.")
+            from gateware.st7796_boot import INIT_REGION_BYTES
+            flash_origin = self.bus.regions["spiflash"].origin
+            init_addr    = flash_origin + splash_flash_offset
+            boot_splash_kwargs = dict(
+                with_boot_splash  = True,
+                sys_clk_freq      = int(sys_clk_freq),
+                splash_init_addr  = init_addr,
+                splash_image_addr = init_addr + INIT_REGION_BYTES,
+            )
+            self.add_constant("LCD_BOOT_SPLASH", 1)
+
         # --- LCD engine + touch (from icepi_zero_lcd.py) ----------------------
         self.lcd = LCDEngine(
             pads      = platform.request("lcd_spi"),
             ctrl_pads = platform.request("lcd_ctrl"),
             platform  = platform,
             sclk_div  = 1,
+            **boot_splash_kwargs,
         )
         self.bus.add_master(name="lcd_dma", master=self.lcd.bus)
         self.irq.add("lcd", use_loc_if_exists=True)
@@ -116,6 +139,11 @@ def main():
     parser = make_parser(description="IcePi Zero SoC + LCD/touch + SNN-MLP MNIST (touch demo).")
     parser.add_target_argument("--lcd-spi-clk-freq", default=185e6, type=float,
                                help="LCD engine SPI core clock (Hz). SCK = this / 2. Default 100 MHz -> 50 MHz SCK.")
+    parser.add_target_argument("--boot-splash", action="store_true",
+                               help="Build the HW boot-splash sequencer: the LCD engine brings the "
+                                    "panel up and paints a splash read from SPI flash at reset, before "
+                                    "the CPU runs. Generate + flash the blob with tools/gen_boot_splash.py "
+                                    "+ --flash-splash.")
     args = parser.parse_args()
 
     # Boot the demo straight from SPI flash by default so the board runs
@@ -127,10 +155,12 @@ def main():
         args.flash_boot_offset = args.firmware_offset
 
     soc = MnistLCDSoC(
-        sys_clk_freq      = args.sys_clk_freq,
-        with_spi_flash    = resolve_spi_flash(args),
-        flash_boot_offset = args.flash_boot_offset,
-        lcd_spi_clk_freq  = args.lcd_spi_clk_freq,
+        sys_clk_freq        = args.sys_clk_freq,
+        with_spi_flash      = resolve_spi_flash(args),
+        flash_boot_offset   = args.flash_boot_offset,
+        lcd_spi_clk_freq    = args.lcd_spi_clk_freq,
+        with_boot_splash    = args.boot_splash,
+        splash_flash_offset = args.splash_offset,
         **parser.soc_argdict,
     )
     run_build(soc, args, parser)

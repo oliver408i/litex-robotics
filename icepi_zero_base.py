@@ -157,12 +157,22 @@ def make_parser(description):
     parser.add_target_argument("--firmware-offset", default="0x200000",
                                type=lambda x: int(x, 0),
                                help="SPI Flash offset for firmware (default: 0x200000).")
+    parser.add_target_argument("--flash-splash", default=None,
+                               help="Flash a HW boot-splash blob to SPI Flash "
+                                    "(raw, path to .bin from tools/gen_boot_splash.py).")
+    parser.add_target_argument("--splash-offset", default="0x100000",
+                               type=lambda x: int(x, 0),
+                               help="SPI Flash offset for the boot-splash blob (default: 0x100000). "
+                                    "Must match what the boot sequencer was built with.")
     return parser
 
 
 def resolve_spi_flash(args):
     """SPI flash is enabled whenever any flash-related CLI arg is set."""
-    return bool(args.flash or args.flash_firmware is not None or args.flash_boot_offset is not None)
+    return bool(args.flash or args.flash_firmware is not None
+                or args.flash_boot_offset is not None
+                or getattr(args, "flash_splash", None) is not None
+                or getattr(args, "boot_splash", False))
 
 
 def run_build(soc, args, parser):
@@ -198,3 +208,12 @@ def run_build(soc, args, parser):
                 f.write(data)
         prog = soc.platform.create_programmer()
         prog.flash(args.firmware_offset, fbi_path, external=True)
+
+    if getattr(args, "flash_splash", None) is not None:
+        # Raw blob: the LCD boot sequencer DMA-reads it straight from flash,
+        # so (unlike firmware) it gets no .fbi length/CRC header.
+        splash_path = os.path.abspath(args.flash_splash)
+        if not os.path.exists(splash_path):
+            raise FileNotFoundError(f"Boot-splash blob not found: {splash_path}")
+        prog = soc.platform.create_programmer()
+        prog.flash(args.splash_offset, splash_path, external=True)

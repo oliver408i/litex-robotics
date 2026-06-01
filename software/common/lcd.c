@@ -120,6 +120,23 @@ void lcd_init(void)
 	lcd_backlight(1);
 }
 
+#ifdef LCD_BOOT_SPLASH
+void lcd_boot_takeover(void)
+{
+	/* Wait until the HW sequencer has finished panel bring-up + splash. */
+	while(!(lcd_status_read() & LCD_BOOT_DONE))
+		;
+	/* Pre-load the pad shadow to match what the sequencer is holding
+	 * (panel out of reset, backlight on) so handing the engine back does
+	 * not blink the backlight while the CSR value takes over. */
+	lcd_pads_state = LCD_PADS_RESET_N | LCD_PADS_BACKLIGHT;
+	lcd_pads_apply();
+	/* Release the engine: the sequencer stops owning the op interface and
+	 * CPU CSR writes take effect from here on. */
+	lcd_boot_ctl_write(1);
+}
+#endif
+
 /* Pack a 16-bit panel coord pair {hi, lo} into one CSR write. */
 static inline uint32_t pack_coords(uint16_t lo, uint16_t hi)
 {

@@ -22,6 +22,7 @@
 
 #define LCD_BUSY              (1u << CSR_LCD_STATUS_BUSY_OFFSET)
 #define LCD_CAN_ACCEPT        (1u << CSR_LCD_STATUS_CAN_ACCEPT_OFFSET)
+#define LCD_BOOT_DONE         (1u << CSR_LCD_STATUS_BOOT_DONE_OFFSET)
 
 #define LCD_PADS_RESET_N      (1u << CSR_LCD_PADS_CTRL_RESET_N_OFFSET)
 #define LCD_PADS_BACKLIGHT    (1u << CSR_LCD_PADS_CTRL_BACKLIGHT_OFFSET)
@@ -57,6 +58,16 @@ void lcd_hw_reset(void);
 /* Full ST7796S bring-up: hw reset, soft reset, init sequence, sleep
  * out, display on, backlight on. Run once at boot before any drawing. */
 void lcd_init(void);
+
+#ifdef LCD_BOOT_SPLASH
+/* Hand the engine back from the HW boot-splash sequencer. Built only when the
+ * SoC includes the boot splash (icepi_zero_mnist_lcd.py --boot-splash): the
+ * gateware has already done lcd_init() + painted the splash from flash, so
+ * firmware calls this *instead* of lcd_init(). Blocks until the sequencer
+ * reports done, pre-loads the pad shadow (backlight on, out of reset) so there
+ * is no flicker, then releases the engine to the CPU. */
+void lcd_boot_takeover(void);
+#endif
 
 /* ---- High-level rect ops ---------------------------------------------- */
 
