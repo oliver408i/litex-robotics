@@ -14,10 +14,10 @@ from gateware.lcd_engine import LCDEngine
 # LCD / Touch IO -----------------------------------------------------------------------------------
 _lcd_io = [
     ("lcd_spi", 0,
-        Subsignal("clk",  Pins("T2")),
+        Subsignal("clk",  Pins("E4")),
         Subsignal("cs_n", Pins("H3")),
-        Subsignal("mosi", Pins("H2")),
-        Subsignal("miso", Pins("J2")),
+        Subsignal("mosi", Pins("D4")),
+        Subsignal("miso", Pins("E3")),
         IOStandard("LVCMOS33"),
         Misc("SLEWRATE=FAST"),
     ),
@@ -32,7 +32,7 @@ _lcd_io = [
         Subsignal("sda", Pins("N4"), Misc("PULLMODE=UP")),
         IOStandard("LVCMOS33"),
     ),
-    ("ctp_int", 0, Pins("E3"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
+    ("ctp_int", 0, Pins("F2"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
 ]
 
 

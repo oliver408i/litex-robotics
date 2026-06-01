@@ -56,6 +56,8 @@ The platform exposes a 28-pin `gpio` resource:
 
 `K3 T2 R2 R1 E1 F3 G1 H2 J1 L2 G2 J3 E3 P1 N1 H3 R3 N4 E4 F1 F2 P2 M2 L1 J2 D4 P3`
 
+Physical pins from this bank are labeled as `IOn` on the board, with `IO1` equal to `K3`, `IO2` equal to `T2` and so on.
+
 ## Named Peripheral Mappings
 
 These resources are aliases or grouped views built on top of the platform pins:
@@ -81,23 +83,35 @@ This project uses an ST7796S SPI LCD controller with a 320x480 panel and an
 FT6336U capacitive touch controller. The first bring-up target is an LCD test
 pattern. The eventual software target is LVGL running on the LiteX CPU.
 
-The LCD SPI clock and data pins are shared with the MCP3008 SPI bus. The
-MCP3008 is not used by the final LCD project, but it can be enabled with the
-known-good Verilog sampler as a bring-up test for the shared SPI wiring.
+The LCD SPI bus now has its own dedicated pins (no longer shared with the
+MCP3008 ADC). `CTP_INT` was also relocated because its old pin (`E3`) collided
+with the new SPI routing — `E3` is now reused by `LCD_MISO`.
+
+| Device | Signal | FPGA Pin | Board IO | Notes |
+| --- | --- | --- | --- | --- |
+| LCD SPI | `sclk` | `E4` | `IO19` | `LCD_SCK` |
+| LCD SPI | `mosi` | `D4` | `IO26` | `LCD_MOSI` |
+| LCD SPI | `miso` | `E3` | `IO13` | `LCD_MISO`; not required for basic LCD writes |
+| ST7796S LCD | `cs_n[0]` | `H3` | — | `LCD_CS` |
+| ST7796S LCD | `reset` | `J3` | — | `LCD_RST` |
+| ST7796S LCD | `dc` / `rs` | `G1` | — | `LCD_RS`; command/data select |
+| LCD backlight | `led` | `P1` | — | `backlightLED` |
+| FT6336U touch | `scl` | `N1` | — | `CTP_SCL` |
+| FT6336U touch | `sda` | `N4` | — | `CTP_SDA` |
+| FT6336U touch | `int` | `F2` | `IO21` | `CTP_INT` (moved from `E3`) |
+
+#### Original shared SPI bus pins (kept for reference)
+
+Before the move, the LCD SPI clock/data pins were shared with the MCP3008 SPI
+bus. Retained here because these pins will be reused soon.
 
 | Device | Signal | FPGA Pin | Notes |
 | --- | --- | --- | --- |
 | shared SPI | `sclk` | `T2` | Shared with `mcp3008.sclk` |
 | shared SPI | `mosi` | `H2` | Shared with `mcp3008.mosi` |
-| shared SPI | `miso` | `J2` | Shared with `mcp3008.miso`; not required for basic LCD writes |
-| ST7796S LCD | `cs_n[0]` | `H3` | `LCD_CS` |
+| shared SPI | `miso` | `J2` | Shared with `mcp3008.miso` |
 | MCP3008 | `cs_n[1]` | `R2` | Used only as a shared-SPI bus test in this LCD bring-up |
-| ST7796S LCD | `reset` | `J3` | `LCD_RST` |
-| ST7796S LCD | `dc` / `rs` | `G1` | `LCD_RS`; command/data select |
-| LCD backlight | `led` | `P1` | `backlightLED` |
-| FT6336U touch | `scl` | `N1` | `CTP_SCL` |
-| FT6336U touch | `sda` | `N4` | `CTP_SDA` |
-| FT6336U touch | `int` | `E3` | `CTP_INT` |
+| FT6336U touch | `int` | `E3` | `CTP_INT` original pin |
 
 ### USB 0
 
