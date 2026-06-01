@@ -1,19 +1,31 @@
 # IcePi Zero Pin Mapping
 
-This note is derived from the LiteX board platform file at
+Derived from the LiteX board platform file at
 `litex-setup/litex-boards/litex_boards/platforms/icepi_zero.py`.
 
-It is a board/platform mapping reference, not a record of which pins this
-project currently uses.
+This note has two parts:
 
-## Minimal SoC Pins
+- **Part 1 — Board / Platform Reference**: the static map of what the board
+  brings out, exactly as the platform file defines it. Independent of any
+  project.
+- **Part 2 — Current Project Wiring**: what this project's SoCs actually drive
+  on the GPIO bank, via `icepi_zero_imu.py` and the LCD SoC. This is the part
+  that changes as the project evolves.
 
-The current minimal `icepi_zero.py` uses only these board resources:
+When in doubt, Part 2 is the source of truth for how the GPIO pins are used
+right now; Part 1 is the source of truth for the fixed board resources
+(SDRAM, USB, flash, SD, GPDI, etc.).
+
+---
+
+# Part 1 — Board / Platform Reference
+
+## Core: clock, reset, UART
 
 | Resource | Signal | FPGA Pin | Notes |
 | --- | --- | --- | --- |
 | `clk50` | clock input | `M1` | 50 MHz input clock |
-| `rst` | reset input | `C4` | Pulled up in platform file |
+| `rst` | reset input | `C4` | Pulled up in platform file; shares pin with `user_btn` 0 |
 | `ext_reset` | external reset, active-low | `G3` | Pulled up in platform file |
 | `serial` | `tx` | `K15` | LiteX BIOS UART transmit |
 | `serial` | `rx` | `K16` | LiteX BIOS UART receive |
@@ -22,7 +34,7 @@ The current minimal `icepi_zero.py` uses only these board resources:
 
 | Resource | Index | FPGA Pin | Notes |
 | --- | --- | --- | --- |
-| `user_btn` | 0 | `C4` | Shares the same pin as `rst` in the platform file |
+| `user_btn` | 0 | `C4` | Shares the same pin as `rst` |
 | `user_btn` | 1 | `C5` | Pulled up |
 
 ## User LEDs
@@ -52,68 +64,23 @@ The current minimal `icepi_zero.py` uses only these board resources:
 
 ## GPIO Bank
 
-The platform exposes a 28-pin `gpio` resource:
+The platform exposes a **27-pin** `gpio` resource:
 
 `K3 T2 R2 R1 E1 F3 G1 H2 J1 L2 G2 J3 E3 P1 N1 H3 R3 N4 E4 F1 F2 P2 M2 L1 J2 D4 P3`
 
-Physical pins from this bank are labeled as `IOn` on the board, with `IO1` equal to `K3`, `IO2` equal to `T2` and so on.
+Physical pins are labeled `IOn` on the board, with `IO1` = `K3`, `IO2` = `T2`,
+and so on through `IO27` = `P3`.
 
-## Named Peripheral Mappings
+> Note: the platform comment marks `IO1` as "old `gpio[1]` = new `gpio[0]`" —
+> an earlier revision had a `gpio[0]` that was dropped, which is why this bank
+> is sometimes mistakenly called "28-pin." It is 27 pins.
 
-These resources are aliases or grouped views built on top of the platform pins:
+The platform file also predefines `rgb_led` and `mcp3008` aliases that sit on
+top of these GPIO pins. For how the bank is actually driven today (including
+the IMU added by `icepi_zero_imu.py` and the LCD/touch panel), see
+**Part 2 — Current Project Wiring**.
 
-### RGB LED / NeoPixel
-
-| Resource | Signal | FPGA Pin |
-| --- | --- | --- |
-| `rgb_led` | data | `K3` |
-
-### MCP3008
-
-| Resource | Signal | FPGA Pin |
-| --- | --- | --- |
-| `mcp3008` | `sclk` | `T2` |
-| `mcp3008` | `cs_n` | `R2` |
-| `mcp3008` | `mosi` | `H2` |
-| `mcp3008` | `miso` | `J2` |
-
-### LCD / Touch Project Mapping
-
-This project uses an ST7796S SPI LCD controller with a 320x480 panel and an
-FT6336U capacitive touch controller. The first bring-up target is an LCD test
-pattern. The eventual software target is LVGL running on the LiteX CPU.
-
-The LCD SPI bus now has its own dedicated pins (no longer shared with the
-MCP3008 ADC). `CTP_INT` was also relocated because its old pin (`E3`) collided
-with the new SPI routing — `E3` is now reused by `LCD_MISO`.
-
-| Device | Signal | FPGA Pin | Board IO | Notes |
-| --- | --- | --- | --- | --- |
-| LCD SPI | `sclk` | `E4` | `IO19` | `LCD_SCK` |
-| LCD SPI | `mosi` | `D4` | `IO26` | `LCD_MOSI` |
-| LCD SPI | `miso` | `E3` | `IO13` | `LCD_MISO`; not required for basic LCD writes |
-| ST7796S LCD | `cs_n[0]` | `H3` | — | `LCD_CS` |
-| ST7796S LCD | `reset` | `J3` | — | `LCD_RST` |
-| ST7796S LCD | `dc` / `rs` | `G1` | — | `LCD_RS`; command/data select |
-| LCD backlight | `led` | `P1` | — | `backlightLED` |
-| FT6336U touch | `scl` | `N1` | — | `CTP_SCL` |
-| FT6336U touch | `sda` | `N4` | — | `CTP_SDA` |
-| FT6336U touch | `int` | `F2` | `IO21` | `CTP_INT` (moved from `E3`) |
-
-#### Original shared SPI bus pins (kept for reference)
-
-Before the move, the LCD SPI clock/data pins were shared with the MCP3008 SPI
-bus. Retained here because these pins will be reused soon.
-
-| Device | Signal | FPGA Pin | Notes |
-| --- | --- | --- | --- |
-| shared SPI | `sclk` | `T2` | Shared with `mcp3008.sclk` |
-| shared SPI | `mosi` | `H2` | Shared with `mcp3008.mosi` |
-| shared SPI | `miso` | `J2` | Shared with `mcp3008.miso` |
-| MCP3008 | `cs_n[1]` | `R2` | Used only as a shared-SPI bus test in this LCD bring-up |
-| FT6336U touch | `int` | `E3` | `CTP_INT` original pin |
-
-### USB 0
+## USB 0
 
 | Resource | Signal | FPGA Pin(s) |
 | --- | --- | --- |
@@ -121,7 +88,7 @@ bus. Retained here because these pins will be reused soon.
 | `usb` | `d_n` | `E16` |
 | `usb` | `pullup` | `G15 H14` |
 
-### USB 1
+## USB 1
 
 | Resource | Signal | FPGA Pin(s) |
 | --- | --- | --- |
@@ -129,7 +96,7 @@ bus. Retained here because these pins will be reused soon.
 | `usb` | `d_n` | `J15` |
 | `usb` | `pullup` | `E14 E11` |
 
-### SPI Flash
+## SPI Flash
 
 | Resource | Signal | FPGA Pin(s) |
 | --- | --- | --- |
@@ -142,7 +109,10 @@ bus. Retained here because these pins will be reused soon.
 | `spiflash4x` | `dq[0:3]` | `T8 T7 M7 N7` |
 | board note | flash clock | `N9` |
 
-### SD Card
+`spiflash` (1x) and `spiflash4x` (quad) are two views of the same physical
+flash pins.
+
+## SD Card
 
 | Resource | Signal | FPGA Pin(s) |
 | --- | --- | --- |
@@ -154,7 +124,10 @@ bus. Retained here because these pins will be reused soon.
 | `sdcard` | `cmd` | `N16` |
 | `sdcard` | `data[0:3]` | `P14 R14 M15 M14` |
 
-### GPDI
+`spisdcard` (SPI mode) and `sdcard` (native SD) are two views of the same
+physical card pins.
+
+## GPDI
 
 | Resource | Signal | FPGA Pin(s) |
 | --- | --- | --- |
@@ -167,3 +140,97 @@ bus. Retained here because these pins will be reused soon.
 | `gpdi` | `sda` | `T4` |
 | `gpdi` | `hpd` | `L14` |
 | `gpdi` | `util` | `P5` |
+
+---
+
+# Part 2 — Current Project Wiring
+
+Everything below sits on the GPIO bank from Part 1. The IMU and the LCD/touch
+panel are added as platform extensions in `icepi_zero_imu.py` and the LCD SoC;
+`rgb_led` and `mcp3008` come from the platform file but are listed here because
+this is where their real usage lives.
+
+## GPIO Bank Usage (IO1–IO27)
+
+| Board IO | FPGA Pin | Function |
+| --- | --- | --- |
+| IO1 | `K3` | RGB LED / NeoPixel data |
+| IO2 | `T2` | SPI sensor bus `sclk` (MCP3008 + IMU) |
+| IO3 | `R2` | MCP3008 `cs_n` (sensor bus `cs[1]`) |
+| IO4 | `R1` | *free* |
+| IO5 | `E1` | *free* |
+| IO6 | `F3` | IMU `cs_n` (sensor bus `cs[0]`) |
+| IO7 | `G1` | `LCD_RS` (DC / command-data select) |
+| IO8 | `H2` | SPI sensor bus `mosi` |
+| IO9 | `J1` | *free* |
+| IO10 | `L2` | *free* |
+| IO11 | `G2` | *free* |
+| IO12 | `J3` | `LCD_RST` |
+| IO13 | `E3` | `LCD_MISO` |
+| IO14 | `P1` | LCD backlight |
+| IO15 | `N1` | `CTP_SCL` (touch) |
+| IO16 | `H3` | `LCD_CS` |
+| IO17 | `R3` | *free* |
+| IO18 | `N4` | `CTP_SDA` (touch) |
+| IO19 | `E4` | `LCD_SCK` |
+| IO20 | `F1` | *free* |
+| IO21 | `F2` | `CTP_INT` (touch) |
+| IO22 | `P2` | *free* |
+| IO23 | `M2` | *free* |
+| IO24 | `L1` | *free* |
+| IO25 | `J2` | SPI sensor bus `miso` |
+| IO26 | `D4` | `LCD_MOSI` |
+| IO27 | `P3` | *free* |
+
+**16 used, 11 free.** Free pins: IO4, IO5, IO9, IO10, IO11, IO17, IO20, IO22,
+IO23, IO24, IO27.
+
+## RGB LED / NeoPixel
+
+| Signal | FPGA Pin | Board IO |
+| --- | --- | --- |
+| `rgb_led` data | `K3` | IO1 |
+
+## SPI Sensor Bus (MCP3008 + LSM6DS3 IMU)
+
+The MCP3008 ADC and the LSM6DS3 IMU share one SPI bus: the clock and data
+lines are common, and each device has its own chip-select. This is the
+"second SPI bus" wired up in `icepi_zero_imu.py` (distinct from the LCD's
+dedicated SPI bus). The IMU rides `cs[0]`; the MCP3008 rides `cs[1]`.
+
+Shared lines:
+
+| Signal | FPGA Pin | Board IO |
+| --- | --- | --- |
+| `sclk` | `T2` | IO2 |
+| `mosi` | `H2` | IO8 |
+| `miso` | `J2` | IO25 |
+
+Per-device chip-selects:
+
+| Device | Signal | FPGA Pin | Board IO | Notes |
+| --- | --- | --- | --- | --- |
+| LSM6DS3 IMU | `cs_n[0]` | `F3` | IO6 | SPI mode 0; SCK max 10 MHz (bring-up uses 2 MHz) |
+| MCP3008 ADC | `cs_n[1]` | `R2` | IO3 | Parked deasserted during IMU-only bring-up |
+
+## LCD / Touch
+
+This project uses an ST7796S SPI LCD controller with a 320x480 panel and an
+FT6336U capacitive touch controller. The first bring-up target is an LCD test
+pattern. The eventual software target is LVGL running on the LiteX CPU.
+
+The LCD SPI bus has its own dedicated pins (not shared with the sensor bus).
+`CTP_INT` lives on `F2` (IO21); its former pin `E3` (IO13) is now `LCD_MISO`.
+
+| Device | Signal | FPGA Pin | Board IO | Notes |
+| --- | --- | --- | --- | --- |
+| LCD SPI | `sclk` | `E4` | IO19 | `LCD_SCK` |
+| LCD SPI | `mosi` | `D4` | IO26 | `LCD_MOSI` |
+| LCD SPI | `miso` | `E3` | IO13 | `LCD_MISO`; not required for basic LCD writes |
+| ST7796S LCD | `cs_n[0]` | `H3` | IO16 | `LCD_CS` |
+| ST7796S LCD | `reset` | `J3` | IO12 | `LCD_RST` |
+| ST7796S LCD | `dc` / `rs` | `G1` | IO7 | `LCD_RS`; command/data select |
+| LCD backlight | `led` | `P1` | IO14 | `backlightLED` |
+| FT6336U touch | `scl` | `N1` | IO15 | `CTP_SCL` |
+| FT6336U touch | `sda` | `N4` | IO18 | `CTP_SDA` |
+| FT6336U touch | `int` | `F2` | IO21 | `CTP_INT` |
