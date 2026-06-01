@@ -222,10 +222,13 @@ def run_build(soc, args, parser):
 
     if args.build:
         builder.build(**parser.toolchain_argdict)
-    if args.load:
-        prog = soc.platform.create_programmer()
-        prog.load_bitstream(builder.get_bitstream_filename(mode="sram", ext=".bit"))
 
+    # Flash steps run BEFORE --load on purpose. --load configures the FPGA and
+    # immediately releases the CPU, which on an XIP build does its first BIOS
+    # fetch from flash right away. If the BIOS/firmware were written after the
+    # load, the CPU would boot stale flash contents and hang (no UART). Flashing
+    # first, then loading, guarantees the CPU's first fetch sees the just-written
+    # image. (Plain EBR-ROM builds don't care -- the BIOS rides in the bitstream.)
     if args.flash:
         prog = soc.platform.create_programmer()
         prog.flash(0, builder.get_bitstream_filename(mode="flash"), external=True)
@@ -256,3 +259,10 @@ def run_build(soc, args, parser):
                 f.write(data)
         prog = soc.platform.create_programmer()
         prog.flash(args.firmware_offset, fbi_path, external=True)
+
+    # Load last: the FPGA ends up configured with all flash content already in
+    # place, so the CPU's first XIP fetch boots the correct BIOS. See the
+    # ordering note above.
+    if args.load:
+        prog = soc.platform.create_programmer()
+        prog.load_bitstream(builder.get_bitstream_filename(mode="sram", ext=".bit"))

@@ -35,6 +35,13 @@ on the LFE5U-25F) by executing it in place from flash instead.
   the safe default divisor; it's a boot-only path (app runs from SDRAM).
 - **CSR map shifts when the master is dropped.** Rebuild *and* reflash the BIOS and
   firmware together; a stale firmware will poke the wrong CSR addresses.
+- **`--load` must come after the flash steps.** `--load` configures the FPGA and
+  releases the CPU, which immediately XIP-fetches the BIOS from flash. If the BIOS
+  is flashed *after* the load (e.g. the intuitive `--build --load --flash-bios`),
+  the CPU boots stale flash and hangs with no UART. `run_build` now orders flash
+  steps before `--load` for exactly this reason; if you script the programmer by
+  hand, flash the BIOS/firmware first, then load (or just `--flash` the bitstream
+  too and cold-boot).
 
 ## Flash layout
 
