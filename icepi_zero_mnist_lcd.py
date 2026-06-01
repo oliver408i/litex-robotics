@@ -130,6 +130,8 @@ def main():
         sys_clk_freq      = args.sys_clk_freq,
         with_spi_flash    = resolve_spi_flash(args),
         flash_boot_offset = args.flash_boot_offset,
+        bios_flash_offset = args.bios_flash_offset,
+        spiflash_1x       = args.spiflash_1x,
         lcd_spi_clk_freq  = args.lcd_spi_clk_freq,
         **parser.soc_argdict,
     )
