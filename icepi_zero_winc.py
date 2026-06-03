@@ -54,11 +54,12 @@ AUX_CS_MCP  = 2
 
 class WincSoC(BaseSoC):
     def __init__(self, sys_clk_freq=50e6, with_spi_flash=False, flash_boot_offset=None,
-                 winc_spi_clk_freq=1e6, **kwargs):
+                 flash_master=False, winc_spi_clk_freq=1e6, **kwargs):
         super().__init__(
             sys_clk_freq      = sys_clk_freq,
             with_spi_flash    = with_spi_flash,
             flash_boot_offset = flash_boot_offset,
+            flash_master      = flash_master,
             **kwargs,
         )
 
@@ -104,12 +105,18 @@ def main():
                                     "(conservative for bring-up; WINC supports up to ~48 MHz, "
                                     "this bus is capped at sys/2 = 25 MHz). Runtime-adjustable "
                                     "via the aux_spi clk_divider CSR.")
+    parser.add_target_argument("--flash-master", action="store_true",
+                               help="Expose the LiteSPI master CSRs so SDRAM-resident firmware "
+                                    "(the WiFi flash-loader) can erase/program the SPI flash. "
+                                    "Implies the XIP flash build; the BIOS skips master init "
+                                    "(SPIFLASH_SKIP_MASTER_INIT). See docs/xip_bios.md.")
     args = parser.parse_args()
 
     soc = WincSoC(
         sys_clk_freq      = args.sys_clk_freq,
-        with_spi_flash    = resolve_spi_flash(args),
+        with_spi_flash    = resolve_spi_flash(args) or args.flash_master,
         flash_boot_offset = args.flash_boot_offset,
+        flash_master      = args.flash_master,
         bios_flash_offset = args.bios_flash_offset,
         spiflash_1x       = args.spiflash_1x,
         winc_spi_clk_freq = args.winc_spi_clk_freq,

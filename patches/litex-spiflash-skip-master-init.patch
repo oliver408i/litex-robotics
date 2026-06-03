@@ -1,0 +1,17 @@
+diff --git a/litex/soc/software/liblitespi/spiflash.c b/litex/soc/software/liblitespi/spiflash.c
+index f37979581..98b71add2 100644
+--- a/litex/soc/software/liblitespi/spiflash.c
++++ b/litex/soc/software/liblitespi/spiflash.c
+@@ -305,7 +305,11 @@ void spiflash_init(void)
+ 	spiflash_dummy_bits_setup(SPIFLASH_MODULE_DUMMY_BITS);
+ #endif
+ 
+-#ifdef CSR_SPIFLASH_MASTER_CS_ADDR
++/* SPIFLASH_SKIP_MASTER_INIT: skip all master commands (read-ID, quad enable) at
++ * init. Required when the BIOS executes XIP from this same flash: a master
++ * command knocks the flash out of the continuous-read mode the CPU is fetching
++ * through -> instant crash. The master is then left for SDRAM-resident apps. */
++#if defined(CSR_SPIFLASH_MASTER_CS_ADDR) && !defined(SPIFLASH_SKIP_MASTER_INIT)
+ 
+ 	spiflash_read_id_register();
+ 
