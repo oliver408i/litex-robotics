@@ -51,8 +51,15 @@ void nm_bsp_reset(void)
     winc_reset_out_write(1);
 }
 
+/* Diagnostics: how often (and how long) the driver sleeps -- a sleep in the
+ * per-packet path would explain a fixed per-event throughput stall. */
+uint32_t winc_sleep_calls;
+uint32_t winc_sleep_ms;
+
 void nm_bsp_sleep(uint32 u32TimeMsec)
 {
+    winc_sleep_calls++;
+    winc_sleep_ms += u32TimeMsec;
     busy_wait((unsigned int)u32TimeMsec);
 }
 

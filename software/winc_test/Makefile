@@ -51,8 +51,8 @@ WINC_OBJECTS = \
 	nmasic.o nmdrv.o nmbus.o nmspi.o \
 	nm_common.o socket.o spi_flash.o
 
-# Board glue (this project) + the shared aux-bus SPI HAL.
-PORT_OBJECTS = nm_bsp_icepi.o nm_bus_wrapper_icepi.o aux_spi.o
+# Board glue (this project) + the shared aux-bus SPI HAL + mDNS responder.
+PORT_OBJECTS = nm_bsp_icepi.o nm_bus_wrapper_icepi.o aux_spi.o mdns.o
 
 OBJECTS = main.o crt0.o $(PORT_OBJECTS) $(WINC_OBJECTS)
 

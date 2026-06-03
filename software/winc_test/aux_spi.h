@@ -39,4 +39,7 @@ void    aux_spi_deselect(void);
  * asserted via aux_spi_select(). */
 uint8_t aux_spi_xfer8(uint8_t out);
 
+/* Diagnostics: total bytes clocked on the bus since boot. */
+extern uint32_t aux_spi_xfer_count;
+
 #endif /* WINC_AUX_SPI_H_ */

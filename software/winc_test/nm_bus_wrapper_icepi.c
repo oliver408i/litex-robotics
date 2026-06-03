@@ -9,7 +9,10 @@
 
 #include "aux_spi.h"
 
-#define NM_BUS_MAX_TRX_SZ   256
+/* Per-transaction chunk cap for HIF block transfers (nmspi splits anything
+ * larger). 1024 amortizes the CS-frame overhead on bulk RX; raise further if
+ * throughput tests show chunking still matters. */
+#define NM_BUS_MAX_TRX_SZ   1024
 
 tstrNmBusCapabilities egstrNmBusCapabilities = {
     NM_BUS_MAX_TRX_SZ
