@@ -80,6 +80,7 @@ class BaseSoC(SoCCore):
     def __init__(self, sys_clk_freq=50e6,
                  with_spi_flash=False, flash_boot_offset=None,
                  bios_flash_offset=0x100000, spiflash_1x=False,
+                 flash_master=False,
                  spi_clk_freq=None,
                  platform=None,
                  force_lcd_backlight_off=True,
@@ -140,17 +141,24 @@ class BaseSoC(SoCCore):
             from litespi.modules import W25Q128JV
             from litespi.opcodes import SpiNorFlashOpCodes as Codes
             # 4x default (QE bit assumed set); --spiflash-1x is the no-QE recovery
-            # mode. with_master=False is required for XIP -- the BIOS must not drive
-            # raw SPI commands on the flash it executes from. See docs/xip_bios.md.
+            # mode. The XIP BIOS must not drive raw SPI commands on the flash it
+            # executes from, so flash_master=False by default; builds that need the
+            # master for SDRAM-resident flash programming (WiFi loader) enable it
+            # and rely on SPIFLASH_SKIP_MASTER_INIT below. See docs/xip_bios.md.
             if spiflash_1x:
                 self.add_spi_flash(mode="1x", module=W25Q128JV(Codes.READ_1_1_1),
-                                   with_master=False)
+                                   with_master=flash_master)
             else:
                 self.add_spi_flash(mode="4x", module=W25Q128JV(Codes.READ_1_1_4),
-                                   with_master=False)
+                                   with_master=flash_master)
 
             # Skip BIOS SCLK auto-calibration -- it crashes XIP. See docs/xip_bios.md.
             self.add_constant("SPIFLASH_SKIP_FREQ_INIT")
+            if flash_master:
+                # Keep the XIP BIOS off the master (read-ID/quad-enable would crash
+                # the fetch path); local litex patch, see docs/xip_bios.md and
+                # patches/litex-spiflash-skip-master-init.patch.
+                self.add_constant("SPIFLASH_SKIP_MASTER_INIT")
 
             # BIOS XIP linker region (linker=True: no bus slave, flash MMAP covers it).
             self.bus.add_region("rom", SoCRegion(

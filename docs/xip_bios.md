@@ -23,12 +23,19 @@ on the LFE5U-25F) by executing it in place from flash instead.
   parser always supplies both via `soc_argdict` (rom size default `0x20000`, reset
   default `None`), so `setdefault` is a no-op — it would leave a stale EBR ROM at
   `0x0` that collides with the XIP `rom` linker region.
-- **`with_master=False` is required for XIP.** The BIOS runs from this flash, so it
-  must not drive raw SPI commands. The `CSR_SPIFLASH_MASTER_CS_ADDR` block in
+- **The XIP BIOS must never drive the SPI master.** The BIOS runs from this flash,
+  so it must not issue raw SPI commands. The `CSR_SPIFLASH_MASTER_CS_ADDR` block in
   `spiflash_init()` reads the ID and re-enables quad mode, which knocks the flash
-  out of the continuous read the CPU is fetching through → instant crash. Dropping
-  the master also removes unused logic. Quad then relies on the flash's QE bit
-  already being set (it is, non-volatile).
+  out of the continuous read the CPU is fetching through → instant crash. Default
+  builds therefore use `with_master=False` (also removes unused logic). Builds that
+  need the master for SDRAM-resident flash programming (the WiFi loader,
+  `--flash-master` on `icepi_zero_winc.py`) keep XIP safe via the
+  `SPIFLASH_SKIP_MASTER_INIT` constant, which guards that init block out of the
+  BIOS (local litex patch, mirrored at
+  `patches/litex-spiflash-skip-master-init.patch` — re-apply after a litex
+  update). Quad relies on the flash's QE bit already being set in both cases
+  (it is, non-volatile). Master ops from an app are safe only while nothing
+  fetches/reads via the flash mmap — i.e. run the app entirely from SDRAM.
 - **`SPIFLASH_SKIP_FREQ_INIT` constant.** Without it the BIOS auto-calibrates the
   flash SCLK by cranking the divisor up — while fetching its own code from that
   flash — and a too-fast step corrupts the instruction stream and hangs. We stay at

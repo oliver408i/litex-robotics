@@ -135,6 +135,25 @@ The cumulative effect is that the CPU per LVGL frame spends its time
 rendering pixels; the SPI bus stays loaded for as long as there are
 pixels to push; and the two run in parallel.
 
+## Why a custom SPI master (not LiteX's core)
+
+The LCD engine drives a custom Verilog SPI master (`verilog/spi/SPI_host.v`,
+`module SPI_Master`) rather than LiteX's built-in `SPIMaster`. The reason is
+throughput: the engine feeds the master a streaming byte interface out of an
+async FIFO (step 4 above), so the shifter runs continuously at panel bandwidth.
+LiteX's `SPIMaster` is register-poked one transfer at a time — fine for
+occasional small reads (it's what the LSM6DS3 IMU bring-up uses), but a poor fit
+for back-to-back framebuffer blits.
+
+Historical note: the custom master predates a long stretch where the LCD
+appeared "not working." That turned out to be a **broken power wire to the
+panel** — a hardware fault, not gateware or software. The misdiagnosis is why
+some SPI test scaffolding (an MCP3008 reader core + standalone firmware) was
+briefly carried in the tree; it has since been removed (preserved at tag
+`archive/mcp3008-gateware`). The custom SPI master stays because it's the right
+tool for streaming blits, independent of that episode — it is not a workaround
+to be reverted.
+
 ## Known limitation: tearing
 
 There is no synchronization between LVGL's flushes and the panel's

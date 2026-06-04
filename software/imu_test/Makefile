@@ -24,7 +24,7 @@ include $(SOC_DIRECTORY)/software/common.mak
 
 OBJECTS = main.o crt0.o
 
-all: mcp3008_test.bin
+all: imu_test.bin
 
 %.bin: %.elf
 	$(OBJCOPY) -O binary $< $@
@@ -34,7 +34,7 @@ endif
 
 vpath %.a $(PACKAGES:%=$(BUILD_DIR)/software/%)
 
-mcp3008_test.elf: $(OBJECTS)
+imu_test.elf: $(OBJECTS)
 	$(CC) $(LDFLAGS) -T linker.ld -N -o $@ \
 		$(OBJECTS) \
 		$(PACKAGES:%=-L$(BUILD_DIR)/software/%) \
@@ -58,6 +58,6 @@ VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY)
 	$(assemble)
 
 clean:
-	$(RM) $(OBJECTS) mcp3008_test.elf mcp3008_test.bin mcp3008_test.elf.map .*~ *~
+	$(RM) $(OBJECTS) imu_test.elf imu_test.bin imu_test.elf.map .*~ *~
 
 .PHONY: all clean
