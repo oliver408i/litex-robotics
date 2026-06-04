@@ -12,6 +12,7 @@
 #include "socket/include/socket.h"
 #include "aux_spi.h"
 #include "mdns.h"
+#include "loader_hook.h"
 #include "wifi_secrets.h"
 
 #ifndef CSR_AUX_SPI_BASE
@@ -153,6 +154,8 @@ static void socket_cb(SOCKET sock, uint8 u8Msg, void *pvMsg)
 {
 	if(mdns_socket_cb(sock, u8Msg, pvMsg))   /* mDNS socket's events */
 		return;
+	if(loader_hook_socket_cb(sock, u8Msg, pvMsg))  /* host "enter loader" */
+		return;
 	if(udp_sink_cb(sock, u8Msg, pvMsg))      /* UDP throughput sink  */
 		return;
 
@@ -282,6 +285,7 @@ static void wifi_cb(uint8 u8MsgType, void *pvMsg)
 		tcp_listen();
 		udp_sink_start();
 		mdns_start(ip->u32StaticIP);   /* board reachable as icepi.local */
+		loader_hook_start();           /* flash.py can request the loader */
 		break;
 	}
 	case M2M_WIFI_RESP_SCAN_DONE:

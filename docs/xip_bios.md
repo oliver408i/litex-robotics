@@ -56,7 +56,18 @@ on the LFE5U-25F) by executing it in place from flash instead.
 | --- | --- |
 | `0x000000` | bitstream (ECP5 self-config) |
 | `0x100000` | BIOS (`--bios-flash-offset`, reset vector → `0x20100000`) |
-| `0x200000` | firmware `.fbi` (`FLASH_BOOT_ADDRESS`) |
+| `0x200000` | winc_loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots FIRST on every reset) |
+| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET` — chain-booted by the loader) |
+
+**Boot-manager flow** (winc/all tops): the BIOS flash-boots the *loader*,
+which stays in WiFi-loader mode when the sticky `boot_ctl` flag holds the
+magic (set by a running app's `software/common/loader_hook.c`) or when the
+host spams `"wflSTAY!"` into a 200 ms UART grace window — otherwise it
+CRC-checks and chain-boots the app at `0x280000` (via an SRAM-resident copy
+stub, since both loader and app execute at `0x40000000`). An invalid app
+image keeps the loader up: firmware flashing is brick-safe. Host side:
+`./flash.py` at the repo root. Tops without the boot-manager (mnist_lcd)
+still point `FLASH_BOOT` directly at their firmware.
 
 `--spiflash-1x` gives the same XIP path in single-lane mode (no QE dependency) as a
 cold-boot recovery fallback.

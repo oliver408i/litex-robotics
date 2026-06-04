@@ -12,7 +12,7 @@ This is the hardware half of the bring-up; pair it with software/winc_test
 """
 from icepi_zero_base import BaseSoC, make_parser, resolve_spi_flash, run_build
 
-from gateware.soc_features import add_winc_aux
+from gateware.soc_features import add_winc_aux, add_boot_ctl
 
 
 class WincSoC(BaseSoC):
@@ -26,6 +26,7 @@ class WincSoC(BaseSoC):
             **kwargs,
         )
         add_winc_aux(self, winc_spi_clk_freq, busy_led=0)
+        add_boot_ctl(self)  # sticky boot flag + FTDI DTR/RTS sense
 
 
 def main():

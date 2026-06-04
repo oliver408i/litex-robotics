@@ -80,7 +80,7 @@ class BaseSoC(SoCCore):
     def __init__(self, sys_clk_freq=50e6,
                  with_spi_flash=False, flash_boot_offset=None,
                  bios_flash_offset=0x100000, spiflash_1x=False,
-                 flash_master=False,
+                 flash_master=False, app_flash_offset=0x280000,
                  spi_clk_freq=None,
                  platform=None,
                  force_lcd_backlight_off=True,
@@ -170,6 +170,11 @@ class BaseSoC(SoCCore):
             if flash_boot_offset is not None and "spiflash" in self.bus.regions:
                 flash_origin = self.bus.regions["spiflash"].origin
                 self.add_constant("FLASH_BOOT_ADDRESS", flash_origin + flash_boot_offset)
+
+            # Boot-manager layout: FLASH_BOOT (0x200000) holds the winc_loader,
+            # which chain-boots the application .fbi at this flash offset.
+            # Single source of truth for the loader firmware and flash.py.
+            self.add_constant("FLASH_APP_OFFSET", app_flash_offset)
 
 
 # Build helpers ------------------------------------------------------------------------------------

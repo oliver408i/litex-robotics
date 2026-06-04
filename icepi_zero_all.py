@@ -18,10 +18,13 @@ snn_estimator debug core (CSR-name clash with SNNMLP; its own bring-up top).
 Unlike the per-feature tops this always builds the deployment shape: SPI
 flash present, BIOS XIP'd from 0x100000 (frees the BIOS-ROM EBRs -- the SNN
 build is BRAM-bound), LiteSPI master exposed (BIOS skips master init via
-SPIFLASH_SKIP_MASTER_INIT), and flash-boot defaulting to the firmware offset.
-So every image of this SoC is WiFi-updatable in place with software/winc_loader
-+ winc_flash.py (bitstream @0, BIOS @0x100000, fw @0x200000); JTAG stays the
-recovery path. --spiflash-1x remains the no-QE cold-boot fallback.
+SPIFLASH_SKIP_MASTER_INIT), and the boot-manager flash layout: FLASH_BOOT
+(0x200000) holds the winc_loader, which chain-boots the app .fbi at
+FLASH_APP_OFFSET (0x280000) unless asked to stay (sticky boot_ctl flag /
+UART grace window -- see docs/xip_bios.md). Everything is WiFi-updatable in
+place with ./flash.py (--bitstream/--bios/--loader/--app); JTAG stays the
+recovery path (bootstrap the loader with `--flash-firmware winc_loader.bin`,
+which lands at 0x200000). --spiflash-1x remains the no-QE cold-boot fallback.
 
 Timing gate: same as icepi_zero_mnist_lcd.py -- the critical path is in the
 LiteDRAM L2, margin at N_MAC=2 is thin (~2%); the WiFi additions are tiny and
@@ -29,7 +32,7 @@ off that path, but check Fmax >= 50 MHz after PnR.
 """
 from icepi_zero_base import BaseSoC, make_parser, run_build
 
-from gateware.soc_features import add_lcd_touch, add_snn_mlp, add_winc_aux
+from gateware.soc_features import add_lcd_touch, add_snn_mlp, add_winc_aux, add_boot_ctl
 
 
 class AllSoC(BaseSoC):
@@ -48,6 +51,7 @@ class AllSoC(BaseSoC):
         add_lcd_touch(self, lcd_spi_clk_freq)
         add_snn_mlp(self, leds=(0, 1))
         add_winc_aux(self, winc_spi_clk_freq, busy_led=2)  # led2 optional
+        add_boot_ctl(self)  # sticky boot flag + FTDI DTR/RTS sense
 
 
 def main():

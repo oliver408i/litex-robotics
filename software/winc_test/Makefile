@@ -31,7 +31,7 @@ HOST_DRV := ../host_drv
 # winc_prelude.h force-includes <stdlib.h> for C TUs (the WINC driver uses
 # malloc/free without including it; GCC 14+/15 errors on implicit decls). It is
 # __ASSEMBLER__-guarded so the crt0.S assembly pass stays clean.
-CFLAGS += -I. -I$(HOST_DRV) -include conf_winc.h -include winc_prelude.h
+CFLAGS += -I. -I../common -I$(HOST_DRV) -include conf_winc.h -include winc_prelude.h
 # Function/data-level GC so --gc-sections can drop unused WINC APIs (e.g. the
 # connect/enterprise paths in m2m_wifi.c that pull in malloc/free -> no heap
 # needed) and keep the binary lean.
@@ -51,8 +51,9 @@ WINC_OBJECTS = \
 	nmasic.o nmdrv.o nmbus.o nmspi.o \
 	nm_common.o socket.o spi_flash.o
 
-# Board glue (this project) + the shared aux-bus SPI HAL + mDNS responder.
-PORT_OBJECTS = nm_bsp_icepi.o nm_bus_wrapper_icepi.o aux_spi.o mdns.o
+# Board glue (this project) + the shared aux-bus SPI HAL + mDNS responder
+# + the loader hook (../common, lets flash.py request the WiFi loader).
+PORT_OBJECTS = nm_bsp_icepi.o nm_bus_wrapper_icepi.o aux_spi.o mdns.o loader_hook.o
 
 OBJECTS = main.o crt0.o $(PORT_OBJECTS) $(WINC_OBJECTS)
 
@@ -82,7 +83,7 @@ endif
 -include $(OBJECTS:.o=.d)
 
 # Where to find the WINC driver sources (board glue + HAL live in this dir).
-VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY):$(HOST_DRV)/driver/source:$(HOST_DRV)/common/source:$(HOST_DRV)/socket/source:$(HOST_DRV)/spi_flash/source
+VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY):../common:$(HOST_DRV)/driver/source:$(HOST_DRV)/common/source:$(HOST_DRV)/socket/source:$(HOST_DRV)/spi_flash/source
 
 %.o: %.c
 	$(compile)

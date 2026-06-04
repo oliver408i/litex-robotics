@@ -30,7 +30,7 @@ WINC_TEST := ../winc_test
 # force-included conf_winc.h/winc_prelude.h, section GC, -fcommon. The shared
 # port files (conf_winc.h, aux_spi.h, mdns.h, wifi_secrets.h, ...) resolve
 # from ../winc_test -- single copy, no fork.
-CFLAGS += -I. -I$(WINC_TEST) -I$(HOST_DRV) -include conf_winc.h -include winc_prelude.h
+CFLAGS += -I. -I$(WINC_TEST) -I../common -I$(HOST_DRV) -include conf_winc.h -include winc_prelude.h
 CFLAGS += -ffunction-sections -fdata-sections
 CFLAGS += -fcommon
 
@@ -44,7 +44,7 @@ WINC_OBJECTS = \
 # Board glue + aux-bus SPI HAL + mDNS responder, sourced from ../winc_test.
 PORT_OBJECTS = nm_bsp_icepi.o nm_bus_wrapper_icepi.o aux_spi.o mdns.o
 
-OBJECTS = main.o crt0.o flash_w25q.o $(PORT_OBJECTS) $(WINC_OBJECTS)
+OBJECTS = main.o crt0.o flash_w25q.o chain_stub.o $(PORT_OBJECTS) $(WINC_OBJECTS)
 
 all: winc_loader.bin
 

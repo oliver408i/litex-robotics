@@ -3,8 +3,13 @@
  * replacement for bit-banged JTAG flashing (bitstream @0, BIOS @0x100000,
  * firmware .fbi @0x200000). Host side: winc_flash.py.
  *
- * Standalone SDRAM-resident app: serialboot it from the BIOS, it joins WiFi
- * (wifi_secrets.h), announces icepi.local, and waits for the host. Runs
+ * Boot manager + flasher in one: the BIOS flash-boots this image from
+ * FLASH_BOOT (0x200000) on every reset. Triage order: sticky boot_ctl flag
+ * (set by a running app's loader_hook) -> UART grace window ("wflSTAY!",
+ * 200 ms) -> chain-boot the app .fbi at FLASH_APP_OFFSET (0x280000). An
+ * invalid/absent app image keeps us in loader mode (brick-safe). It can
+ * also still be serialbooted the old way. In loader mode it joins WiFi
+ * (wifi_secrets.h), announces icepi.local, and waits for flash.py. Runs
  * entirely from SDRAM, so master flash ops never collide with XIP fetches
  * (see docs/xip_bios.md). JTAG remains the recovery path.
  *
@@ -32,6 +37,7 @@
 #include "socket/include/socket.h"
 #include "aux_spi.h"
 #include "mdns.h"
+#include "loader_hook.h"   /* LOADER_BOOT_MAGIC (shared with apps' hook) */
 #include "wifi_secrets.h"
 #include "flash_w25q.h"
 
@@ -42,6 +48,16 @@
 extern void winc_service_irq(void);   /* nm_bsp_icepi.c */
 
 #define LOADER_PORT 5557
+
+/* App slot for the boot-manager layout (csr.h constant when the SoC provides
+ * it): the BIOS flash-boots THIS loader from FLASH_BOOT (0x200000); we
+ * chain-boot the app image from here unless someone asked us to stay. */
+#ifndef FLASH_APP_OFFSET
+#define FLASH_APP_OFFSET 0x280000
+#endif
+
+/* SRAM-resident copy stub (chain_stub.S) -- never returns. */
+extern void chain_stub(const void *src, void *dst, uint32_t len, uint32_t entry);
 
 /* SDRAM layout: app text/data live at the bottom of main_ram (~50 KB); the
  * image buffer and chunk bitmap sit far above them. Not in .bss -- that lands
@@ -106,6 +122,80 @@ static uint32_t sw_elapsed_ms(void)
 	timer0_update_value_write(1);
 	uint32_t cycles = 0xffffffff - timer0_value_read();
 	return (uint32_t)(((uint64_t)cycles * 1000) / CONFIG_CLOCK_FREQUENCY);
+}
+
+/* ---- boot-manager triage --------------------------------------------------
+ * Decide loader mode vs chain-booting the app. Order: sticky flag (set by a
+ * running app's loader_hook or, later, the DTR knock), then a short UART
+ * grace window for the host's magic spam, then the app image -- an invalid
+ * or absent image always falls back to loader mode (brick-safe). */
+
+static int boot_flag_requested(void)
+{
+#ifdef CSR_BOOT_CTL_FLAG_ADDR
+	if(boot_ctl_flag_read() == LOADER_BOOT_MAGIC) {
+		boot_ctl_flag_write(0);
+		return 1;
+	}
+#endif
+	return 0;
+}
+
+static int grace_window_hit(uint32_t window_ms)
+{
+	/* Rolling match; magic deliberately avoids 'Q'/ESC (BIOS abort keys). */
+	static const char magic[] = "wflSTAY!";
+	unsigned int m = 0;
+	sw_start();
+	while(sw_elapsed_ms() < window_ms) {
+		if(uart_read_nonblock()) {
+			char c = uart_read();
+			if(c == magic[m]) {
+				m++;
+				if(magic[m] == '\0')
+					return 1;
+			} else {
+				m = (c == magic[0]) ? 1 : 0;
+			}
+		}
+	}
+	return 0;
+}
+
+/* Validate + chain-boot the app .fbi (u32le length, u32le crc32, payload --
+ * same format BIOS flashboot checks). Returns only if there is no valid
+ * image. The copy must not run from main_ram (the app lands exactly where
+ * this loader executes), hence the SRAM-resident chain_stub. */
+static void try_chain_boot(void)
+{
+	const uint8_t *img = (const uint8_t *)(SPIFLASH_BASE + FLASH_APP_OFFSET);
+
+	flush_cpu_dcache();   /* the slot may have just been reflashed */
+	uint32_t len = ((const volatile uint32_t *)img)[0];
+	uint32_t crc = ((const volatile uint32_t *)img)[1];
+
+	if(len == 0 || len == 0xffffffff ||
+	   len > SPIFLASH_SIZE - FLASH_APP_OFFSET - 8) {
+		log_puts("no app image at flash 0x"); log_hex32(FLASH_APP_OFFSET);
+		log_puts(" -- staying in loader"); log_nl();
+		return;
+	}
+	if(crc32(img + 8, len) != crc) {
+		log_puts("app image CRC mismatch -- staying in loader"); log_nl();
+		return;
+	}
+
+	log_puts("chain-booting app ("); log_uint(len);
+	log_puts(" B @0x"); log_hex32(FLASH_APP_OFFSET); log_puts(")"); log_nl();
+	uart_sync();
+#ifdef CONFIG_CPU_HAS_INTERRUPT
+	irq_setmask(0);
+	irq_setie(0);
+#endif
+	flush_cpu_icache();
+	flush_cpu_dcache();
+	chain_stub(img + 8, (void *)MAIN_RAM_BASE, (len + 3) & ~3u, MAIN_RAM_BASE);
+	__builtin_unreachable();
 }
 
 /* ---- transfer session ---------------------------------------------------- */
@@ -402,6 +492,15 @@ int main(void)
 		log_hex8(((const uint8_t *)SPIFLASH_BASE)[i]); log_char(' ');
 	}
 	log_nl();
+
+	/* ---- boot-manager triage: stay in loader mode or chain to the app -- */
+	if(boot_flag_requested()) {
+		log_puts("boot flag set -- staying in loader"); log_nl();
+	} else if(grace_window_hit(200)) {
+		log_puts("grace-window magic -- staying in loader"); log_nl();
+	} else {
+		try_chain_boot();   /* returns only without a valid app image */
+	}
 
 	nm_bsp_init();
 

@@ -13,9 +13,14 @@ Not represented here (and why):
 - snn_estimator (icepi_zero_snn.py): tracking-experiment debug core; collides
   with SNNMLP on the CSR name "snn" and stays a standalone bring-up top.
 """
+from migen import Cat
+
+from litex.gen import LiteXModule
 from litex.build.generic_platform import Pins, Subsignal, IOStandard, Misc
 from litex.soc.cores.i2c import I2CMaster as HWI2CMaster
 from litex.soc.cores.gpio import GPIOIn, GPIOOut
+from litex.soc.interconnect.csr import AutoCSR, CSRStorage
+
 from litex.soc.integration.soc import SoCRegion
 
 from gateware.lcd_engine import LCDEngine
@@ -183,3 +188,46 @@ def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
             soc.comb += platform.request("user_led", busy_led).eq(soc.aux_spi.busy)
         except Exception:
             pass
+
+
+# Boot control: sticky boot-request flag + FTDI sideband sense --------------------------------------
+# The FT231X's modem-control outputs land on plain FPGA IO: DTR# -> L15,
+# RTS# -> L16 (active low at the chip; pyserial `ser.dtr = True` drives the
+# pin LOW). Exposed read-only for now so the wiring can be verified from the
+# host before the planned DTR-"knock" reset module trusts it.
+_ftdi_io = [
+    ("ftdi_sideband", 0,
+        Subsignal("dtr_n", Pins("L15"), Misc("PULLMODE=UP")),
+        Subsignal("rts_n", Pins("L16"), Misc("PULLMODE=UP")),
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+class BootCtl(LiteXModule, AutoCSR):
+    """Sticky boot-request flag for the boot-manager loader.
+
+    reset_less storage: survives a soft reset (ctrl_reset), reads 0 after
+    power-on / reconfigure (ECP5 FFs initialize from the bitstream). A
+    running app writes LOADER_BOOT_MAGIC (see software/common/loader_hook.h)
+    and resets; the winc_loader -- which the BIOS flash-boots first -- sees
+    the magic, clears it, and stays in WiFi-loader mode instead of
+    chain-booting the app at FLASH_APP_OFFSET.
+    """
+    def __init__(self):
+        self.flag = CSRStorage(32, reset_less=True,
+            description="Boot request flag. Survives soft reset; 0 at power-on.")
+
+
+def add_boot_ctl(soc):
+    """Sticky boot flag + FTDI DTR/RTS level sense (wiring verification)."""
+    soc.boot_ctl = BootCtl()
+    soc.add_csr("boot_ctl")
+
+    # Raw DTR#/RTS# levels: bit0 = dtr_n (L15), bit1 = rts_n (L16). Toggle
+    # ser.dtr / ser.rts from pyserial and read ftdi_sense_in to confirm the
+    # pins before building the knock-reset module on top of them.
+    soc.platform.add_extension(_ftdi_io)
+    pads = soc.platform.request("ftdi_sideband")
+    soc.ftdi_sense = GPIOIn(Cat(pads.dtr_n, pads.rts_n))
+    soc.add_csr("ftdi_sense")
