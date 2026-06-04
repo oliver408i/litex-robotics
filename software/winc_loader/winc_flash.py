@@ -103,6 +103,11 @@ def main():
         sys.exit(f"BEGIN refused: {ST_NAMES.get(status, status)}")
     if args.offset + len(data) > flash_size:
         sys.exit(f"image does not fit: flash is {flash_size} B")
+    # Known flash layout (docs/xip_bios.md): bitstream @0, BIOS @0x100000,
+    # firmware @0x200000. Crossing a boundary clobbers the next image.
+    for name, b in (("BIOS @0x100000", 0x100000), ("firmware @0x200000", 0x200000)):
+        if args.offset < b < args.offset + len(data):
+            print(f"WARNING: image crosses {name} -- it will be overwritten")
 
     # DATA blast + stat/resend until the board holds the complete image
     t0 = time.monotonic()
