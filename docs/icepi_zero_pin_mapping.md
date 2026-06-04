@@ -145,24 +145,25 @@ physical card pins.
 
 # Part 2 — Current Project Wiring
 
-Everything below sits on the GPIO bank from Part 1. The IMU and the LCD/touch
-panel are added as platform extensions in `icepi_zero_imu.py` and the LCD SoC;
-`rgb_led` and `mcp3008` come from the platform file but are listed here because
-this is where their real usage lives.
+Everything below sits on the GPIO bank from Part 1. The peripherals are added
+as platform extensions in `gateware/soc_features.py` (shared by the per-feature
+tops and the combined `icepi_zero_all.py`); `rgb_led` comes from the platform
+file but is listed here because this is where its real usage lives. All
+allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
 
 ## GPIO Bank Usage (IO1–IO27)
 
 | Board IO | FPGA Pin | Function |
 | --- | --- | --- |
 | IO1 | `K3` | RGB LED / NeoPixel data |
-| IO2 | `T2` | SPI sensor bus `sclk` (MCP3008 + IMU) |
-| IO3 | `R2` | MCP3008 `cs_n` (sensor bus `cs[1]`) |
+| IO2 | `T2` | aux SPI bus `sclk` (WINC + IMU + MCP3008) |
+| IO3 | `R2` | MCP3008 `cs_n` (aux bus `cs[2]`) |
 | IO4 | `R1` | *free* |
 | IO5 | `E1` | *free* |
-| IO6 | `F3` | IMU `cs_n` (sensor bus `cs[0]`) |
+| IO6 | `F3` | IMU `cs_n` (aux bus `cs[1]`) |
 | IO7 | `G1` | `LCD_RS` (DC / command-data select) |
-| IO8 | `H2` | SPI sensor bus `mosi` |
-| IO9 | `J1` | *free* |
+| IO8 | `H2` | aux SPI bus `mosi` |
+| IO9 | `J1` | WINC `CHIP_EN` (dummy — module EN tied to 3.3 V externally) |
 | IO10 | `L2` | *free* |
 | IO11 | `G2` | *free* |
 | IO12 | `J3` | `LCD_RST` |
@@ -173,17 +174,17 @@ this is where their real usage lives.
 | IO17 | `R3` | *free* |
 | IO18 | `N4` | `CTP_SDA` (touch) |
 | IO19 | `E4` | `LCD_SCK` |
-| IO20 | `F1` | *free* |
+| IO20 | `F1` | WINC `RESET_N` |
 | IO21 | `F2` | `CTP_INT` (touch) |
 | IO22 | `P2` | *free* |
-| IO23 | `M2` | *free* |
-| IO24 | `L1` | *free* |
-| IO25 | `J2` | SPI sensor bus `miso` |
+| IO23 | `M2` | WINC `cs_n` (aux bus `cs[0]`) |
+| IO24 | `L1` | WINC `IRQN` (active low, pull-up) |
+| IO25 | `J2` | aux SPI bus `miso` |
 | IO26 | `D4` | `LCD_MOSI` |
 | IO27 | `P3` | *free* |
 
-**16 used, 11 free.** Free pins: IO4, IO5, IO9, IO10, IO11, IO17, IO20, IO22,
-IO23, IO24, IO27.
+**20 used (incl. the dummy WINC EN), 7 free.** Free pins: IO4, IO5, IO10,
+IO11, IO17, IO22, IO27.
 
 ## RGB LED / NeoPixel
 
@@ -191,12 +192,15 @@ IO23, IO24, IO27.
 | --- | --- | --- |
 | `rgb_led` data | `K3` | IO1 |
 
-## SPI Sensor Bus (MCP3008 + LSM6DS3 IMU)
+## Shared Aux SPI Bus (ATWINC1500 + LSM6DS3 IMU + MCP3008)
 
-The MCP3008 ADC and the LSM6DS3 IMU share one SPI bus: the clock and data
-lines are common, and each device has its own chip-select. This is the
-"second SPI bus" wired up in `icepi_zero_imu.py` (distinct from the LCD's
-dedicated SPI bus). The IMU rides `cs[0]`; the MCP3008 rides `cs[1]`.
+One SPI bus (runtime-divider `AuxSPIMaster`, software-held chip-selects --
+`gateware/aux_spi.py`, wired by `add_winc_aux` in `gateware/soc_features.py`)
+serves three devices at their own clocks. Distinct from the LCD's dedicated
+SPI bus. Historical note: `icepi_zero_imu.py` drove the same physical pins
+with a LiteX SPIMaster (`imu_spi`, IMU on cs[0]); that arrangement is
+superseded by this bus -- firmware reaches the IMU via the `AUX_IMU` device
+in `software/winc_test/aux_spi.h`.
 
 Shared lines:
 
@@ -206,12 +210,21 @@ Shared lines:
 | `mosi` | `H2` | IO8 |
 | `miso` | `J2` | IO25 |
 
-Per-device chip-selects:
+Per-device chip-selects (`AUX_CS_*` constants in csr.h match the indices):
 
 | Device | Signal | FPGA Pin | Board IO | Notes |
 | --- | --- | --- | --- | --- |
-| LSM6DS3 IMU | `cs_n[0]` | `F3` | IO6 | SPI mode 0; SCK max 10 MHz (bring-up uses 2 MHz) |
-| MCP3008 ADC | `cs_n[1]` | `R2` | IO3 | Parked deasserted during IMU-only bring-up |
+| ATWINC1500 WiFi | `cs_n[0]` | `M2` | IO23 | SPI mode 0; 12.5 MHz = tested ceiling (25 MHz corrupts MISO) |
+| LSM6DS3 IMU | `cs_n[1]` | `F3` | IO6 | SPI mode 0; SCK max 10 MHz (bring-up uses 1-2 MHz) |
+| MCP3008 ADC | `cs_n[2]` | `R2` | IO3 | Parked deasserted (no firmware driver wired up currently) |
+
+WINC sidebands (also `add_winc_aux`):
+
+| Signal | FPGA Pin | Board IO | Notes |
+| --- | --- | --- | --- |
+| `RESET_N` | `F1` | IO20 | Active low; GPIOOut, 0 at power-on (held in reset) |
+| `CHIP_EN` | `J1` | IO9 | Dummy pin -- module EN is tied to 3.3 V externally (must be tied!) |
+| `IRQN` | `L1` | IO24 | Active low, pull-up; GPIOIn with IRQ (polled in current firmware) |
 
 ## LCD / Touch
 

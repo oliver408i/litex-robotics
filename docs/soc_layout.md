@@ -8,6 +8,14 @@ The thing worth seeing here is the **interconnect**: three Wishbone masters
 (CPU + two DMA engines) arbitrate for one shared SDRAM, and the design spans
 **three clock domains** (50 MHz `sys`, a 90°-shifted `sdram`, and a fast `spi`).
 
+> **AllSoC (`icepi_zero_all.py`)** is this layout plus the WiFi/aux block and
+> the flash master, composed from `gateware/soc_features.py`: same three
+> Wishbone masters (the aux SPI is CSR-driven, no DMA), plus CSR blocks
+> `aux_spi` / `winc_reset` / `winc_en` / `winc_irq` / `spiflash` (+ master),
+> a 6th IRQ (`winc_irq`), XIP BIOS at `0x2010_0000` instead of the EBR ROM,
+> and the flash mmap at `0x2000_0000`. Exact addresses: re-derive from that
+> build's `csr.csv`.
+
 ## Bus topology
 
 ```mermaid
