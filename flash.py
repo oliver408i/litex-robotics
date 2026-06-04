@@ -6,6 +6,7 @@
   ./flash.py --bios [bios.bin]                 # BIOS      @0x100000 (raw)
   ./flash.py --bitstream [icepi_zero.bit]      # bitstream @0x000000 (raw)
   ./flash.py --bitstream --bios --loader       # full system from build outputs
+  ./flash.py --run firmware.bin                # SDRAM-load + run, NO flashing
   ./flash.py file.bin --offset 0x300000 [--fbi]  # explicit offset
   ./flash.py --reset --port /dev/ttyUSB0       # just reboot the SoC
 
@@ -73,6 +74,10 @@ def parse_args():
                             const=os.path.join(REPO, default),
                             help=f"flash FILE to the {slot} slot @0x{offset:06x} "
                                  f"(default: {default})")
+    ap.add_argument("--run", metavar="FILE",
+                    help="load FILE into SDRAM and execute it immediately -- "
+                         "nothing is flashed, the flashed app slot is untouched "
+                         "and the RAM app vanishes on the next reset")
     ap.add_argument("--host", default="icepi.local")
     ap.add_argument("--udp-port", type=int, default=LOADER_PORT)
     ap.add_argument("--port", metavar="TTY", default=None,
@@ -114,8 +119,8 @@ def build_jobs(args):
         if args.fbi:
             data = struct.pack("<II", len(data), zlib.crc32(data)) + data
         jobs.append((args.file, args.offset, data))
-    if not jobs:
-        sys.exit("nothing to flash -- give a slot preset or FILE --offset X")
+    if not jobs and not args.run:
+        sys.exit("nothing to do -- give a slot preset, FILE --offset X, or --run")
     return sorted(jobs, key=lambda j: j[1])
 
 
@@ -262,13 +267,11 @@ def send_chunks(s, dst, data, indices, pps):
             time.sleep(delay)
 
 
-def flash_image(s, dst, label, offset, data, pps):
+def upload_image(s, dst, label, offset, data, pps, what="flash"):
+    """BEGIN + DATA: stage the image in board SDRAM (complete + acknowledged)."""
     crc = zlib.crc32(data)
     total = (len(data) + CHUNK - 1) // CHUNK
-    print(f"{label}: {len(data)} B ({total} chunks) -> flash @0x{offset:06x}")
-    for name, b in BOUNDARIES:
-        if offset < b < offset + len(data):
-            print(f"  WARNING: image crosses {name} -- it will be overwritten")
+    print(f"{label}: {len(data)} B ({total} chunks) -> {what} @0x{offset:06x}")
 
     # BEGIN (re-ack of an identical session resumes instead of restarting)
     begin = b"WFLB" + struct.pack("<IIIH", offset, len(data), crc, CHUNK)
@@ -298,6 +301,13 @@ def flash_image(s, dst, label, offset, data, pps):
     dt = time.monotonic() - t0
     print(f"  ({len(data)/dt/1e6:.2f} MB/s)")
 
+
+def flash_image(s, dst, label, offset, data, pps):
+    for name, b in BOUNDARIES:
+        if offset < b < offset + len(data):
+            print(f"  WARNING: image crosses {name} -- it will be overwritten")
+    upload_image(s, dst, label, offset, data, pps)
+
     # PROGRAM: erase+program+verify runs with the radio unserviced -- keep
     # retrying, the result is cached and re-sent.
     print("  programming (erase + write + verify)...", flush=True)
@@ -310,6 +320,25 @@ def flash_image(s, dst, label, offset, data, pps):
     print(f"  flashed + verified in {ms/1000:.1f} s (flash crc 0x{flash_crc:08x})")
 
 
+def run_image(s, dst, path, pps):
+    """Stage a raw binary in SDRAM and execute it -- no flash, no reboot.
+    The staging offset is the app slot's only because WFLB validates against
+    the flash layout; WFLX never touches flash. No .fbi header (length/crc
+    already travel in WFLB)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    upload_image(s, dst, f"run:{os.path.relpath(path)}", SLOTS["app"][0], data,
+                 pps, what="SDRAM exec")
+    print("  executing from SDRAM (nothing flashed)...", flush=True)
+    reply = request(s, dst, b"WFLX", b"WFLX", tries=10, timeout=1.0)
+    if reply is None:
+        sys.exit("no reply to EXEC -- loader gone?")
+    status = reply[4]
+    if status != 0:
+        sys.exit(f"EXEC refused: {ST_NAMES.get(status, status)}")
+    print("  app running from SDRAM -- gone on the next reset")
+
+
 def main():
     args = parse_args()
 
@@ -320,6 +349,8 @@ def main():
         return
 
     jobs = build_jobs(args)
+    if args.run and not os.path.exists(args.run):
+        sys.exit(f"run image not found: {args.run}")
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Resolution happens inside the ladder (the board may be offline until
@@ -328,12 +359,20 @@ def main():
     host_ip = ensure_loader(s, args.host, args)
     dst = (host_ip, args.udp_port)
 
-    t0 = time.monotonic()
-    for label, offset, data in jobs:
-        flash_image(s, dst, label, offset, data, args.pps)
-    print(f"total: {time.monotonic()-t0:.1f} s")
+    if jobs:
+        t0 = time.monotonic()
+        for label, offset, data in jobs:
+            flash_image(s, dst, label, offset, data, args.pps)
+        print(f"total: {time.monotonic()-t0:.1f} s")
 
     flashed = {label.split(":")[0] for label, _, _ in jobs}
+    if args.run:
+        # exec is terminal for the loader -- it replaces the WFLR step
+        if "bitstream" in flashed:
+            print("NOTE: bitstream flashed -- the RAM app runs on the OLD "
+                  "fabric; power-cycle later to apply the new bitstream")
+        run_image(s, dst, args.run, args.pps)
+        return
     if "bitstream" in flashed and not args.reboot:
         # Apply everything with ONE power-cycle. A soft reset here would boot
         # the OLD (still-configured) bitstream with the NEW flash contents --

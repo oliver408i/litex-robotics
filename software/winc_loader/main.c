@@ -43,6 +43,9 @@ extern void chain_stub(const void *src, void *dst, uint32_t len, uint32_t entry)
  * in the 8 KB sram next to the stack. */
 #define IMG_BUF       ((uint8_t *)(MAIN_RAM_BASE + 0x00800000))
 #define IMG_MAX_LEN   (MAIN_RAM_SIZE - 0x00800000 - 0x00400000) /* keep 4 MB headroom */
+#define EXEC_MAX_LEN  0x00800000   /* WFLX copies IMG_BUF down to 0; the app
+                                      must end below IMG_BUF or the copy would
+                                      eat its own source */
 #define CHUNK_MAP     ((uint8_t *)(MAIN_RAM_BASE + 0x007f0000)) /* 64 KB below buffer */
 #define CHUNK_MIN     512
 #define CHUNK_MAX     1408   /* fits a 1472 B datagram with the 8 B header */
@@ -197,6 +200,9 @@ static struct sockaddr_in prog_addr;    /* who to answer when programming ends *
 
 static uint8_t  reboot_pending;
 
+static uint8_t  exec_pending;           /* WFLX accepted, run from main loop */
+static struct sockaddr_in exec_addr;    /* who to ack just before the jump   */
+
 static uint32_t rd_u32(const uint8 *p)
 {
 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
@@ -322,6 +328,30 @@ static void handle_prog(const struct sockaddr_in *from)
 	send_wflz(from);                /* error path only */
 }
 
+static void send_wflx(const struct sockaddr_in *to, uint8_t status)
+{
+	uint8 r[8];
+	memcpy(r, "WFLX", 4);
+	r[4] = status; r[5] = r[6] = r[7] = 0;
+	ldr_reply(to, r, sizeof(r));
+}
+
+static void handle_exec(const struct sockaddr_in *from)
+{
+	if(exec_pending || (prog_pending && !prog_done))
+		return;                     /* already queued / flash op in flight */
+	if(!session) {
+		send_wflx(from, ST_NO_SESSION);
+	} else if(got_chunks < total_chunks) {
+		send_wflx(from, ST_INCOMPLETE);
+	} else if(img_len > EXEC_MAX_LEN) {
+		send_wflx(from, ST_BAD_ARGS);
+	} else {
+		exec_addr    = *from;
+		exec_pending = 1;           /* CRC + chain happen in main loop */
+	}
+}
+
 static void handle_reboot(const struct sockaddr_in *from)
 {
 	uint8 r[4];
@@ -372,6 +402,42 @@ static void run_program(void)
 	send_wflz(&prog_addr);
 }
 
+/* WFLX: run the staged SDRAM image directly -- nothing flashed, no reset.
+ * Same exit sequence as try_chain_boot, but the source is IMG_BUF instead of
+ * the flash mmap; returns only on a CRC mismatch. The app vanishes on the
+ * next reset (the loader then chain-boots whatever is in the flash slot). */
+static void run_exec(void)
+{
+	exec_pending = 0;
+	log_puts("exec: image CRC check..."); log_nl();
+	uint32_t c = crc32(IMG_BUF, img_len);
+	if(c != img_crc) {
+		log_puts("SDRAM image CRC mismatch: got 0x"); log_hex32(c);
+		log_puts(" want 0x"); log_hex32(img_crc); log_nl();
+		send_wflx(&exec_addr, ST_CRC_SDRAM);
+		return;
+	}
+	send_wflx(&exec_addr, ST_OK);
+	/* let the ack drain before the WINC goes unserviced for good */
+	for(int i = 0; i < 30; i++) {
+		winc_service_irq();
+		m2m_wifi_handle_events(NULL);
+		busy_wait(10);
+	}
+	log_puts("running app from SDRAM ("); log_uint(img_len);
+	log_puts(" B, not flashed -- gone on next reset)"); log_nl();
+	log_puts("--============== \e[1mapp\e[0m ===============--"); log_nl();
+	uart_sync();
+#ifdef CONFIG_CPU_HAS_INTERRUPT
+	irq_setmask(0);
+	irq_setie(0);
+#endif
+	flush_cpu_icache();
+	flush_cpu_dcache();
+	chain_stub(IMG_BUF, (void *)MAIN_RAM_BASE, (img_len + 3) & ~3u, MAIN_RAM_BASE);
+	__builtin_unreachable();
+}
+
 /* ---- sockets -------------------------------------------------------------- */
 static void ldr_start(void)
 {
@@ -407,6 +473,7 @@ static void socket_cb(SOCKET sock, uint8 u8Msg, void *pvMsg)
 			else if(memcmp(p, "WFLS", 4) == 0) handle_stat(&m->strRemoteAddr);
 			else if(memcmp(p, "WFLB", 4) == 0) handle_begin(p, m->s16BufferSize, &m->strRemoteAddr);
 			else if(memcmp(p, "WFLP", 4) == 0) handle_prog(&m->strRemoteAddr);
+			else if(memcmp(p, "WFLX", 4) == 0) handle_exec(&m->strRemoteAddr);
 			else if(memcmp(p, "WFLR", 4) == 0) handle_reboot(&m->strRemoteAddr);
 		}
 		recvfrom(ldr_sock, ldr_rx, sizeof(ldr_rx), 0);   /* re-arm */
@@ -517,6 +584,9 @@ int main(void)
 
 		if(prog_pending && !prog_done)
 			run_program();
+
+		if(exec_pending)
+			run_exec();             /* returns only on CRC mismatch */
 
 		if(reboot_pending) {
 			/* let the WFLR ack drain, then hand back to the BIOS */

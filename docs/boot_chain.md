@@ -118,7 +118,20 @@ to stay in WiFi-loader mode or hand off to the app. Triage order:
 | `WFLD` data | u32 chunk_idx, ≤1408 B payload | none (bitmap, idempotent) |
 | `WFLS` stat | — | `WFLT` got/total + missing indices (≤300) |
 | `WFLP` program | — | `WFLZ` status, ms, flash crc (cached, re-sent) |
+| `WFLX` exec | — | `WFLX` status; CRC the staged image, then chain-boot it **from SDRAM** — nothing flashed, no reset |
 | `WFLR` reboot | — | `WFLR` ack, then `ctrl_reset` |
+
+`WFLX` (host: `./flash.py --run FILE`) is the develop-fast path: the image is
+staged exactly like a flash session (raw binary, no `.fbi` — length/CRC travel
+in `WFLB`), but instead of erase/program the loader acks, drains the WINC, and
+jumps through the same `chain_stub` exit as a flash chain-boot, with `IMG_BUF`
+as the source. Capped at 8 MB (the app must end below `IMG_BUF` at
+`0x40800000` or the copy would eat its own source). The flashed app slot is
+untouched: any reset boots back through the loader into the *flashed* app, so
+a RAM-run image is gone on reset by design — `--run` a broken build and the
+board recovers with the reset button. A RAM app inherits a live, already
+initialized WINC; apps that use WiFi reset the module in their own
+`m2m_wifi_init()`, so this is invisible in practice.
 
 ## FTDI sidebands (host-driven reset)
 
@@ -147,8 +160,9 @@ verification and the triage level).
 
 Slot presets (`--bitstream/--bios/--loader` default to the standard build
 artifacts; `--app FILE` explicit), combinable in one session; legacy
-`FILE --offset X [--fbi]` form; `--reset` = plain FTDI reboot to app.
-Entry ladder:
+`FILE --offset X [--fbi]` form; `--run FILE` = SDRAM-load + execute without
+flashing (combinable with slots — the exec runs last and replaces the final
+reboot); `--reset` = plain FTDI reboot to app. Entry ladder:
 
 1. loader already answering :5557 → go
 2. app `loader_hook` on :5558 (`WFLE`) → reboots itself into the loader,

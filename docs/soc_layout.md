@@ -1,20 +1,21 @@
-# MNIST-LCD SoC layout
+# AllSoC layout
 
-Block diagram of `MnistLCDSoC` (`icepi_zero_mnist_lcd.py`). Generated from the
-LiteX source and the build's `csr.csv` / `soc.h`; if you change the bus topology
-or address map, re-derive it from `build/icepi_zero/csr.csv`.
+Block diagram of `AllSoC` (`icepi_zero_all.py`) — the deployed "everything"
+shape, composed from `gateware/soc_features.py` feature adders on `BaseSoC`.
+Generated from the LiteX source and the build's `csr.csv` / `soc.h`; if you
+change the bus topology or address map, re-derive it from
+`build/icepi_zero/csr.csv`.
 
 The thing worth seeing here is the **interconnect**: three Wishbone masters
 (CPU + two DMA engines) arbitrate for one shared SDRAM, and the design spans
-**three clock domains** (50 MHz `sys`, a 90°-shifted `sdram`, and a fast `spi`).
+**three clock domains** (50 MHz `sys`, a 90°-shifted `sdram`, and a fast
+`spi`). Everything else — the aux SPI bus (WINC/IMU/MCP), the flash master,
+boot control — is CSR-driven with no bus mastering of its own.
 
-> **AllSoC (`icepi_zero_all.py`)** is this layout plus the WiFi/aux block and
-> the flash master, composed from `gateware/soc_features.py`: same three
-> Wishbone masters (the aux SPI is CSR-driven, no DMA), plus CSR blocks
-> `aux_spi` / `winc_reset` / `winc_en` / `winc_irq` / `spiflash` (+ master),
-> a 6th IRQ (`winc_irq`), XIP BIOS at `0x2010_0000` instead of the EBR ROM,
-> and the flash mmap at `0x2000_0000`. Exact addresses: re-derive from that
-> build's `csr.csv`.
+> **MnistLCDSoC (`icepi_zero_mnist_lcd.py`)** is this layout minus the
+> WiFi/aux block, flash mmap and boot control: an integrated 128 KB EBR ROM
+> at `0x0` replaces the XIP BIOS, 5 IRQs, and the CSR map packs accordingly.
+> The other per-feature tops (`icepi_zero_lcd/mnist/winc.py`) subset further.
 
 ## Bus topology
 
@@ -27,21 +28,27 @@ flowchart LR
 
         arb{{"Wishbone<br/>arbiter / interconnect"}}
 
-        rom["ROM 128 KB<br/>0x0000_0000"]
+        flash["LiteSPI mmap (XIP)<br/>0x2000_0000 (16 MB)<br/>BIOS rom @0x2010_0000"]
         sram["SRAM 8 KB<br/>0x1000_0000"]
         ctpi2c["FT6336U I2C<br/>0x8000_0000 (16 B)"]
         csrbr["CSR bridge<br/>0xf000_0000 (64 KB)"]
         dramctl["LiteDRAM controller<br/>+ L2 cache (8 KB)"]
 
+        auxspi["aux_spi master<br/>(CSR, runtime divider)"]
+        bootctl["boot_ctl + ftdi_sense<br/>(sticky flag, host reset)"]
+
         cpu  -- master --> arb
         lcd  -- "master: lcd_dma" --> arb
         snn  -- "master: snn_wb" --> arb
 
-        arb --> rom
+        arb --> flash
         arb --> sram
         arb --> ctpi2c
         arb --> csrbr
         arb --> dramctl
+
+        csrbr -.-> auxspi
+        csrbr -.-> bootctl
     end
 
     subgraph sdramcd["sdram — 50 MHz, +90°"]
@@ -57,7 +64,15 @@ flowchart LR
     lcd -. "depth-4 async FIFO<br/>(LUTRAM)" .-> spihost
     spihost ==> panel["ST7796S panel<br/>320×480 RGB565"]
     ctpi2c ==> touch["FT6336U<br/>cap touch"]
+    flash ==>|"quad SPI<br/>SCLK 25 MHz"| w25q[("W25Q128<br/>16 MB NOR")]
+    auxspi ==>|"shared bus, SW-held CS<br/>SCK 12.5 MHz dflt"| winc["ATWINC1500 (cs0)<br/>LSM6DS3 (cs1)<br/>MCP3008 (cs2)"]
+    ftdi["FT231X DTR#/RTS#"] ==> bootctl
 ```
+
+The flash sits behind **two paths**: the memory-mapped LiteSPI XIP read path
+(CPU fetch/read at `0x2000_0000`, BIOS executes in place from it) and the
+CSR-driven LiteSPI **master** (`spiflash` CSRs) used by the loader for
+erase/program — mutual-exclusion rules in `docs/boot_chain.md`.
 
 ## CSR map (within `0xf000_0000`)
 
@@ -65,17 +80,35 @@ flowchart LR
 flowchart TB
     csr["CSR bridge<br/>0xf000_0000"]
     csr --> s0["snn        0xf000_0000"]
-    csr --> s1["ctp_i2c    0xf000_0800"]
-    csr --> s2["ctp_int    0xf000_1000"]
-    csr --> s3["ctrl       0xf000_1800"]
-    csr --> s4["identifier 0xf000_2000"]
-    csr --> s5["lcd        0xf000_2800"]
-    csr --> s6["sdram      0xf000_3000"]
-    csr --> s7["timer0     0xf000_3800"]
-    csr --> s8["uart       0xf000_4000"]
+    csr --> s1["aux_spi    0xf000_0800"]
+    csr --> s2["winc_reset 0xf000_1000"]
+    csr --> s3["winc_en    0xf000_1800"]
+    csr --> s4["winc_irq   0xf000_2000"]
+    csr --> s5["boot_ctl   0xf000_2800"]
+    csr --> s6["ftdi_sense 0xf000_3000"]
+    csr --> s7["ctp_i2c    0xf000_3800"]
+    csr --> s8["ctp_int    0xf000_4000"]
+    csr --> s9["ctrl       0xf000_4800"]
+    csr --> s10["identifier 0xf000_5000"]
+    csr --> s11["lcd        0xf000_5800"]
+    csr --> s12["sdram      0xf000_6000"]
+    csr --> s13["spiflash   0xf000_6800"]
+    csr --> s14["timer0     0xf000_7000"]
+    csr --> s15["uart       0xf000_7800"]
 ```
 
-## Interrupt lines (VexRiscv, 5 total)
+The feature-adder CSR blocks:
+
+| Block | Source | What it is |
+|-------|--------|------------|
+| `aux_spi` | `gateware/aux_spi.py` | shared SPI master, 3 chip-selects (WINC/IMU/MCP), software-held CS, runtime `clk_divider` |
+| `winc_reset` / `winc_en` | `soc_features.py` | GPIOOut sidebands; power-on 0 = WINC held in reset/disabled |
+| `winc_irq` | `soc_features.py` | GPIOIn on IRQN with IRQ (line 5) |
+| `boot_ctl` | `soc_features.py` (`BootCtl`) | sticky `reset_less` boot flag + FTDI DTR/RTS reset detector → `crg.user_rst` |
+| `ftdi_sense` | `soc_features.py` | raw DTR#/RTS# levels (bit0/bit1) for the loader's "stay" triage |
+| `spiflash` | LiteSPI | flash master (JEDEC/erase/program) next to the XIP mmap |
+
+## Interrupt lines (VexRiscv, 6 total)
 
 | IRQ | Source   | Notes                          |
 |-----|----------|--------------------------------|
@@ -84,16 +117,18 @@ flowchart TB
 | 2   | lcd      | op-done → LVGL flush callback  |
 | 3   | ctp_i2c  | touch I2C transfer complete    |
 | 4   | ctp_int  | FT6336U INT line (polled in fw)|
+| 5   | winc_irq | ATWINC1500 IRQN (active low)   |
 
 ## Address map
 
-| Region   | Base          | Size  | Type   |
-|----------|---------------|-------|--------|
-| rom      | 0x0000_0000   | 128 KB| cached |
-| sram     | 0x1000_0000   | 8 KB  | cached |
-| main_ram | 0x4000_0000   | 32 MB | cached |
-| ctp_i2c  | 0x8000_0000   | 16 B  | io     |
-| csr      | 0xf000_0000   | 64 KB | io     |
+| Region   | Base          | Size  | Type   | Notes |
+|----------|---------------|-------|--------|-------|
+| sram     | 0x1000_0000   | 8 KB  | cached | stack + `chain_stub` |
+| spiflash | 0x2000_0000   | 16 MB | cached | XIP mmap of the whole W25Q128 |
+| rom      | 0x2010_0000   | 64 KB | cached | BIOS, alias into spiflash @0x100000 |
+| main_ram | 0x4000_0000   | 32 MB | cached | apps execute here; loader IMG_BUF @ +8 MB |
+| ctp_i2c  | 0x8000_0000   | 16 B  | io     | |
+| csr      | 0xf000_0000   | 64 KB | io     | |
 
 ---
 
