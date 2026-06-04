@@ -40,7 +40,7 @@ def main():
                                help="Expose the LiteSPI master CSRs so SDRAM-resident firmware "
                                     "(the WiFi flash-loader) can erase/program the SPI flash. "
                                     "Implies the XIP flash build; the BIOS skips master init "
-                                    "(SPIFLASH_SKIP_MASTER_INIT). See docs/xip_bios.md.")
+                                    "(SPIFLASH_SKIP_MASTER_INIT). See docs/boot_chain.md.")
     args = parser.parse_args()
 
     soc = WincSoC(
@@ -50,6 +50,7 @@ def main():
         flash_master      = args.flash_master,
         bios_flash_offset = args.bios_flash_offset,
         spiflash_1x       = args.spiflash_1x,
+        spiflash_clk_freq = args.spiflash_clk_freq,
         winc_spi_clk_freq = args.winc_spi_clk_freq,
         **parser.soc_argdict,
     )

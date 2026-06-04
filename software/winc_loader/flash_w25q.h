@@ -2,7 +2,7 @@
  *
  * SAFE ONLY from code running entirely out of SDRAM: a master command knocks
  * the flash out of the continuous-read mode the XIP path uses, so nothing may
- * fetch/read through the flash mmap while these run (see docs/xip_bios.md).
+ * fetch/read through the flash mmap while these run (see docs/boot_chain.md).
  * Self-contained rather than liblitespi because that lacks 64K block erase
  * and printf-spams a per-byte verify; readback verify here is a single CRC
  * over the mmap window done by the caller.

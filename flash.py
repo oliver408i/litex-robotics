@@ -1,50 +1,46 @@
 #!/usr/bin/env python3
 """WiFi flasher for the IcePi Zero (host side of software/winc_loader).
 
-Flashes images over WiFi into the board's SPI flash. Slot presets (combinable
-in one session):
-
   ./flash.py --app firmware.bin                # app .fbi  @0x280000 (fbi auto)
-  ./flash.py --loader winc_loader.bin          # loader    @0x200000 (fbi auto)
-  ./flash.py --bios bios.bin                   # BIOS      @0x100000 (raw)
-  ./flash.py --bitstream icepi_zero.bit        # bitstream @0x000000 (raw)
-  ./flash.py file.bin --offset 0x300000 [--fbi]  # explicit (legacy form)
+  ./flash.py --loader [winc_loader.bin]        # loader    @0x200000 (fbi auto)
+  ./flash.py --bios [bios.bin]                 # BIOS      @0x100000 (raw)
+  ./flash.py --bitstream [icepi_zero.bit]      # bitstream @0x000000 (raw)
+  ./flash.py --bitstream --bios --loader       # full system from build outputs
+  ./flash.py file.bin --offset 0x300000 [--fbi]  # explicit offset
+  ./flash.py --reset --port /dev/ttyUSB0       # just reboot the SoC
 
-Getting the board into the loader is automatic where possible (the loader is
-resident: BIOS flash-boots it, and it chain-boots the app unless asked to
-stay):
-  1. loader already running         -> proceed
-  2. app running with loader_hook   -> "WFLE" datagram reboots it into the
-     (software/common/loader_hook.c)   loader, cable-free
-  3. --port /dev/ttyUSBx given      -> spam the loader's 200 ms boot grace
-                                       window with "wflSTAY!" and ask you to
-                                       press the reset button
-
-After flashing: app/loader/BIOS apply via soft reset (WFLR -> loader chains
-the new app); a new bitstream needs a power-cycle.
-
-Protocol notes: chunk-indexed UDP (loss/reorder/dup-proof), idempotent control
-packets, paced under the WINC's ~290 pps knee. Resolve the hostname once --
-per-packet mDNS lookups cost ~23 ms each.
+Slots are combinable in one session; bare --bitstream/--bios/--loader pick up
+the standard build artifacts. Entering the loader is automatic: probe :5557,
+ask a running app's loader_hook (:5558), or FTDI-reset via --port (with 'l'
+key spam + a reset prompt as the fallback). The boot chain, protocol and FTDI
+semantics are documented in docs/boot_chain.md.
 """
 import argparse
+import os
 import socket
 import struct
 import sys
 import time
 import zlib
 
+REPO = os.path.dirname(os.path.abspath(__file__))
+
 CHUNK = 1408          # max payload per WFLD (board cap; 1472 B datagram)
 
 LOADER_PORT = 5557
 HOOK_PORT   = 5558    # software/common/loader_hook.c
-GRACE_MAGIC = b"wflSTAY!"
+GRACE_KEY   = b"l"    # loader boot grace window: 'l' = stay in loader
 
-SLOTS = {   # name: (offset, wrap_fbi)
-    "bitstream": (0x000000, False),
-    "bios":      (0x100000, False),
-    "loader":    (0x200000, True),
-    "app":       (0x280000, True),
+SLOTS = {   # name: (offset, wrap_fbi, default_file or None)
+    "bitstream": (0x000000, False, "build/icepi_zero/gateware/icepi_zero.bit"),
+    "bios":      (0x100000, False, "build/icepi_zero/software/bios/bios.bin"),
+    "loader":    (0x200000, True,  "software/winc_loader/winc_loader.bin"),
+    "app":       (0x280000, True,  None),   # apps vary -- always explicit
+}
+BUILD_HINTS = {
+    "bitstream": ".venv/bin/python icepi_zero_all.py --build",
+    "bios":      ".venv/bin/python icepi_zero_all.py --build",
+    "loader":    "make -C software/winc_loader",
 }
 BOUNDARIES = [("BIOS @0x100000", 0x100000), ("loader @0x200000", 0x200000),
               ("app @0x280000", 0x280000)]
@@ -67,14 +63,24 @@ def parse_args():
                     help="flash offset for the legacy form (4 KB-aligned)")
     ap.add_argument("--fbi", action="store_true",
                     help="legacy form: prepend the LiteX flashboot header")
-    for slot in SLOTS:
-        ap.add_argument(f"--{slot}", metavar="FILE",
-                        help=f"flash FILE to the {slot} slot @0x{SLOTS[slot][0]:06x}")
+    for slot, (offset, _wrap, default) in SLOTS.items():
+        if default is None:
+            ap.add_argument(f"--{slot}", metavar="FILE",
+                            help=f"flash FILE to the {slot} slot @0x{offset:06x}")
+        else:
+            # optional value: bare flag picks up the standard build artifact
+            ap.add_argument(f"--{slot}", metavar="FILE", nargs="?",
+                            const=os.path.join(REPO, default),
+                            help=f"flash FILE to the {slot} slot @0x{offset:06x} "
+                                 f"(default: {default})")
     ap.add_argument("--host", default="icepi.local")
     ap.add_argument("--udp-port", type=int, default=LOADER_PORT)
     ap.add_argument("--port", metavar="TTY", default=None,
                     help="serial port (e.g. /dev/ttyUSB0) for the grace-window "
                          "entry path when no loader/hook answers over WiFi")
+    ap.add_argument("--reset", action="store_true",
+                    help="no flashing: just reset the SoC via the FTDI sidebands "
+                         "(requires --port); board reboots through loader to app")
     ap.add_argument("--reboot", action="store_true",
                     help="send WFLR when done even if only bitstream/BIOS were flashed")
     ap.add_argument("--no-reboot", action="store_true",
@@ -87,15 +93,19 @@ def parse_args():
 def build_jobs(args):
     """[(label, offset, data)] from slot presets and/or the legacy form."""
     jobs = []
-    for slot, (offset, wrap) in SLOTS.items():
+    for slot, (offset, wrap, _default) in SLOTS.items():
         path = getattr(args, slot)
         if path is None:
             continue
+        if not os.path.exists(path):
+            hint = BUILD_HINTS.get(slot)
+            sys.exit(f"{slot} image not found: {path}"
+                     + (f"\n  build it first: {hint}" if hint else ""))
         with open(path, "rb") as f:
             data = f.read()
         if wrap:
             data = struct.pack("<II", len(data), zlib.crc32(data)) + data
-        jobs.append((f"{slot}:{path}", offset, data))
+        jobs.append((f"{slot}:{os.path.relpath(path)}", offset, data))
     if args.file is not None:
         if args.offset is None:
             sys.exit("positional file needs --offset (or use a slot preset)")
@@ -126,6 +136,23 @@ def request(s, dst, pkt, magic, tries=5, timeout=1.0):
     return None
 
 
+def ftdi_reset(tty):
+    """Plain SoC reset via the FTDI sidebands: pulse the reset combo, return
+    to idle WITHOUT the stay level -> board reboots through loader to app."""
+    try:
+        import serial
+    except ImportError:
+        sys.exit("pyserial not installed -- pip install pyserial")
+    with serial.Serial(tty, 1_000_000, timeout=0) as ser:
+        ser.dtr = True
+        ser.rts = True
+        time.sleep(0.05)
+        ser.dtr = False                 # reset combo: RTS asserted, DTR not
+        time.sleep(0.15)                # > BootCtl's 50 ms filter
+        ser.dtr = True                  # idle (both asserted)
+    print("reset pulsed -- BIOS -> loader -> app")
+
+
 # ---- getting the board into the loader ------------------------------------
 
 def probe_loader(s, dst, tries=2, timeout=0.7):
@@ -146,23 +173,41 @@ def enter_via_hook(s, host_ip):
 
 
 def enter_via_serial(s, host_ip, tty):
-    """Spam the loader's boot grace window; the user provides the reset."""
+    """FTDI reset + "stay in loader" level (semantics: docs/boot_chain.md).
+    Spams the 'l' grace key throughout so bitstreams without BootCtl still
+    work with a manual reset button."""
     try:
         import serial
     except ImportError:
         sys.exit("pyserial not installed -- pip install pyserial (or enter the "
                  "loader another way)")
-    print(f"  spamming grace-window magic on {tty}")
-    print("  >>> press the board's RESET button now <<<")
-    deadline = time.monotonic() + 30
     with serial.Serial(tty, 1_000_000, timeout=0) as ser:
-        while time.monotonic() < deadline:
-            for _ in range(20):                 # ~grace-window worth of spam
-                ser.write(GRACE_MAGIC)
-                time.sleep(0.01)
-            if probe_loader(s, (host_ip, LOADER_PORT), tries=1, timeout=0.5):
-                return True
-    return False
+        ser.dtr = True                  # open() asserted both; make it explicit
+        ser.rts = True
+        time.sleep(0.05)
+        print(f"  FTDI reset pulse on {tty}")
+        ser.dtr = False                 # reset combo: RTS asserted, DTR not
+        time.sleep(0.15)                # > BootCtl's 50 ms filter
+        ser.dtr = True                  # stay level: DTR asserted, RTS not
+        ser.rts = False
+
+        def spam_and_probe(deadline):
+            while time.monotonic() < deadline:
+                for _ in range(20):
+                    ser.write(GRACE_KEY)    # fallback for pre-BootCtl gateware
+                    time.sleep(0.01)
+                if probe_loader(s, (host_ip, LOADER_PORT), tries=1, timeout=0.5):
+                    return True
+            return False
+
+        # WiFi join takes a few seconds after the reset.
+        up = spam_and_probe(time.monotonic() + 12)
+        if not up:
+            print("  no loader yet (no FTDI reset module?)")
+            print("  >>> press the board's RESET button now <<<")
+            up = spam_and_probe(time.monotonic() + 30)
+        ser.rts = True                  # back to idle (both asserted)
+        return up
 
 
 def ensure_loader(s, host_ip, args):
@@ -250,6 +295,13 @@ def flash_image(s, dst, label, offset, data, pps):
 
 def main():
     args = parse_args()
+
+    if args.reset:
+        if not args.port:
+            sys.exit("--reset needs --port /dev/ttyUSBx")
+        ftdi_reset(args.port)
+        return
+
     jobs = build_jobs(args)
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -264,14 +316,16 @@ def main():
     print(f"total: {time.monotonic()-t0:.1f} s")
 
     flashed = {label.split(":")[0] for label, _, _ in jobs}
-    want_reboot = (args.reboot or flashed & {"app", "loader", "bios"}) \
-                  and not args.no_reboot
-    if want_reboot:
+    if "bitstream" in flashed and not args.reboot:
+        # Apply everything with ONE power-cycle. A soft reset here would boot
+        # the OLD (still-configured) bitstream with the NEW flash contents --
+        # a CSR-map mismatch if the gateware changed.
+        print("NOTE: bitstream flashed -- POWER-CYCLE to apply everything "
+              "(soft reset skipped on purpose)")
+    elif (args.reboot or flashed & {"app", "loader", "bios"}) and not args.no_reboot:
         # best-effort: the ack may die with the resetting board
         request(s, dst, b"WFLR", b"WFLR", tries=3, timeout=0.5)
         print("rebooted -- loader will chain-boot the app")
-    if "bitstream" in flashed:
-        print("NOTE: a new bitstream needs a POWER-CYCLE to load")
 
 
 if __name__ == "__main__":

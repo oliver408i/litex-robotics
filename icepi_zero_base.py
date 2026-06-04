@@ -39,7 +39,8 @@ from litedram.phy import GENSDRPHY
 class _CRG(LiteXModule):
     """Clock/reset generator. `spi_clk_freq` adds an extra cd_spi domain (LCD project uses it)."""
     def __init__(self, platform, sys_clk_freq, spi_clk_freq=None, ext_reset_n=None):
-        self.rst = Signal()
+        self.rst      = Signal()
+        self.user_rst = Signal()  # extra reset source (e.g. BootCtl's FTDI RTS reset)
         self.cd_sys = ClockDomain()
         self.cd_sdram = ClockDomain(reset_less=True)
         if spi_clk_freq is not None:
@@ -50,9 +51,9 @@ class _CRG(LiteXModule):
 
         self.pll = pll = ECP5PLL()
         if ext_reset_n is None:
-            self.comb += pll.reset.eq(~rst | self.rst)
+            self.comb += pll.reset.eq(~rst | self.rst | self.user_rst)
         else:
-            self.comb += pll.reset.eq(~rst | self.rst | ~ext_reset_n)
+            self.comb += pll.reset.eq(~rst | self.rst | ~ext_reset_n | self.user_rst)
         pll.register_clkin(clk50, 50e6)
 
         pll.create_clkout(self.cd_sys, sys_clk_freq)
@@ -71,16 +72,17 @@ class BaseSoC(SoCCore):
     SPI flash is enabled automatically when any flash-related CLI arg is passed (see build_and_run).
 
     With flash the BIOS is XIP'd from it (no EBR ROM); without flash the integrated
-    EBR ROM is kept (self-contained --load / recovery build). See docs/xip_bios.md.
+    EBR ROM is kept (self-contained --load / recovery build). See docs/boot_chain.md.
     """
     # Flash base; must stay below VexRiscv's uncached IO region (0x80000000+) so
-    # the XIP fetch path stays cacheable. See docs/xip_bios.md.
+    # the XIP fetch path stays cacheable. See docs/boot_chain.md.
     mem_map = {**SoCCore.mem_map, "spiflash": 0x20000000}
 
     def __init__(self, sys_clk_freq=50e6,
                  with_spi_flash=False, flash_boot_offset=None,
                  bios_flash_offset=0x100000, spiflash_1x=False,
                  flash_master=False, app_flash_offset=0x280000,
+                 spiflash_clk_freq=25e6,
                  spi_clk_freq=None,
                  platform=None,
                  force_lcd_backlight_off=True,
@@ -106,7 +108,7 @@ class BaseSoC(SoCCore):
 
         if with_spi_flash:
             # XIP: no EBR ROM, reset vector into flash. Force (not setdefault) --
-            # the parser always supplies these via soc_argdict. See docs/xip_bios.md.
+            # the parser always supplies these via soc_argdict. See docs/boot_chain.md.
             kwargs["integrated_rom_size"] = 0
             kwargs["cpu_reset_address"]   = self.mem_map["spiflash"] + bios_flash_offset
         else:
@@ -140,23 +142,25 @@ class BaseSoC(SoCCore):
         if with_spi_flash:
             from litespi.modules import W25Q128JV
             from litespi.opcodes import SpiNorFlashOpCodes as Codes
-            # 4x default (QE bit assumed set); --spiflash-1x is the no-QE recovery
-            # mode. The XIP BIOS must not drive raw SPI commands on the flash it
-            # executes from, so flash_master=False by default; builds that need the
-            # master for SDRAM-resident flash programming (WiFi loader) enable it
-            # and rely on SPIFLASH_SKIP_MASTER_INIT below. See docs/xip_bios.md.
+            # 4x default (QE bit assumed set); --spiflash-1x = no-QE recovery mode.
+            # spiflash_clk_freq is the LIVE speed (BIOS auto-cal is skipped below);
+            # default 25e6 = sys/2 ceiling, hardware-validated. flash_master only
+            # for builds with an SDRAM-resident flasher. All XIP rules and the
+            # rationale: docs/boot_chain.md.
             if spiflash_1x:
                 self.add_spi_flash(mode="1x", module=W25Q128JV(Codes.READ_1_1_1),
+                                   clk_freq=spiflash_clk_freq,
                                    with_master=flash_master)
             else:
                 self.add_spi_flash(mode="4x", module=W25Q128JV(Codes.READ_1_1_4),
+                                   clk_freq=spiflash_clk_freq,
                                    with_master=flash_master)
 
-            # Skip BIOS SCLK auto-calibration -- it crashes XIP. See docs/xip_bios.md.
+            # Skip BIOS SCLK auto-calibration -- it crashes XIP. See docs/boot_chain.md.
             self.add_constant("SPIFLASH_SKIP_FREQ_INIT")
             if flash_master:
                 # Keep the XIP BIOS off the master (read-ID/quad-enable would crash
-                # the fetch path); local litex patch, see docs/xip_bios.md and
+                # the fetch path); local litex patch, see docs/boot_chain.md and
                 # patches/litex-spiflash-skip-master-init.patch.
                 self.add_constant("SPIFLASH_SKIP_MASTER_INIT")
 
@@ -171,9 +175,7 @@ class BaseSoC(SoCCore):
                 flash_origin = self.bus.regions["spiflash"].origin
                 self.add_constant("FLASH_BOOT_ADDRESS", flash_origin + flash_boot_offset)
 
-            # Boot-manager layout: FLASH_BOOT (0x200000) holds the winc_loader,
-            # which chain-boots the application .fbi at this flash offset.
-            # Single source of truth for the loader firmware and flash.py.
+            # App slot chain-booted by the winc_loader (docs/boot_chain.md).
             self.add_constant("FLASH_APP_OFFSET", app_flash_offset)
 
 
@@ -215,6 +217,11 @@ def make_parser(description):
     parser.add_target_argument("--spiflash-1x", action="store_true",
                                help="Use single-lane (1x) flash reads instead of quad (4x). "
                                     "No QE-bit dependency -> cold-boot recovery mode.")
+    parser.add_target_argument("--spiflash-clk-freq", default=25e6, type=float,
+                               help="Requested SPI flash SCLK (Hz); rounded down to "
+                                    "sys/(2*(div+1)). Default 25e6 = sys/2, the 1:1 PHY "
+                                    "ceiling (hardware-validated). Lower it if a board "
+                                    "shows flash read corruption.")
     return parser
 
 
@@ -236,12 +243,8 @@ def run_build(soc, args, parser):
     if args.build:
         builder.build(**parser.toolchain_argdict)
 
-    # Flash steps run BEFORE --load on purpose. --load configures the FPGA and
-    # immediately releases the CPU, which on an XIP build does its first BIOS
-    # fetch from flash right away. If the BIOS/firmware were written after the
-    # load, the CPU would boot stale flash contents and hang (no UART). Flashing
-    # first, then loading, guarantees the CPU's first fetch sees the just-written
-    # image. (Plain EBR-ROM builds don't care -- the BIOS rides in the bitstream.)
+    # Flash steps run BEFORE --load on purpose: --load releases the CPU, which
+    # XIP-fetches the BIOS from flash immediately. See docs/boot_chain.md.
     if args.flash:
         prog = soc.platform.create_programmer()
         prog.flash(0, builder.get_bitstream_filename(mode="flash"), external=True)

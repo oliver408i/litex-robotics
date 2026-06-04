@@ -1,26 +1,8 @@
-/* WiFi flash-loader: receives an image over UDP (port 5557) into SDRAM and
- * programs it into the W25Q128 SPI flash via the LiteSPI master -- the dev-flow
- * replacement for bit-banged JTAG flashing (bitstream @0, BIOS @0x100000,
- * firmware .fbi @0x200000). Host side: winc_flash.py.
- *
- * Boot manager + flasher in one: the BIOS flash-boots this image from
- * FLASH_BOOT (0x200000) on every reset. Triage order: sticky boot_ctl flag
- * (set by a running app's loader_hook) -> UART grace window ("wflSTAY!",
- * 200 ms) -> chain-boot the app .fbi at FLASH_APP_OFFSET (0x280000). An
- * invalid/absent app image keeps us in loader mode (brick-safe). It can
- * also still be serialbooted the old way. In loader mode it joins WiFi
- * (wifi_secrets.h), announces icepi.local, and waits for flash.py. Runs
- * entirely from SDRAM, so master flash ops never collide with XIP fetches
- * (see docs/xip_bios.md). JTAG remains the recovery path.
- *
- * Protocol (all little-endian; chunk-indexed so datagram loss/reorder/dup is
- * harmless; control replies idempotent so the host can retry everything):
- *   WFLB off len crc chunk -> WFLA   begin session (re-ack if identical)
- *   WFLD idx payload       ->        chunk into SDRAM buffer (no reply)
- *   WFLS                   -> WFLT   got/total + first missing chunk indices
- *   WFLP                   -> WFLZ   CRC-check, erase+program+verify (cached)
- *   WFLR                   -> WFLR   reboot via ctrl_reset (BIOS flashboots)
- */
+/* WiFi flash-loader + boot manager. The BIOS flash-boots this image from
+ * FLASH_BOOT (0x200000); it either chain-boots the app at FLASH_APP_OFFSET
+ * or stays resident as the WiFi flasher (WFL protocol on UDP :5557, host
+ * side: ./flash.py). Boot triage order, protocol tables, entry paths and
+ * all design rationale: docs/boot_chain.md. */
 #include <stdint.h>
 #include <string.h>
 
@@ -49,10 +31,7 @@ extern void winc_service_irq(void);   /* nm_bsp_icepi.c */
 
 #define LOADER_PORT 5557
 
-/* App slot for the boot-manager layout (csr.h constant when the SoC provides
- * it): the BIOS flash-boots THIS loader from FLASH_BOOT (0x200000); we
- * chain-boot the app image from here unless someone asked us to stay. */
-#ifndef FLASH_APP_OFFSET
+#ifndef FLASH_APP_OFFSET   /* soc.h constant when the SoC provides it */
 #define FLASH_APP_OFFSET 0x280000
 #endif
 
@@ -125,10 +104,8 @@ static uint32_t sw_elapsed_ms(void)
 }
 
 /* ---- boot-manager triage --------------------------------------------------
- * Decide loader mode vs chain-booting the app. Order: sticky flag (set by a
- * running app's loader_hook or, later, the DTR knock), then a short UART
- * grace window for the host's magic spam, then the app image -- an invalid
- * or absent image always falls back to loader mode (brick-safe). */
+ * Stay in loader mode (flag / FTDI level / 'l' key) or chain-boot the app;
+ * an invalid app image always falls back to loader mode. docs/boot_chain.md. */
 
 static int boot_flag_requested(void)
 {
@@ -141,31 +118,35 @@ static int boot_flag_requested(void)
 	return 0;
 }
 
+static int ftdi_stay_requested(void)
+{
+#ifdef CSR_FTDI_SENSE_BASE
+	/* stay = DTR asserted (bit0 low) + RTS deasserted (bit1 high);
+	 * both-asserted is just an open port and must not trap boots. */
+	uint32_t v = ftdi_sense_in_read();
+	return ((v & 1u) == 0) && ((v & 2u) != 0);
+#else
+	return 0;
+#endif
+}
+
 static int grace_window_hit(uint32_t window_ms)
 {
-	/* Rolling match; magic deliberately avoids 'Q'/ESC (BIOS abort keys). */
-	static const char magic[] = "wflSTAY!";
-	unsigned int m = 0;
+	/* 'l' = enter loader; avoids 'Q'/ESC (BIOS abort keys). */
 	sw_start();
 	while(sw_elapsed_ms() < window_ms) {
 		if(uart_read_nonblock()) {
 			char c = uart_read();
-			if(c == magic[m]) {
-				m++;
-				if(magic[m] == '\0')
-					return 1;
-			} else {
-				m = (c == magic[0]) ? 1 : 0;
-			}
+			if(c == 'l' || c == 'L')
+				return 1;
 		}
 	}
 	return 0;
 }
 
-/* Validate + chain-boot the app .fbi (u32le length, u32le crc32, payload --
- * same format BIOS flashboot checks). Returns only if there is no valid
- * image. The copy must not run from main_ram (the app lands exactly where
- * this loader executes), hence the SRAM-resident chain_stub. */
+/* Validate + chain-boot the app .fbi; returns only if there is no valid
+ * image. The copy runs from the SRAM-resident chain_stub because the app
+ * lands exactly where this loader executes. */
 static void try_chain_boot(void)
 {
 	const uint8_t *img = (const uint8_t *)(SPIFLASH_BASE + FLASH_APP_OFFSET);
@@ -348,9 +329,8 @@ static void handle_reboot(const struct sockaddr_in *from)
 	log_puts("reboot requested"); log_nl();
 }
 
-/* Erase + program + verify; main-loop context only. Runs for seconds with the
- * WINC unserviced -- fine, the chip's on-module stack keeps the link up and
- * the host just retries WFLP until the cached WFLZ answers. */
+/* Erase + program + verify; main-loop context only (runs for seconds with
+ * the WINC unserviced -- fine, see docs/boot_chain.md). */
 static void run_program(void)
 {
 	log_puts("image CRC check..."); log_nl();
@@ -496,11 +476,14 @@ int main(void)
 	/* ---- boot-manager triage: stay in loader mode or chain to the app -- */
 	if(boot_flag_requested()) {
 		log_puts("boot flag set -- staying in loader"); log_nl();
-	} else if(grace_window_hit(200)) {
-		log_puts("grace-window magic -- staying in loader"); log_nl();
+	} else if(ftdi_stay_requested()) {
+		log_puts("FTDI stay level -- staying in loader"); log_nl();
+	} else if(grace_window_hit(500)) {
+		log_puts("'l' key -- staying in loader"); log_nl();
 	} else {
 		try_chain_boot();   /* returns only without a valid app image */
 	}
+	log_puts("loader mode ('b' = reboot to app)"); log_nl();
 
 	nm_bsp_init();
 
@@ -522,6 +505,13 @@ int main(void)
 	for(;;) {
 		winc_service_irq();
 		m2m_wifi_handle_events(NULL);
+
+		/* console escape hatch: 'b' reboots (flag is clear -> chains app) */
+		if(uart_read_nonblock() && uart_read() == 'b') {
+			log_puts("rebooting to app"); log_nl();
+			uart_sync();
+			ctrl_reset_write(1);
+		}
 
 		if(prog_pending && !prog_done)
 			run_program();

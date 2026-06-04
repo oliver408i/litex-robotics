@@ -1,17 +1,7 @@
 /* loader_hook: lets a running WINC app hand the board to the WiFi
- * flash-loader on request from the host -- the cable-free entry path.
- *
- * Usage (mirrors mdns.c):
- *   - call loader_hook_start() once DHCP is up;
- *   - call loader_hook_socket_cb() FIRST in the app's socket callback and
- *     return if it claims the event.
- *
- * The host (flash.py) sends a "WFLE" datagram to UDP port 5558; the hook
- * acks, writes LOADER_BOOT_MAGIC into the sticky boot_ctl flag (gateware,
- * survives soft reset) and pulses ctrl_reset. The BIOS flash-boots the
- * winc_loader, which sees the magic and stays in WiFi-loader mode instead
- * of chain-booting the app.
- */
+ * flash-loader on a host "WFLE" datagram (UDP :5558) -- the cable-free
+ * entry path (docs/boot_chain.md). Usage mirrors mdns.c: loader_hook_start()
+ * after DHCP, loader_hook_socket_cb() first in the app's socket callback. */
 #ifndef LOADER_HOOK_H
 #define LOADER_HOOK_H
 

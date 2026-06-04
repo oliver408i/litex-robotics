@@ -36,6 +36,7 @@ def main():
         flash_boot_offset = args.flash_boot_offset,
         bios_flash_offset = args.bios_flash_offset,
         spiflash_1x       = args.spiflash_1x,
+        spiflash_clk_freq = args.spiflash_clk_freq,
         lcd_spi_clk_freq  = args.lcd_spi_clk_freq,
         **parser.soc_argdict,
     )

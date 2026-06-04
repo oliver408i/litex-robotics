@@ -9,26 +9,20 @@ Composes every proven peripheral (gateware/soc_features.py) on one BaseSoC:
   - SPI flash with XIP BIOS + LiteSPI master (always on, see below)
 
 Pin budget: 20 of 27 GPIO claimed (incl. the dummy WINC EN), disjoint by
-construction (LCD bus / aux bus /
-WINC sidebands; see docs/icepi_zero_pin_mapping.md). Wishbone masters: cpu +
+construction -- see docs/icepi_zero_pin_mapping.md. Wishbone masters: cpu +
 lcd_dma + snn_wb. Excluded as duplicates: icepi_zero_imu.py's imu_spi (the
-LSM6DS3 sits on the aux bus, firmware uses aux_spi's AUX_IMU device) and the
-snn_estimator debug core (CSR-name clash with SNNMLP; its own bring-up top).
+LSM6DS3 sits on the aux bus as AUX_IMU) and the snn_estimator debug core
+(CSR-name clash with SNNMLP; its own bring-up top).
 
-Unlike the per-feature tops this always builds the deployment shape: SPI
-flash present, BIOS XIP'd from 0x100000 (frees the BIOS-ROM EBRs -- the SNN
-build is BRAM-bound), LiteSPI master exposed (BIOS skips master init via
-SPIFLASH_SKIP_MASTER_INIT), and the boot-manager flash layout: FLASH_BOOT
-(0x200000) holds the winc_loader, which chain-boots the app .fbi at
-FLASH_APP_OFFSET (0x280000) unless asked to stay (sticky boot_ctl flag /
-UART grace window -- see docs/xip_bios.md). Everything is WiFi-updatable in
-place with ./flash.py (--bitstream/--bios/--loader/--app); JTAG stays the
-recovery path (bootstrap the loader with `--flash-firmware winc_loader.bin`,
-which lands at 0x200000). --spiflash-1x remains the no-QE cold-boot fallback.
+Unlike the per-feature tops this always builds the deployment shape: XIP
+BIOS + LiteSPI flash master + the boot-manager flash layout, so every image
+of this SoC is WiFi-updatable in place with ./flash.py and JTAG stays the
+recovery path. Boot chain, flash layout and update flows:
+docs/boot_chain.md.
 
-Timing gate: same as icepi_zero_mnist_lcd.py -- the critical path is in the
-LiteDRAM L2, margin at N_MAC=2 is thin (~2%); the WiFi additions are tiny and
-off that path, but check Fmax >= 50 MHz after PnR.
+Timing gate: the critical path is in the LiteDRAM L2 (thin margin at
+N_MAC=2); nextpnr runs with --timing-allow-fail, so always check
+"Max frequency for clock" >= 50 MHz in its output after PnR.
 """
 from icepi_zero_base import BaseSoC, make_parser, run_build
 
@@ -76,6 +70,7 @@ def main():
         flash_boot_offset = args.flash_boot_offset,
         bios_flash_offset = args.bios_flash_offset,
         spiflash_1x       = args.spiflash_1x,
+        spiflash_clk_freq = args.spiflash_clk_freq,
         lcd_spi_clk_freq  = args.lcd_spi_clk_freq,
         winc_spi_clk_freq = args.winc_spi_clk_freq,
         **parser.soc_argdict,
