@@ -155,6 +155,15 @@ def ftdi_reset(tty):
 
 # ---- getting the board into the loader ------------------------------------
 
+def resolve_quiet(host):
+    """Resolve once; None instead of an exception (board may be offline --
+    icepi.local only exists in mDNS once the loader/app has joined WiFi)."""
+    try:
+        return socket.gethostbyname(host)
+    except (socket.gaierror, OSError):
+        return None
+
+
 def probe_loader(s, dst, tries=2, timeout=0.7):
     return request(s, dst, b"WFLS", b"WFLT", tries=tries, timeout=timeout) is not None
 
@@ -172,10 +181,12 @@ def enter_via_hook(s, host_ip):
     return False
 
 
-def enter_via_serial(s, host_ip, tty):
+def enter_via_serial(s, host, tty):
     """FTDI reset + "stay in loader" level (semantics: docs/boot_chain.md).
     Spams the 'l' grace key throughout so bitstreams without BootCtl still
-    work with a manual reset button."""
+    work with a manual reset button. Re-resolves the hostname while polling
+    (an offline board only appears in mDNS once the loader joins WiFi).
+    Returns the resolved IP, or None."""
     try:
         import serial
     except ImportError:
@@ -196,39 +207,45 @@ def enter_via_serial(s, host_ip, tty):
                 for _ in range(20):
                     ser.write(GRACE_KEY)    # fallback for pre-BootCtl gateware
                     time.sleep(0.01)
-                if probe_loader(s, (host_ip, LOADER_PORT), tries=1, timeout=0.5):
-                    return True
-            return False
+                ip = resolve_quiet(host)
+                if ip and probe_loader(s, (ip, LOADER_PORT), tries=1, timeout=0.5):
+                    return ip
+            return None
 
         # WiFi join takes a few seconds after the reset.
-        up = spam_and_probe(time.monotonic() + 12)
-        if not up:
+        ip = spam_and_probe(time.monotonic() + 12)
+        if ip is None:
             print("  no loader yet (no FTDI reset module?)")
             print("  >>> press the board's RESET button now <<<")
-            up = spam_and_probe(time.monotonic() + 30)
+            ip = spam_and_probe(time.monotonic() + 30)
         ser.rts = True                  # back to idle (both asserted)
-        return up
+        return ip
 
 
-def ensure_loader(s, host_ip, args):
-    dst = (host_ip, LOADER_PORT)
+def ensure_loader(s, host, args):
+    """Walk the entry ladder; returns the resolved board IP."""
     print("looking for the loader...")
-    if probe_loader(s, dst):
-        print("  loader is up")
-        return
-    print(f"  no loader -- trying the app's loader_hook (UDP :{HOOK_PORT})")
-    if enter_via_hook(s, host_ip):
-        print("  loader is up")
-        return
-    if args.port:
-        print("  no hook -- trying the serial grace window")
-        if enter_via_serial(s, host_ip, args.port):
+    host_ip = resolve_quiet(host)
+    if host_ip is None:
+        print(f"  cannot resolve {host} -- board offline?")
+    else:
+        if probe_loader(s, (host_ip, LOADER_PORT)):
             print("  loader is up")
-            return
+            return host_ip
+        print(f"  no loader -- trying the app's loader_hook (UDP :{HOOK_PORT})")
+        if enter_via_hook(s, host_ip):
+            print("  loader is up")
+            return host_ip
+    if args.port:
+        print("  trying the FTDI/serial path")
+        host_ip = enter_via_serial(s, host, args.port)
+        if host_ip:
+            print("  loader is up")
+            return host_ip
         sys.exit("loader did not come up after reset -- check wifi_secrets/AP")
     sys.exit(f"board unreachable: no loader on :{LOADER_PORT}, no app hook on "
              f":{HOOK_PORT}.\n"
-             "Options: pass --port /dev/ttyUSBx and press reset when asked, or\n"
+             "Options: pass --port /dev/ttyUSBx (FTDI reset / reset prompt), or\n"
              "serialboot software/winc_loader/winc_loader.bin manually once.")
 
 
@@ -305,10 +322,11 @@ def main():
     jobs = build_jobs(args)
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    host_ip = socket.gethostbyname(args.host)   # resolve ONCE
+    # Resolution happens inside the ladder (the board may be offline until
+    # the serial path forces it up); the returned IP is then used for every
+    # packet -- never per-packet hostname lookups (~23 ms mDNS each).
+    host_ip = ensure_loader(s, args.host, args)
     dst = (host_ip, args.udp_port)
-
-    ensure_loader(s, host_ip, args)
 
     t0 = time.monotonic()
     for label, offset, data in jobs:

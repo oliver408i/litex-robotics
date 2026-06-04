@@ -168,6 +168,8 @@ static void try_chain_boot(void)
 
 	log_puts("chain-booting app ("); log_uint(len);
 	log_puts(" B @0x"); log_hex32(FLASH_APP_OFFSET); log_puts(")"); log_nl();
+	/* visual separator (a la the BIOS "Liftoff!"): everything below is app */
+	log_puts("--============== \e[1mapp\e[0m ===============--"); log_nl();
 	uart_sync();
 #ifdef CONFIG_CPU_HAS_INTERRUPT
 	irq_setmask(0);
