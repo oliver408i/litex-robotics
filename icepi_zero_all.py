@@ -8,7 +8,7 @@ Composes every proven peripheral (gateware/soc_features.py) on one BaseSoC:
   - shared aux SPI bus + ATWINC1500 WiFi  (aux_spi, winc_*; 9 pins)
   - SPI flash with XIP BIOS + LiteSPI master (always on, see below)
 
-Pin budget: 20 of 27 GPIO claimed (incl. the dummy WINC EN), disjoint by
+Pin budget: 20 of 27 GPIO claimed (incl. the WINC EN), disjoint by
 construction -- see docs/icepi_zero_pin_mapping.md. Wishbone masters: cpu +
 lcd_dma + snn_wb. Excluded as duplicates: icepi_zero_imu.py's imu_spi (the
 LSM6DS3 sits on the aux bus as AUX_IMU) and the snn_estimator debug core

@@ -102,7 +102,7 @@ The feature-adder CSR blocks:
 | Block | Source | What it is |
 |-------|--------|------------|
 | `aux_spi` | `gateware/aux_spi.py` | shared SPI master, 3 chip-selects (WINC/IMU/MCP), software-held CS, runtime `clk_divider` |
-| `winc_reset` / `winc_en` | `soc_features.py` | GPIOOut sidebands; power-on 0 = WINC held in reset/disabled |
+| `winc_reset` / `winc_en` | `soc_features.py` | GPIOOut sidebands; power-on 0 = WINC powered down (EN wired to IO9) |
 | `winc_irq` | `soc_features.py` | GPIOIn on IRQN with IRQ (line 5) |
 | `boot_ctl` | `soc_features.py` (`BootCtl`) | sticky `reset_less` boot flag + FTDI DTR/RTS reset detector → `crg.user_rst` |
 | `ftdi_sense` | `soc_features.py` | raw DTR#/RTS# levels (bit0/bit1) for the loader's "stay" triage |

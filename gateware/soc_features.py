@@ -124,9 +124,9 @@ def add_snn_mlp(soc, n_mac=2, leds=None):
 # The bus lines match the IMU bus (IO2/IO8/IO25); chip-selects are ordered
 # WINC, IMU, MCP3008 so that no device CS floats (unused CS parked high).
 #
-# Sideband pins match the physical wiring: CS=IO23, IRQ=IO24, RST=IO20.
-# The module's EN/CHIP_EN is NOT wired (onboard pull-up keeps it enabled), so
-# chip_en goes to a free dummy pin (IO9) -- firmware writes to it harmlessly.
+# Sideband pins match the physical wiring: CS=IO23, IRQ=IO24, RST=IO20,
+# EN=IO9. EN was a dummy pin until 2026-06 (module EN tied high externally);
+# it now reaches CHIP_EN, so driving it low is the WINC's true power-down.
 _winc_io = [
     ("aux_spi", 0,
         Subsignal("clk",  Pins("T2")),            # IO2  -- shared sclk
@@ -137,7 +137,7 @@ _winc_io = [
     ),
     ("winc_ctrl", 0,
         Subsignal("reset_n", Pins("F1")),         # IO20 -> WINC RESET_N (active low)
-        Subsignal("chip_en", Pins("J1")),         # IO9  -- dummy, EN not wired (module pull-up)
+        Subsignal("chip_en", Pins("J1")),         # IO9  -> WINC CHIP_EN (low = power-down)
         Subsignal("irq_n",   Pins("L1"), Misc("PULLMODE=UP")),  # IO24 <- WINC IRQN (active low)
         IOStandard("LVCMOS33"),
     ),
@@ -153,8 +153,8 @@ def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
     """Shared aux SPI bus (runtime divider, software-held CS) + WINC sidebands.
 
     GPIOOut defaults to 0, so at power-on RESET_N=0 (held in reset) and
-    CHIP_EN=0 (disabled) -- a safe state the firmware releases during
-    nm_bsp_reset(). busy_led mirrors in-flight transfers on a user LED.
+    CHIP_EN=0 (powered down) -- the WINC stays off until the firmware powers
+    it up in nm_bsp_reset(). busy_led mirrors in-flight transfers on a LED.
     """
     platform = soc.platform
     platform.add_extension(_winc_io)

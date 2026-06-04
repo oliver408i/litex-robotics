@@ -129,9 +129,11 @@ as the source. Capped at 8 MB (the app must end below `IMG_BUF` at
 `0x40800000` or the copy would eat its own source). The flashed app slot is
 untouched: any reset boots back through the loader into the *flashed* app, so
 a RAM-run image is gone on reset by design — `--run` a broken build and the
-board recovers with the reset button. A RAM app inherits a live, already
-initialized WINC; apps that use WiFi reset the module in their own
-`m2m_wifi_init()`, so this is invisible in practice.
+board recovers with the reset button. After the ack drains, the loader parks
+the WINC in true power-down (CHIP_EN + RESET_N low; EN is wired to IO9 as of
+2026-06) — the same state every SoC reset produces, since both sidebands are
+plain GPIOOuts that reset to 0. The app sees the module exactly as after a
+cold boot; WiFi apps power it back up in their own `nm_bsp_reset()`.
 
 ## FTDI sidebands (host-driven reset)
 

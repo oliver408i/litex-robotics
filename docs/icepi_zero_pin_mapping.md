@@ -163,7 +163,7 @@ allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
 | IO6 | `F3` | IMU `cs_n` (aux bus `cs[1]`) |
 | IO7 | `G1` | `LCD_RS` (DC / command-data select) |
 | IO8 | `H2` | aux SPI bus `mosi` |
-| IO9 | `J1` | WINC `CHIP_EN` (dummy — module EN tied to 3.3 V externally) |
+| IO9 | `J1` | WINC `CHIP_EN` (low = power-down; wired 2026-06, was a dummy) |
 | IO10 | `L2` | *free* |
 | IO11 | `G2` | *free* |
 | IO12 | `J3` | `LCD_RST` |
@@ -183,7 +183,7 @@ allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
 | IO26 | `D4` | `LCD_MOSI` |
 | IO27 | `P3` | *free* |
 
-**20 used (incl. the dummy WINC EN), 7 free.** Free pins: IO4, IO5, IO10,
+**20 used, 7 free.** Free pins: IO4, IO5, IO10,
 IO11, IO17, IO22, IO27.
 
 ## RGB LED / NeoPixel
@@ -223,7 +223,7 @@ WINC sidebands (also `add_winc_aux`):
 | Signal | FPGA Pin | Board IO | Notes |
 | --- | --- | --- | --- |
 | `RESET_N` | `F1` | IO20 | Active low; GPIOOut, 0 at power-on (held in reset) |
-| `CHIP_EN` | `J1` | IO9 | Dummy pin -- module EN is tied to 3.3 V externally (must be tied!) |
+| `CHIP_EN` | `J1` | IO9 | Low = power-down; GPIOOut, 0 at power-on (chip off). Wired 2026-06 (the old external 3.3 V tie must be gone -- IO9 drives it low) |
 | `IRQN` | `L1` | IO24 | Active low, pull-up; GPIOIn with IRQ (polled in current firmware) |
 
 ## LCD / Touch

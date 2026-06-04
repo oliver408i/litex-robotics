@@ -424,6 +424,12 @@ static void run_exec(void)
 		m2m_wifi_handle_events(NULL);
 		busy_wait(10);
 	}
+	/* Park the WINC in true power-down: CHIP_EN + RESET_N low (EN is wired
+	 * to IO9 as of 2026-06) -- the same state every SoC reset produces
+	 * anyway (plain GPIOOuts, not reset_less). A WiFi app powers it back up
+	 * in its own nm_bsp_reset(). */
+	winc_en_out_write(0);
+	winc_reset_out_write(0);
 	log_puts("running app from SDRAM ("); log_uint(img_len);
 	log_puts(" B, not flashed -- gone on next reset)"); log_nl();
 	log_puts("--============== \e[1mapp\e[0m ===============--"); log_nl();
