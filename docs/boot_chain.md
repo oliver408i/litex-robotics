@@ -130,9 +130,10 @@ as the source. Capped at 8 MB (the app must end below `IMG_BUF` at
 untouched: any reset boots back through the loader into the *flashed* app, so
 a RAM-run image is gone on reset by design — `--run` a broken build and the
 board recovers with the reset button. After the ack drains, the loader parks
-the WINC in true power-down (CHIP_EN + RESET_N low; EN is wired to IO9 as of
-2026-06) — the same state every SoC reset produces, since both sidebands are
-plain GPIOOuts that reset to 0. The app sees the module exactly as after a
+the WINC in true power-down (CHIP_EN + RESET_N low; both reach the chip via
+the 74HC595 expander, Qc/Qh) — the same state every SoC reset produces, since
+both sidebands are plain GPIOOuts that reset to 0 and the expander driver
+re-shifts them out right after reset (`gateware/sr595.py`). The app sees the module exactly as after a
 cold boot; WiFi apps power it back up in their own `nm_bsp_reset()`.
 
 ## FTDI sidebands (host-driven reset)

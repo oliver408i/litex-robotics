@@ -26,7 +26,8 @@ N_MAC=2); nextpnr runs with --timing-allow-fail, so always check
 """
 from icepi_zero_base import BaseSoC, make_parser, run_build
 
-from gateware.soc_features import add_lcd_touch, add_snn_mlp, add_winc_aux, add_boot_ctl
+from gateware.soc_features import (add_lcd_touch, add_snn_mlp, add_winc_aux,
+                                   add_boot_ctl, add_sr595_loopback)
 
 
 class AllSoC(BaseSoC):
@@ -45,6 +46,7 @@ class AllSoC(BaseSoC):
         add_lcd_touch(self, lcd_spi_clk_freq)
         add_snn_mlp(self, leds=(0, 1))
         add_winc_aux(self, winc_spi_clk_freq, busy_led=2)  # led2 optional
+        add_sr595_loopback(self)  # TEMP: no-scope 595 health check (Qd -> IO10)
         add_boot_ctl(self)  # sticky boot flag + FTDI DTR/RTS sense
 
 

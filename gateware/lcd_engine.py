@@ -90,10 +90,12 @@ class LCDEngine(LiteXModule, AutoCSR):
         self.ev.done = EventSourcePulse(description="Op completed.")
         self.ev.finalize()
 
-        self.comb += [
-            ctrl_pads.reset_n.eq(self.pads_ctrl.fields.reset_n),
-            ctrl_pads.backlight.eq(self.pads_ctrl.fields.backlight),
-        ]
+        # reset_n is optional in the pads: with the 74HC595 expander the
+        # reset line is no longer an FPGA pin -- the SoC routes the CSR
+        # field (still exposed here unchanged) to an expander bit instead.
+        self.comb += ctrl_pads.backlight.eq(self.pads_ctrl.fields.backlight)
+        if hasattr(ctrl_pads, "reset_n"):
+            self.comb += ctrl_pads.reset_n.eq(self.pads_ctrl.fields.reset_n)
 
         verilog_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "verilog"))
         platform.add_source(os.path.join(verilog_root, "spi", "SPI_host.v"))

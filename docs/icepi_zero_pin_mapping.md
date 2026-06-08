@@ -159,14 +159,14 @@ allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
 | IO2 | `T2` | aux SPI bus `sclk` (WINC + IMU + MCP3008) |
 | IO3 | `R2` | MCP3008 `cs_n` (aux bus `cs[2]`) |
 | IO4 | `R1` | *free* |
-| IO5 | `E1` | *free* |
+| IO5 | `E1` | 74HC595 `SRCLK` |
 | IO6 | `F3` | IMU `cs_n` (aux bus `cs[1]`) |
 | IO7 | `G1` | `LCD_RS` (DC / command-data select) |
 | IO8 | `H2` | aux SPI bus `mosi` |
-| IO9 | `J1` | WINC `CHIP_EN` (low = power-down; wired 2026-06, was a dummy) |
+| IO9 | `J1` | 74HC595 `SER` (was WINC `CHIP_EN` direct, moved to Qc 2026-06) |
 | IO10 | `L2` | *free* |
-| IO11 | `G2` | *free* |
-| IO12 | `J3` | `LCD_RST` |
+| IO11 | `G2` | 74HC595 `RCLK` |
+| IO12 | `J3` | *free* (was `LCD_RST`, moved to 74HC595 Qa) |
 | IO13 | `E3` | `LCD_MISO` |
 | IO14 | `P1` | LCD backlight |
 | IO15 | `N1` | `CTP_SCL` (touch) |
@@ -174,7 +174,7 @@ allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
 | IO17 | `R3` | *free* |
 | IO18 | `N4` | `CTP_SDA` (touch) |
 | IO19 | `E4` | `LCD_SCK` |
-| IO20 | `F1` | WINC `RESET_N` |
+| IO20 | `F1` | *free* (was WINC `RESET_N`, moved to 74HC595 Qh) |
 | IO21 | `F2` | `CTP_INT` (touch) |
 | IO22 | `P2` | *free* |
 | IO23 | `M2` | WINC `cs_n` (aux bus `cs[0]`) |
@@ -183,14 +183,40 @@ allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
 | IO26 | `D4` | `LCD_MOSI` |
 | IO27 | `P3` | *free* |
 
-**20 used, 7 free.** Free pins: IO4, IO5, IO10,
-IO11, IO17, IO22, IO27.
+**20 used, 7 free.** Free pins: IO4, IO10, IO12,
+IO17, IO20, IO22, IO27.
 
 ## RGB LED / NeoPixel
 
 | Signal | FPGA Pin | Board IO |
 | --- | --- | --- |
 | `rgb_led` data | `K3` | IO1 |
+
+## 74HC595 Reset/Enable Expander
+
+A 3.3 V 74HC595 (added 2026-06) carries all slow reset/enable sidebands so
+they stop costing one FPGA pin each (`gateware/sr595.py`, wired lazily by
+`_sr595_connect` in `gateware/soc_features.py`). Transparent to firmware:
+the existing CSRs (`lcd.pads_ctrl.reset_n`, `winc_reset`, `winc_en`)
+comb-drive expander bits and the driver re-shifts (MSB first, 2 MHz SRCLK,
+~4.5 us per update) and pulses RCLK on any change. One forced shift runs
+right after (soft) reset -- the '595 powers up with random latch contents,
+and this restores the GPIOOut power-on guarantees (WINC off, LCD reset
+deasserted). `SRCLR` ties high, `OE` ties low.
+
+| Signal | FPGA Pin | Board IO |
+| --- | --- | --- |
+| `SER` | `J1` | IO9 |
+| `RCLK` | `G2` | IO11 |
+| `SRCLK` | `E1` | IO5 |
+
+| Output | Net | Notes |
+| --- | --- | --- |
+| Qa | `LCD_RST` | Active low; follows `lcd.pads_ctrl.reset_n` |
+| Qb | `CTP_RST` | Active low; ganged with Qa (replicates old shared line) |
+| Qc | WINC `CHIP_EN` | Low = power-down; follows `winc_en` CSR |
+| Qd-Qg | -- | Unconnected, driven 0 |
+| Qh | WINC `RESET_N` | Active low; follows `winc_reset` CSR |
 
 ## Shared Aux SPI Bus (ATWINC1500 + LSM6DS3 IMU + MCP3008)
 
@@ -220,11 +246,11 @@ Per-device chip-selects (`AUX_CS_*` constants in csr.h match the indices):
 
 WINC sidebands (also `add_winc_aux`):
 
-| Signal | FPGA Pin | Board IO | Notes |
-| --- | --- | --- | --- |
-| `RESET_N` | `F1` | IO20 | Active low; GPIOOut, 0 at power-on (held in reset) |
-| `CHIP_EN` | `J1` | IO9 | Low = power-down; GPIOOut, 0 at power-on (chip off). Wired 2026-06 (the old external 3.3 V tie must be gone -- IO9 drives it low) |
-| `IRQN` | `L1` | IO24 | Active low, pull-up; GPIOIn with IRQ (polled in current firmware) |
+| Signal | Route | Notes |
+| --- | --- | --- |
+| `RESET_N` | 74HC595 Qh | Active low; GPIOOut CSR, 0 at power-on (held in reset) |
+| `CHIP_EN` | 74HC595 Qc | Low = power-down; GPIOOut CSR, 0 at power-on (chip off). Reaches the module's true power-down since 2026-06 (the old external 3.3 V tie must be gone) |
+| `IRQN` | `L1` (IO24) | Active low, pull-up; GPIOIn with IRQ (polled in current firmware) |
 
 ## LCD / Touch
 
@@ -241,9 +267,10 @@ The LCD SPI bus has its own dedicated pins (not shared with the sensor bus).
 | LCD SPI | `mosi` | `D4` | IO26 | `LCD_MOSI` |
 | LCD SPI | `miso` | `E3` | IO13 | `LCD_MISO`; not required for basic LCD writes |
 | ST7796S LCD | `cs_n[0]` | `H3` | IO16 | `LCD_CS` |
-| ST7796S LCD | `reset` | `J3` | IO12 | `LCD_RST` |
+| ST7796S LCD | `reset` | 74HC595 Qa | -- | `LCD_RST`; was `J3` (IO12) until 2026-06 |
 | ST7796S LCD | `dc` / `rs` | `G1` | IO7 | `LCD_RS`; command/data select |
 | LCD backlight | `led` | `P1` | IO14 | `backlightLED` |
 | FT6336U touch | `scl` | `N1` | IO15 | `CTP_SCL` |
 | FT6336U touch | `sda` | `N4` | IO18 | `CTP_SDA` |
 | FT6336U touch | `int` | `F2` | IO21 | `CTP_INT` |
+| FT6336U touch | `rst` | 74HC595 Qb | -- | `CTP_RST`; ganged with LCD reset (was hard-tied to it) |
