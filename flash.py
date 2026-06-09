@@ -86,6 +86,9 @@ def parse_args():
     ap.add_argument("--reset", action="store_true",
                     help="no flashing: just reset the SoC via the FTDI sidebands "
                          "(requires --port); board reboots through loader to app")
+    ap.add_argument("--force-serial", action="store_true",
+                    help="skip the WiFi probe/hook ladder and go straight to the "
+                         "FTDI/serial reset path (requires --port)")
     ap.add_argument("--reboot", action="store_true",
                     help="send WFLR when done even if only bitstream/BIOS were flashed")
     ap.add_argument("--no-reboot", action="store_true",
@@ -229,6 +232,15 @@ def enter_via_serial(s, host, tty):
 
 def ensure_loader(s, host, args):
     """Walk the entry ladder; returns the resolved board IP."""
+    if args.force_serial:
+        if not args.port:
+            sys.exit("--force-serial needs --port /dev/ttyUSBx")
+        print("forcing the FTDI/serial path")
+        host_ip = enter_via_serial(s, host, args.port)
+        if host_ip:
+            print("  loader is up")
+            return host_ip
+        sys.exit("loader did not come up after reset -- check wifi_secrets/AP")
     print("looking for the loader...")
     host_ip = resolve_quiet(host)
     if host_ip is None:
