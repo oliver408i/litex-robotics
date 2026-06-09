@@ -33,11 +33,15 @@ WINC_TEST := ../winc_test
 CFLAGS += -I. -I$(WINC_TEST) -I../common -I$(HOST_DRV) -include conf_winc.h -include winc_prelude.h
 CFLAGS += -ffunction-sections -fdata-sections
 CFLAGS += -fcommon
+# CONF_PERIPH gates m2m_periph.c + the set/get_gpio_* helpers in nmasic.c, so
+# the loader can drive the WINC aux-GPIO status LEDs (main.c). Scoped here, not
+# in the shared conf_winc.h, so winc_test's build is untouched.
+CFLAGS += -DCONF_PERIPH
 
 # Lean keep-list: WINC core + sockets only (spi_flash.o = WINC's own serial
 # flash, a live nm_drv_init dep -- NOT the board flash this app programs).
 WINC_OBJECTS = \
-	m2m_wifi.o m2m_hif.o \
+	m2m_wifi.o m2m_hif.o m2m_periph.o \
 	nmasic.o nmdrv.o nmbus.o nmspi.o \
 	nm_common.o socket.o spi_flash.o
 

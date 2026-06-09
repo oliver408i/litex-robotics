@@ -16,6 +16,7 @@
 
 #include "driver/include/m2m_wifi.h"
 #include "driver/include/m2m_types.h"
+#include "driver/include/m2m_periph.h"   /* WINC aux-GPIO status LEDs */
 #include "socket/include/socket.h"
 #include "aux_spi.h"
 #include "mdns.h"
@@ -104,6 +105,56 @@ static uint32_t sw_elapsed_ms(void)
 	timer0_update_value_write(1);
 	uint32_t cycles = 0xffffffff - timer0_value_read();
 	return (uint32_t)(((uint64_t)cycles * 1000) / CONFIG_CLOCK_FREQUENCY);
+}
+
+/* ---- WINC aux-GPIO status LEDs --------------------------------------------
+ * Red=GPIO18, Yellow=GPIO16, Green=GPIO15 hang off the WINC's pads, so they
+ * only work once m2m_wifi_init() is up. m2m_periph_* wakes the chip and drives
+ * the HIF bus, which must NOT reenter from a wifi/socket callback -- so the
+ * callbacks only set the desired-state bits below and led_apply() pushes the
+ * actual writes from the main loop.
+ *
+ * The LEDs are ACTIVE-LOW: cathode on the WINC pad, anode via 1k to +3V3, so
+ * the pad must sink current -> drive LOW to light, HIGH to extinguish. */
+/* Pad mapping found empirically by the bit sweep: the board's LEDs are on the
+ * WINC register bits 4/5/6 (M2M_PERIPH_GPIO4/5/6), NOT the silk-screened
+ * 15/16/18 -- the driver enum's own comments hinted at this aliasing. */
+#define LED_GREEN   M2M_PERIPH_GPIO4    /* loader resident in OTA mode      */
+#define LED_YELLOW  M2M_PERIPH_GPIO5    /* WiFi up (associated + DHCP)       */
+#define LED_RED     M2M_PERIPH_GPIO6    /* image transfer in progress        */
+
+#define LED_ON      0
+#define LED_OFF     1
+
+#define LB_GREEN   (1u << 0)
+#define LB_YELLOW  (1u << 1)
+#define LB_RED     (1u << 2)
+
+static uint8_t led_want;    /* desired LED bits (set anywhere, incl. callbacks) */
+static uint8_t led_have;    /* last bits pushed to the chip (main loop only)    */
+
+static void leds_init(void)
+{
+	m2m_periph_gpio_set_dir(LED_GREEN,  1);
+	m2m_periph_gpio_set_dir(LED_YELLOW, 1);
+	m2m_periph_gpio_set_dir(LED_RED,    1);
+	/* Drive all to OFF explicitly (active-low -> high); the output register's
+	 * power-on value is unknown, and led_apply() only writes *changed* bits. */
+	m2m_periph_gpio_set_val(LED_GREEN,  LED_OFF);
+	m2m_periph_gpio_set_val(LED_YELLOW, LED_OFF);
+	m2m_periph_gpio_set_val(LED_RED,    LED_OFF);
+	led_want = led_have = 0;
+}
+
+/* Push any changed LED bits to the WINC. Main-loop context only. */
+static void led_apply(void)
+{
+	uint8_t diff = led_want ^ led_have;
+	if(!diff) return;
+	if(diff & LB_GREEN)  m2m_periph_gpio_set_val(LED_GREEN,  (led_want & LB_GREEN)  ? LED_ON : LED_OFF);
+	if(diff & LB_YELLOW) m2m_periph_gpio_set_val(LED_YELLOW, (led_want & LB_YELLOW) ? LED_ON : LED_OFF);
+	if(diff & LB_RED)    m2m_periph_gpio_set_val(LED_RED,    (led_want & LB_RED)    ? LED_ON : LED_OFF);
+	led_have = led_want;
 }
 
 /* ---- boot-manager triage --------------------------------------------------
@@ -247,6 +298,7 @@ static void handle_begin(const uint8 *p, sint16 n, const struct sockaddr_in *fro
 
 	if(session && off == img_off && len == img_len && crc == img_crc &&
 	   chk == chunk_sz) {
+		led_want |= LB_RED;       /* transfer (re)starting */
 		send_wfla(from, ST_OK);   /* retry/resume of the same image */
 		return;
 	}
@@ -264,6 +316,7 @@ static void handle_begin(const uint8 *p, sint16 n, const struct sockaddr_in *fro
 	memset(CHUNK_MAP, 0, (total_chunks + 7) / 8);
 	session      = 1;
 	prog_pending = prog_done = 0;
+	led_want    |= LB_RED;        /* transfer in progress */
 
 	log_puts("begin: "); log_uint(img_len);
 	log_puts(" B -> flash 0x"); log_hex32(img_off);
@@ -372,6 +425,7 @@ static void run_program(void)
 		log_puts(" want 0x"); log_hex32(img_crc); log_nl();
 		prog_status = ST_CRC_SDRAM;
 		prog_done   = 1;
+		led_want   &= ~LB_RED;
 		send_wflz(&prog_addr);
 		return;
 	}
@@ -393,6 +447,7 @@ static void run_program(void)
 	prog_ms     = sw_elapsed_ms();
 	prog_status = (prog_flash_crc == img_crc) ? ST_OK : ST_VERIFY_FAIL;
 	prog_done   = 1;
+	led_want   &= ~LB_RED;
 
 	log_puts(prog_status == ST_OK ? "verify OK" : "VERIFY FAILED");
 	log_puts(" (erase "); log_uint(t_erase);
@@ -414,6 +469,7 @@ static void run_exec(void)
 	if(c != img_crc) {
 		log_puts("SDRAM image CRC mismatch: got 0x"); log_hex32(c);
 		log_puts(" want 0x"); log_hex32(img_crc); log_nl();
+		led_want &= ~LB_RED;
 		send_wflx(&exec_addr, ST_CRC_SDRAM);
 		return;
 	}
@@ -508,6 +564,7 @@ static void wifi_cb(uint8 u8MsgType, void *pvMsg)
 		} else {
 			log_puts("wifi: disconnected (err "); log_int(s->u8ErrCode);
 			log_puts("), retrying..."); log_nl();
+			led_want &= ~(LB_YELLOW | LB_RED);   /* link + any transfer dead */
 			if(ldr_sock >= 0) { close(ldr_sock); ldr_sock = -1; }
 			wifi_connect();
 		}
@@ -516,6 +573,7 @@ static void wifi_cb(uint8 u8MsgType, void *pvMsg)
 	case M2M_WIFI_REQ_DHCP_CONF: {
 		tstrM2MIPConfig *ip = (tstrM2MIPConfig *)pvMsg;
 		log_puts("wifi: DHCP done, IP "); log_ip(ip->u32StaticIP); log_nl();
+		led_want |= LB_YELLOW;
 		ldr_start();
 		mdns_start(ip->u32StaticIP);   /* board reachable as icepi.local */
 		break;
@@ -573,6 +631,12 @@ int main(void)
 		for(;;) ;
 	}
 	m2m_wifi_set_sleep_mode(M2M_NO_PS, 0);   /* throughput >> power, as in winc_test */
+
+	/* WINC is up -> status LEDs are now drivable. Green = loader resident. */
+	leds_init();
+	led_want |= LB_GREEN;
+	led_apply();
+
 	socketInit();
 	registerSocketCallback(socket_cb, NULL);
 	wifi_connect();
@@ -580,6 +644,7 @@ int main(void)
 	for(;;) {
 		winc_service_irq();
 		m2m_wifi_handle_events(NULL);
+		led_apply();            /* push LED changes (safe: outside callbacks) */
 
 		/* console escape hatch: 'b' reboots (flag is clear -> chains app) */
 		if(uart_read_nonblock() && uart_read() == 'b') {
