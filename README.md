@@ -97,8 +97,8 @@ These cannot run on a bare laptop — they need the IcePi Zero board + FTDI cabl
 - WINC/LCD/IMU/touch bring-up and tests under `software/`
 
 The board carries: ECP5 (LFE5U-25F), W25Q128 16 MB SPI flash, W9825G6KH6 32 MB
-SDRAM, ST7796S LCD + FT6336U touch, ATWINC1500 WiFi, LSM6DS3 IMU, MCP3008 ADC,
-and a 74HC595 reset/enable expander. Pinout in
+SDRAM, ST7796S LCD + FT6336U touch, ATWINC1500 WiFi, LSM6DS3 IMU, and MCP3008
+ADC. Slow reset/enable lines are on direct FPGA pins. Pinout in
 [`docs/icepi_zero_pin_mapping.md`](docs/icepi_zero_pin_mapping.md); boot chain in
 [`docs/boot_chain.md`](docs/boot_chain.md); SoC layout in
 [`docs/soc_layout.md`](docs/soc_layout.md).

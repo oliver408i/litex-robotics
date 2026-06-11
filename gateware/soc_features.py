@@ -24,68 +24,6 @@ from litex.soc.integration.soc import SoCRegion
 from gateware.lcd_engine import LCDEngine
 from gateware.snn_mlp import SNNMLP
 from gateware.aux_spi import AuxSPIMaster
-from gateware.sr595 import SR595
-
-
-# 74HC595 reset/enable expander --------------------------------------------------------------------
-# All slow reset/enable sidebands live on one 3.3 V 74HC595 (gateware/sr595.py)
-# instead of one FPGA pin each. Transparent to firmware: the features below
-# keep their existing CSRs and comb-drive expander bits; the driver re-shifts
-# on any change. Qd-Qg are unconnected (driven 0).
-_sr595_io = [
-    ("sr595", 0,
-        Subsignal("ser",   Pins("J1")),   # IO9
-        Subsignal("rclk",  Pins("G2")),   # IO11
-        Subsignal("srclk", Pins("E1")),   # IO5
-        IOStandard("LVCMOS33"),
-    ),
-]
-
-SR_LCD_RST  = 0  # Qa -> LCD_RST   (active low)
-SR_CTP_RST  = 1  # Qb -> CTP_RST   (active low)
-SR_TEST     = 3  # Qd -> no-scope diagnostic loopback (see add_sr595_loopback)
-# Qc/Qh were WINC CHIP_EN/RESET_N; WINC moved to direct FPGA pins (see add_winc_aux).
-
-
-# SRCLK rate for the expander. The HC part itself is good for >20 MHz, but the
-# limit here is the jumper wiring (no controlled impedance / ground return), so
-# this is deliberately slow. Dropped from 2 MHz to 200 kHz while chasing an
-# intermittent, boot-random output bug whose FPGA-side signals all metered
-# correct -- 10x more setup/hold + edge-settling margin on the breadboard. An
-# update still lands in ~50 us, orders of magnitude under the ms reset timing.
-_SR595_SCLK_FREQ = 200e3
-
-def _sr595_connect(soc, bit, sig):
-    """Drive one expander output from `sig`, creating the driver lazily."""
-    if not hasattr(soc, "sr595"):
-        soc.platform.add_extension(_sr595_io)
-        soc.sr595 = SR595(soc.platform.request("sr595"), soc.sys_clk_freq,
-                          sclk_freq=_SR595_SCLK_FREQ)
-    soc.comb += soc.sr595.value[bit].eq(sig)
-
-
-# --- TEMPORARY no-scope 595 health check ----------------------------------------------------------
-# Drive an otherwise-unused expander output (Qd) from a CSR and read it back on
-# a free FPGA input jumpered to Qd. Qd shares SER/SRCLK/RCLK with every other
-# bit, so if the readback tracks the test CSR through the shift+latch, the whole
-# physical SER->shift->RCLK->Q path is proven good. Remove once the 595 is
-# trusted. Needs one jumper: 595 Qd -> IO10 (L2).
-_sr595_loop_io = [
-    ("sr595_loop", 0, Pins("L2"), IOStandard("LVCMOS33")),  # IO10 <- 595 Qd jumper
-]
-
-
-def add_sr595_loopback(soc):
-    """Expose `sr595_test` (GPIOOut -> Qd) and `sr595_loop` (GPIOIn <- Qd).
-    Test from the BIOS console: write sr595_test=1, then read sr595_loop (should
-    read 1 after ~4.5 us); write 0, read 0. A tracking readback proves the 595."""
-    soc.platform.add_extension(_sr595_loop_io)
-    test_sig = Signal()
-    soc.sr595_test = GPIOOut(test_sig)
-    _sr595_connect(soc, SR_TEST, test_sig)
-    soc.sr595_loop = GPIOIn(soc.platform.request("sr595_loop"))
-    soc.add_csr("sr595_test")
-    soc.add_csr("sr595_loop")
 
 
 # LCD / Touch --------------------------------------------------------------------------------------
@@ -101,7 +39,9 @@ _lcd_io = [
     ("lcd_ctrl", 0,
         Subsignal("dc",        Pins("G1")),
         Subsignal("backlight", Pins("P1")),
-        # reset_n moved to the 74HC595 expander (SR_LCD_RST).
+        # reset_n on IO10 (L2): the LCD and CTP RST lines are tied together on
+        # the board to this one pin (was the 74HC595 Qa/Qb, expander retired).
+        Subsignal("reset_n",   Pins("L2")),
         IOStandard("LVCMOS33"),
     ),
     ("ctp_i2c", 0,
@@ -138,11 +78,11 @@ def add_lcd_touch(soc, lcd_spi_clk_freq):
     soc.add_constant("LCD_HEIGHT", 480)
     soc.add_constant("LCD_SPI_FREQUENCY", int(lcd_spi_clk_freq // 2))
 
-    # LCD_RST (Qa) and CTP_RST (Qb) live on the 74HC595 expander. CTP_RST
-    # follows the LCD reset_n CSR bit, replicating the old shared-line
-    # wiring; give it its own CSR field if it ever needs to be split.
-    _sr595_connect(soc, SR_LCD_RST, soc.lcd.pads_ctrl.fields.reset_n)
-    _sr595_connect(soc, SR_CTP_RST, soc.lcd.pads_ctrl.fields.reset_n)
+    # LCD_RST and CTP_RST are tied together on the board to one FPGA pin
+    # (lcd_ctrl.reset_n on IO10/L2); LCDEngine drives it from the reset_n CSR
+    # field. So touch reset follows LCD reset with no extra wiring here. (The
+    # slow reset/enable sidebands will move onto a SPI GPIO expander on the aux
+    # bus in the final build -- see docs/reset_sidebands.md.)
 
     # FT6336U capacitive touch (I2C + INT). RST follows LCD reset (above).
     # Hardware I2C master (wishbone-mapped, 2 word registers: xfer + config).
@@ -190,10 +130,9 @@ def add_snn_mlp(soc, n_mac=2, leds=None):
 # WINC, IMU, MCP3008 so that no device CS floats (unused CS parked high).
 #
 # Sideband pins match the physical wiring: CS=IO23, IRQ=IO24. RESET_N and
-# CHIP_EN moved to the 74HC595 expander (Qh / Qc) in 2026-06, freeing their
-# old direct pins (IO20 / IO9; IO9 is now the expander's SER). CHIP_EN
-# reaches the module's true power-down since 2026-06 (was a dummy before;
-# the old external 3.3 V tie must be gone).
+# CHIP_EN are on direct FPGA pins (IO20/F1, IO22/P2). CHIP_EN reaches the
+# module's true power-down since 2026-06 (was a dummy before; the old external
+# 3.3 V tie must be gone).
 _winc_io = [
     ("aux_spi", 0,
         Subsignal("clk",  Pins("T2")),            # IO2  -- shared sclk
@@ -203,10 +142,6 @@ _winc_io = [
         IOStandard("LVCMOS33"),
     ),
     ("winc_ctrl", 0,
-        # TEMP: WINC reset/enable pulled back off the 74HC595 onto direct pins
-        # so the WiFi loader works while the expander is under diagnosis.
-        # RESET_N returns to its original IO20/F1; CHIP_EN cannot reuse IO9
-        # (now the 595's SER), so it takes the free IO22/P2.
         Subsignal("reset_n", Pins("F1")),         # IO20 -> WINC RESET_N (active low)
         Subsignal("chip_en", Pins("P2")),         # IO22 -> WINC CHIP_EN (low = power-down)
         Subsignal("irq_n",   Pins("L1"), Misc("PULLMODE=UP")),  # IO24 <- WINC IRQN (active low)
@@ -225,9 +160,8 @@ def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
 
     GPIOOut defaults to 0, so at power-on RESET_N=0 (held in reset) and
     CHIP_EN=0 (powered down) -- the WINC stays off until the firmware powers
-    it up in nm_bsp_reset(). Both lines reach the chip through the 74HC595
-    expander (Qh / Qc); SR595's forced post-reset shift is what makes the
-    power-on guarantee hold there. busy_led mirrors in-flight transfers.
+    it up in nm_bsp_reset(). Both lines are on direct FPGA pins (see _winc_io).
+    busy_led mirrors in-flight transfers.
     """
     platform = soc.platform
     platform.add_extension(_winc_io)
@@ -241,8 +175,6 @@ def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
     soc.add_csr("aux_spi")
 
     ctrl = platform.request("winc_ctrl")
-    # TEMP: direct pins again (off the 74HC595) -- see _winc_io. Firmware is
-    # unaffected: the winc_reset/winc_en CSRs are unchanged.
     soc.winc_reset = GPIOOut(ctrl.reset_n)   # write 0 = assert reset
     soc.winc_en    = GPIOOut(ctrl.chip_en)   # write 1 = enable chip
     soc.winc_irq   = GPIOIn(ctrl.irq_n, with_irq=True)

@@ -90,9 +90,9 @@ class LCDEngine(LiteXModule, AutoCSR):
         self.ev.done = EventSourcePulse(description="Op completed.")
         self.ev.finalize()
 
-        # reset_n is optional in the pads: with the 74HC595 expander the
-        # reset line is no longer an FPGA pin -- the SoC routes the CSR
-        # field (still exposed here unchanged) to an expander bit instead.
+        # reset_n is optional in the pads: a SoC top can omit the reset pad and
+        # route the CSR field (still exposed here unchanged) elsewhere. Today
+        # lcd_ctrl provides it on a direct pin (IO10), so the wire below drives it.
         self.comb += ctrl_pads.backlight.eq(self.pads_ctrl.fields.backlight)
         if hasattr(ctrl_pads, "reset_n"):
             self.comb += ctrl_pads.reset_n.eq(self.pads_ctrl.fields.reset_n)

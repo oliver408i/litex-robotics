@@ -8,10 +8,12 @@
  * compiles against any SoC top -- entries whose hardware is absent simply
  * don't appear in the menu.
  *
- * Shipped with one diagnostic: the 74HC595 SER->shift->RCLK->Qd loopback
- * (needs add_sr595_loopback() in the SoC top, i.e. icepi_zero_all.py). It is
- * the no-scope way to prove the expander's shift path is reliable after the
- * sr595.py output-register fix -- run 't' and watch for a zero error count.
+ * NOTE (2026-06-10): the 74HC595 expander was retired (dead IC) -- its loopback
+ * CSRs (CSR_SR595_TEST/LOOP_BASE) no longer exist in any SoC, so the sr595_*
+ * routines below are permanently #ifdef'd out and never build. They're left as
+ * a worked example of a diagnostic; the live console is just the generic
+ * framework + diag_clocks. Rewrite/replace the sr595 block when you next need
+ * to bring something up from firmware (e.g. the future SPI GPIO expander).
  */
 #include <stdint.h>
 
