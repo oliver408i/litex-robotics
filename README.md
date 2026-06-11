@@ -87,7 +87,6 @@ Top-level `icepi_zero_*.py` are the SoC configurations (they prepend
 | `icepi_zero_lcd.py` / `_mnist_lcd.py` | LCD / MNIST-on-LCD |
 | `icepi_zero_mnist.py` | SNN-MLP MNIST demo |
 | `icepi_zero_winc.py` | ATWINC1500 WiFi loader |
-| `icepi_zero_imu.py`  | LSM6DS3 IMU |
 
 ## What still requires the physical hardware
 

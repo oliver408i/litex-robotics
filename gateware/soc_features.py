@@ -7,9 +7,8 @@ icepi_zero_mnist_lcd.py) are thin wrappers over these, and icepi_zero_all.py
 composes all of them. The blocks moved here verbatim from those tops; the pin
 choices match the physical wiring in docs/icepi_zero_pin_mapping.md.
 
-Not represented here (and why):
-- imu_spi (icepi_zero_imu.py): superseded -- the LSM6DS3 sits on the shared
-  aux bus (add_winc_aux, cs[1]) and firmware drives it via aux_spi's AUX_IMU.
+The LSM6DS3 IMU is not a block of its own: it shares the aux bus
+(add_winc_aux, cs[1]) and firmware drives it via aux_spi's AUX_IMU.
 """
 from migen import Cat, Signal, If
 from migen.genlib.cdc import MultiReg

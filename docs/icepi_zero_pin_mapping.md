@@ -9,7 +9,7 @@ This note has two parts:
   brings out, exactly as the platform file defines it. Independent of any
   project.
 - **Part 2 — Current Project Wiring**: what this project's SoCs actually drive
-  on the GPIO bank, via `icepi_zero_imu.py` and the LCD SoC. This is the part
+  on the GPIO bank, via the aux SPI bus and the LCD SoC. This is the part
   that changes as the project evolves.
 
 When in doubt, Part 2 is the source of truth for how the GPIO pins are used
@@ -77,7 +77,7 @@ and so on through `IO27` = `P3`.
 
 The platform file also predefines `rgb_led` and `mcp3008` aliases that sit on
 top of these GPIO pins. For how the bank is actually driven today (including
-the IMU added by `icepi_zero_imu.py` and the LCD/touch panel), see
+the IMU on the aux SPI bus and the LCD/touch panel), see
 **Part 2 — Current Project Wiring**.
 
 ## USB 0
@@ -223,10 +223,11 @@ deasserted). `SRCLR` ties high, `OE` ties low.
 One SPI bus (runtime-divider `AuxSPIMaster`, software-held chip-selects --
 `gateware/aux_spi.py`, wired by `add_winc_aux` in `gateware/soc_features.py`)
 serves three devices at their own clocks. Distinct from the LCD's dedicated
-SPI bus. Historical note: `icepi_zero_imu.py` drove the same physical pins
-with a LiteX SPIMaster (`imu_spi`, IMU on cs[0]); that arrangement is
-superseded by this bus -- firmware reaches the IMU via the `AUX_IMU` device
-in `software/winc_test/aux_spi.h`.
+SPI bus. Firmware reaches the IMU via the `AUX_IMU` device in
+`software/winc_test/aux_spi.h`. Historical note: a standalone `icepi_zero_imu.py`
+once drove the same physical pins with a stock LiteX SPIMaster (`imu_spi`, IMU on
+cs[0]); that bring-up top + its `software/imu_test` firmware were removed once
+this bus was trusted, preserved at git tag `imu-standalone-bringup`.
 
 Shared lines:
 
