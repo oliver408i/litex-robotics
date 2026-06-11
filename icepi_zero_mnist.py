@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IcePi Zero SoC for the SNN-MLP MNIST classifier.
 
-Same shape as icepi_zero_snn.py: BaseSoC + one extra peripheral. The SNNMLP
+Same shape as icepi_zero_winc.py: BaseSoC + one extra peripheral. The SNNMLP
 block (Wishbone master for SDRAM weight streaming, busy/done LEDs, and the
 N_MAC=2 rationale) lives in gateware/soc_features.py (add_snn_mlp).
 """

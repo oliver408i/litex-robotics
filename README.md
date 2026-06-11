@@ -18,7 +18,7 @@ That reconstructs everything that is **not** in git (see below). Then:
 ```bash
 cd sim/cocotb && ./run.sh                       # run the cocotb SNN tests
 .venv/bin/python icepi_zero_all.py --build      # build a bitstream
-make -C software/snn_demo                        # build firmware (needs riscv gcc)
+make -C software/snn_mnist_demo                  # build firmware (needs riscv gcc)
 .venv/bin/python flash.py                         # flash the board (needs hardware)
 ```
 
@@ -85,7 +85,7 @@ Top-level `icepi_zero_*.py` are the SoC configurations (they prepend
 | `icepi_zero_base.py` | base SoC (SDRAM + optional SPI-flash XIP BIOS), library-only base |
 | `icepi_zero_all.py`  | everything: LCD + SNN + WiFi |
 | `icepi_zero_lcd.py` / `_mnist_lcd.py` | LCD / MNIST-on-LCD |
-| `icepi_zero_snn.py` / `_mnist.py` | SNN core / MNIST demo |
+| `icepi_zero_mnist.py` | SNN-MLP MNIST demo |
 | `icepi_zero_winc.py` | ATWINC1500 WiFi loader |
 | `icepi_zero_imu.py`  | LSM6DS3 IMU |
 

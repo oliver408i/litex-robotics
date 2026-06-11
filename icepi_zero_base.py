@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared SoC base for IcePi Zero projects.
 
-Per-project top files (icepi_zero_snn.py, icepi_zero_lcd.py) import from here
+Per-project top files (icepi_zero_mnist.py, icepi_zero_lcd.py) import from here
 and add only the gateware their project needs. Run those tops directly; this
 file is library-only.
 """

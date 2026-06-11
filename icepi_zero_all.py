@@ -10,9 +10,8 @@ Composes every proven peripheral (gateware/soc_features.py) on one BaseSoC:
 
 Pin budget: 20 of 27 GPIO claimed (incl. the WINC EN), disjoint by
 construction -- see docs/icepi_zero_pin_mapping.md. Wishbone masters: cpu +
-lcd_dma + snn_wb. Excluded as duplicates: icepi_zero_imu.py's imu_spi (the
-LSM6DS3 sits on the aux bus as AUX_IMU) and the snn_estimator debug core
-(CSR-name clash with SNNMLP; its own bring-up top).
+lcd_dma + snn_wb. Excluded as a duplicate: icepi_zero_imu.py's imu_spi (the
+LSM6DS3 sits on the aux bus as AUX_IMU).
 
 Unlike the per-feature tops this always builds the deployment shape: XIP
 BIOS + LiteSPI flash master + the boot-manager flash layout, so every image

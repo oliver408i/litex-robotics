@@ -6,7 +6,7 @@ Mirrors what the planned hardware datapath will do:
 - Q4.12 signed integers throughout (no float in the inference path)
 - Sequential MAC per layer per timestep with int accumulator
 - Leak implemented as `mem - (mem >> beta_shift)` (exact 1 - 2^-k decay,
-  matches `lif_bank_debug.v:112`)
+  matches `verilog/snn_mlp_core.v`)
 - Membrane clip at +/-3.999, threshold-subtract reset at 1.0
 - Per-output spike-count accumulator over T timesteps; argmax classifies
 

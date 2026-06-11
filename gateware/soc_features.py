@@ -10,8 +10,6 @@ choices match the physical wiring in docs/icepi_zero_pin_mapping.md.
 Not represented here (and why):
 - imu_spi (icepi_zero_imu.py): superseded -- the LSM6DS3 sits on the shared
   aux bus (add_winc_aux, cs[1]) and firmware drives it via aux_spi's AUX_IMU.
-- snn_estimator (icepi_zero_snn.py): tracking-experiment debug core; collides
-  with SNNMLP on the CSR name "snn" and stays a standalone bring-up top.
 """
 from migen import Cat, Signal, If
 from migen.genlib.cdc import MultiReg
@@ -46,9 +44,8 @@ _sr595_io = [
 
 SR_LCD_RST  = 0  # Qa -> LCD_RST   (active low)
 SR_CTP_RST  = 1  # Qb -> CTP_RST   (active low)
-SR_WINC_EN  = 2  # Qc -> WINC CHIP_EN (low = power-down)   [TEMP: WINC back on direct pins]
-SR_WINC_RST = 7  # Qh -> WINC RESET_N (active low)         [TEMP: WINC back on direct pins]
 SR_TEST     = 3  # Qd -> no-scope diagnostic loopback (see add_sr595_loopback)
+# Qc/Qh were WINC CHIP_EN/RESET_N; WINC moved to direct FPGA pins (see add_winc_aux).
 
 
 # SRCLK rate for the expander. The HC part itself is good for >20 MHz, but the

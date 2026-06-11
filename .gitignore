@@ -17,5 +17,6 @@ old-verilog
 oss-cad-suite
 openfpga
 sim_build*/
+results.xml
 host_drv-19.7.11
 software/winc_test/wifi_secrets.h

@@ -324,9 +324,10 @@ reinforces the bandwidth story above.
 
 ## What carried over from prior work
 
-- **From the 8-neuron SNN tracker PoC** (`software/snn_demo`,
-  `gateware/snn_estimator.py`, `verilog/lif_bank_debug.v`,
-  `sim/lif_reservoir_1d.py`, `tools/train_snn_torch.py`): the whole Q4.12 numeric
+- **From the 8-neuron SNN tracker PoC** (removed from the tree; preserved at git
+  tag `snn-tracking-poc` — `software/snn_demo`, `gateware/snn_estimator.py`,
+  `verilog/lif_bank_debug.v`, `sim/lif_reservoir_1d.py`, `tools/train_snn_torch.py`):
+  the whole Q4.12 numeric
   convention, the snntorch QAT + STE quantizer, the schedule-bit-exact simulator,
   the LiteX peripheral wrapping idiom, the standalone-firmware Makefile/linker.ld,
   the UART command-protocol idiom, and the FIN_A/FIN_B stage split idea.

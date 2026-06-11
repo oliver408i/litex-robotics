@@ -205,7 +205,7 @@ $(log "Setup complete.")
 Next steps:
   • Run the cocotb sims:     cd sim/cocotb && ./run.sh
   • Build a bitstream:        .venv/bin/python icepi_zero_all.py --build
-  • Build firmware:           make -C software/snn_demo        (needs riscv64-linux-gnu-gcc)
+  • Build firmware:           make -C software/snn_mnist_demo  (needs riscv64-linux-gnu-gcc)
   • Flash the board:          .venv/bin/python flash.py        (needs the IcePi Zero + FTDI cable)
 
 Note: hardware-in-the-loop steps (flash.py, UART weight streaming, WINC/LCD bring-up)

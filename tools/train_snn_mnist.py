@@ -2,7 +2,7 @@
 """Train a Q4.12-quantized SNN-MLP on MNIST with snntorch + BPTT.
 
 Architecture: 784 -> hidden -> 10 LIF layers, direct-current input injection,
-spike-rate readout. Numerics mirror lif_bank_debug.v:
+spike-rate readout. Numerics mirror verilog/snn_mlp_core.v:
 
 - beta = 0.875 (leak), threshold = 1.0, subtract-reset
 - Q4.12 fixed-point with mem_clip = 3.999, weight_clip = 3.999
