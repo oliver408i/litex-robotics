@@ -71,14 +71,21 @@ class SNNMLP(LiteXModule, AutoCSR):
         ])
 
         # Weight stream layout — configured once at boot.
+        # The core hoists layer-1 out of the timestep loop, so the loader streams
+        # the W1 prefix (weight_preamble_beats) ONCE, then the W2 block
+        # (weight_beats_per_cycle) weight_num_cycles times. The W2 block lives
+        # right after the W1 prefix in SDRAM, so no second base address is needed.
         self.weight_base = CSRStorage(
-            32, description="SDRAM byte address of the packed weight blob (one timestep)."
+            32, description="SDRAM byte address of the packed weight blob (W1 prefix then W2 block)."
+        )
+        self.weight_preamble_beats = CSRStorage(
+            32, description="W1 beats streamed once up front (= L1_TILES*IN_SIZE). 0 = legacy single-segment."
         )
         self.weight_beats_per_cycle = CSRStorage(
-            32, description="Beats consumed per timestep (host fills from pack tool)."
+            32, description="W2 beats consumed per timestep (= L2_TILES*HIDDEN)."
         )
         self.weight_num_cycles = CSRStorage(
-            32, description="Number of timesteps to replay the weight blob (T)."
+            32, description="Number of timesteps to replay the W2 block (T)."
         )
 
         # Pixel and bias write ports — host writes addr then data then pulses we.
@@ -137,6 +144,7 @@ class SNNMLP(LiteXModule, AutoCSR):
 
             i_start            = self.control.fields.start,
             i_base_addr        = self.weight_base.storage,
+            i_preamble_beats   = self.weight_preamble_beats.storage,
             i_beats_per_cycle  = self.weight_beats_per_cycle.storage,
             i_num_cycles       = self.weight_num_cycles.storage,
             o_busy             = loader_busy,

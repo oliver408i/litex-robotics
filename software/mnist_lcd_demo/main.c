@@ -96,6 +96,7 @@ static uint8_t spike_count_read(int i)
 static void snn_setup(void)
 {
 	snn_weight_base_write((uint32_t)(uintptr_t)snn_weights_blob);
+	snn_weight_preamble_beats_write(SNN_PREAMBLE_BEATS);
 	snn_weight_beats_per_cycle_write(SNN_BEATS_PER_CYCLE);
 	snn_weight_num_cycles_write(SNN_NUM_CYCLES);
 
@@ -238,7 +239,8 @@ static uint16_t canvas_px[CANVAS_DIM * CANVAS_DIM] __attribute__((aligned(4)));
 
 static lv_obj_t *canvas;
 static lv_obj_t *result_label;
-static lv_obj_t *status_label;
+static lv_obj_t *lat_cpu_label;   /* CPU-side preprocessing/load time */
+static lv_obj_t *lat_hw_label;    /* hardware core (loader+core) run time */
 static lv_obj_t *spike_bars[SNN_OUT_SIZE];
 
 static int draw_active;
@@ -415,6 +417,40 @@ static int preprocess_and_load(void)
 }
 
 /* ======================================================================== */
+/*  Latency timing                                                           */
+/* ======================================================================== */
+
+/* timer0 is the free-running countdown LVGL also reads for its tick. Latching
+ * + reading its value is non-destructive (the counter keeps running), so we
+ * can sample it around the inference path without disturbing the tick. */
+static inline uint32_t timer_now_cycles(void)
+{
+	timer0_update_value_write(1);
+	return timer0_value_read();
+}
+
+/* Cycle delta between an earlier and a later sample. The timer counts DOWN,
+ * so earlier > later (mod 2^32); unsigned subtraction handles the wrap. */
+static inline uint32_t cycles_between(uint32_t earlier, uint32_t later)
+{
+	return earlier - later;
+}
+
+static inline uint32_t cycles_to_us(uint32_t cycles)
+{
+	uint32_t cyc_per_us = CONFIG_CLOCK_FREQUENCY / 1000000u;   /* 50 @ 50 MHz */
+	if(cyc_per_us == 0) cyc_per_us = 1;
+	return cycles / cyc_per_us;
+}
+
+/* Render microseconds into a label as "<prefix>\n<m>.<uuu> ms". */
+static void set_latency_label(lv_obj_t *label, const char *prefix, uint32_t us)
+{
+	lv_label_set_text_fmt(label, "%s\n%u.%03u ms", prefix,
+	                      (unsigned)(us / 1000u), (unsigned)(us % 1000u));
+}
+
+/* ======================================================================== */
 /*  UI                                                                       */
 /* ======================================================================== */
 
@@ -433,15 +469,28 @@ static void show_result(int cls)
 static void classify_event_cb(lv_event_t *e)
 {
 	(void)e;
-	if(!preprocess_and_load()) {
-		lv_label_set_text(status_label, "draw a digit first");
+
+	/* CPU overhead: preprocessing + shoveling the 784 pixels in over CSRs. */
+	uint32_t t0 = timer_now_cycles();
+	int loaded = preprocess_and_load();
+	uint32_t t1 = timer_now_cycles();
+	if(!loaded) {
+		lv_label_set_text(lat_cpu_label, "CPU\n-- ms");
+		lv_label_set_text(lat_hw_label,  "core\n-- ms");
 		return;
 	}
+
+	/* Hardware core run time: start pulse until done (loader streams weights
+	 * from SDRAM and the core runs the LIF inference, all in gateware). */
 	snn_start_pulse();
-	while(!snn_done()) { /* ~25 ms; UI frozen briefly, no busy_wait() */ }
+	while(!snn_done()) { /* UI frozen briefly, no busy_wait() */ }
+	uint32_t t2 = timer_now_cycles();
+
 	int cls = snn_classification();
-	lv_label_set_text(status_label, "tap Clear to retry");
 	show_result(cls);
+
+	set_latency_label(lat_cpu_label, "CPU", cycles_to_us(cycles_between(t0, t1)));
+	set_latency_label(lat_hw_label,  "core", cycles_to_us(cycles_between(t1, t2)));
 }
 
 static void clear_event_cb(lv_event_t *e)
@@ -449,7 +498,8 @@ static void clear_event_cb(lv_event_t *e)
 	(void)e;
 	canvas_clear();
 	lv_label_set_text(result_label, "?");
-	lv_label_set_text(status_label, "draw a digit (0-9)");
+	lv_label_set_text(lat_cpu_label, "CPU\n-- ms");
+	lv_label_set_text(lat_hw_label,  "core\n-- ms");
 	for(int i = 0; i < SNN_OUT_SIZE; i++)
 		lv_bar_set_value(spike_bars[i], 0, LV_ANIM_OFF);
 }
@@ -495,17 +545,27 @@ static void build_ui(void)
 	lv_label_set_text(go_lbl, "Classify");
 	lv_obj_center(go_lbl);
 
-	/* Big prediction digit. */
+	/* Big prediction digit, centered. */
 	result_label = lv_label_create(root);
 	lv_obj_set_style_text_font(result_label, &lv_font_montserrat_48, 0);
 	lv_obj_set_style_text_color(result_label, lv_color_white(), 0);
 	lv_label_set_text(result_label, "?");
 	lv_obj_align(result_label, LV_ALIGN_TOP_MID, 0, 384);
 
-	status_label = lv_label_create(root);
-	lv_obj_set_style_text_color(status_label, lv_palette_main(LV_PALETTE_GREY), 0);
-	lv_label_set_text(status_label, "draw a digit (0-9)");
-	lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 360);
+	/* Latency readout flanking the prediction digit: CPU-side prep time on the
+	 * left, hardware core run time on the right. Centered text so the value
+	 * stays put as digit counts change. */
+	lat_cpu_label = lv_label_create(root);
+	lv_obj_set_style_text_color(lat_cpu_label, lv_palette_main(LV_PALETTE_GREY), 0);
+	lv_obj_set_style_text_align(lat_cpu_label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_label_set_text(lat_cpu_label, "CPU\n-- ms");
+	lv_obj_align(lat_cpu_label, LV_ALIGN_TOP_LEFT, 14, 392);
+
+	lat_hw_label = lv_label_create(root);
+	lv_obj_set_style_text_color(lat_hw_label, lv_palette_main(LV_PALETTE_GREEN), 0);
+	lv_obj_set_style_text_align(lat_hw_label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_label_set_text(lat_hw_label, "core\n-- ms");
+	lv_obj_align(lat_hw_label, LV_ALIGN_TOP_RIGHT, -14, 392);
 
 	/* Per-class spike bars (range 0..T). 10 bars across the bottom. */
 	const int bw = 26, gap = 4, n = SNN_OUT_SIZE;

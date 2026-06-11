@@ -8,7 +8,7 @@ Reports per-image agreement and overall accuracy.
 
 UART protocol (see software/snn_mnist_demo/main.c):
     'P'                                           -> 'p'
-    'C' + u32 weight_base + u32 beats + u32 cyc   -> 'c'
+    'C' + u32 weight_base + u32 preamble + u32 beats + u32 cyc   -> 'c'
     'B' + 74*int16 biases (HIDDEN then OUT_SIZE)  -> 'b'
     'W' + u32 length + length bytes               -> 'w'
     'I' + 784*int16 pixels                        -> 'i' + 1B class + 10B spk
@@ -73,8 +73,10 @@ def _handshake(ser, attempts: int = 4) -> None:
     )
 
 
-def configure(ser, weight_base: int, beats_per_cycle: int, num_cycles: int) -> None:
-    ser.write(b"C" + struct.pack("<III", weight_base, beats_per_cycle, num_cycles))
+def configure(ser, weight_base: int, preamble_beats: int,
+              beats_per_cycle: int, num_cycles: int) -> None:
+    ser.write(b"C" + struct.pack("<IIII", weight_base, preamble_beats,
+                                 beats_per_cycle, num_cycles))
     _expect(ser, b"c", "configure")
 
 
@@ -150,6 +152,10 @@ def main() -> int:
         help=f"SDRAM byte address for weight blob. Default {DEFAULT_WEIGHT_BASE:#x}.",
     )
     parser.add_argument(
+        "--n-mac", type=int, default=2,
+        help="N_MAC of the deployed SoC / packed blob (must match). Default 2.",
+    )
+    parser.add_argument(
         "--n-images", type=int, default=100, help="Number of MNIST test images to run."
     )
     parser.add_argument(
@@ -174,9 +180,20 @@ def main() -> int:
     cfg = model.config
     biases = [int(v) for v in list(model.b1_q) + list(model.b2_q)]
     blob = args.weights_bin.read_bytes()
-    beats_per_cycle = len(blob) // 4   # each beat is one 32-bit word
+    total_beats = len(blob) // 4   # each beat is one 32-bit word
+    # The core hoists layer-1: W1 prefix streamed once, W2 block per timestep.
+    # The blob is [W1 block | W2 block]; split point depends on N_MAC.
+    l1_tiles = (cfg.hidden + args.n_mac - 1) // args.n_mac
+    preamble_beats = l1_tiles * cfg.in_size
+    beats_per_cycle = total_beats - preamble_beats
+    if beats_per_cycle <= 0:
+        raise ValueError(
+            f"blob too small for N_MAC={args.n_mac}: total_beats={total_beats}, "
+            f"computed W1 preamble={preamble_beats}. Re-pack with the matching --n-mac."
+        )
     print(f"checkpoint:       {args.checkpoint}")
-    print(f"weight blob:      {args.weights_bin}  ({len(blob)} bytes, {beats_per_cycle} beats)")
+    print(f"weight blob:      {args.weights_bin}  ({len(blob)} bytes, {total_beats} beats)")
+    print(f"  W1 preamble:    {preamble_beats} beats (once)   W2: {beats_per_cycle} beats x{cfg.timesteps}")
     print(f"target:           {args.port} @ {args.baud} baud")
     print(f"weight_base:      {args.weight_base:#010x}")
 
@@ -187,8 +204,9 @@ def main() -> int:
 
         if not args.skip_setup:
             print("configuring loader CSRs...")
-            configure(ser, args.weight_base, beats_per_cycle, cfg.timesteps)
-            print(f"  beats_per_cycle={beats_per_cycle}, num_cycles={cfg.timesteps}")
+            configure(ser, args.weight_base, preamble_beats, beats_per_cycle, cfg.timesteps)
+            print(f"  preamble_beats={preamble_beats}, beats_per_cycle={beats_per_cycle}, "
+                  f"num_cycles={cfg.timesteps}")
 
             print("loading biases...")
             load_biases(ser, biases)

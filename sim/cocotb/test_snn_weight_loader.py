@@ -26,6 +26,7 @@ async def reset_dut(dut) -> None:
     dut.rst.value = 1
     dut.start.value = 0
     dut.base_addr.value = 0
+    dut.preamble_beats.value = 0
     dut.beats_per_cycle.value = 0
     dut.num_cycles.value = 0
     dut.w_ready.value = 0
@@ -82,7 +83,8 @@ async def stream_consumer(
     dut.w_ready.value = 0
 
 
-async def _drive_loader(dut, memory, base_addr, beats_per_cycle, num_cycles, backpressure=0):
+async def _drive_loader(dut, memory, base_addr, beats_per_cycle, num_cycles,
+                        backpressure=0, preamble_beats=0):
     """Drive a single loader run and return (captured_beats, total_cycles, expected)."""
     wb_data_width = int(dut.WB_DATA_WIDTH.value)
     wb_bytes = wb_data_width // 8
@@ -90,11 +92,17 @@ async def _drive_loader(dut, memory, base_addr, beats_per_cycle, num_cycles, bac
     data_width = int(dut.DATA_WIDTH.value)
     beat_mask = (1 << (n_mac * data_width)) - 1
 
+    # Preamble block streamed once from base_addr; the repeated block sits
+    # immediately after it (cyc_base = base + preamble_beats*wb_bytes).
     expected = []
-    for i in range(beats_per_cycle):
-        word = memory.get(base_addr + i * wb_bytes, 0)
-        expected.append(word & beat_mask)
-    expected = expected * num_cycles
+    for i in range(preamble_beats):
+        expected.append(memory.get(base_addr + i * wb_bytes, 0) & beat_mask)
+    cyc_base = base_addr + preamble_beats * wb_bytes
+    cycle_block = [
+        memory.get(cyc_base + i * wb_bytes, 0) & beat_mask
+        for i in range(beats_per_cycle)
+    ]
+    expected += cycle_block * num_cycles
 
     captured: list[int] = []
     consumer = cocotb.start_soon(
@@ -102,6 +110,7 @@ async def _drive_loader(dut, memory, base_addr, beats_per_cycle, num_cycles, bac
     )
 
     dut.base_addr.value = base_addr
+    dut.preamble_beats.value = preamble_beats
     dut.beats_per_cycle.value = beats_per_cycle
     dut.num_cycles.value = num_cycles
     dut.start.value = 1
@@ -181,4 +190,44 @@ async def loader_handles_backpressure(dut):
     )
     assert captured == expected, (
         f"mismatch under backpressure: got {captured[:6]}... expected {expected[:6]}..."
+    )
+
+
+@cocotb.test()
+async def loader_streams_preamble_then_cycles(dut):
+    """Two-segment run: a W1 preamble streamed once, then a W2 block replayed
+    num_cycles times from immediately after the preamble. Mirrors the core's
+    hoisted-layer-1 schedule."""
+    wb_data_width = int(dut.WB_DATA_WIDTH.value)
+    wb_bytes = wb_data_width // 8
+
+    preamble_beats = 7      # W1 prefix (streamed once)
+    beats_per_cycle = 5     # W2 block (per timestep)
+    num_cycles = 4
+    base_addr = 0x3000
+
+    # Distinct values for preamble vs cycle region so an off-by-one in the
+    # base-address derivation would corrupt the comparison.
+    memory = {}
+    for i in range(preamble_beats):
+        memory[base_addr + i * wb_bytes] = (0x1100 + i) & ((1 << wb_data_width) - 1)
+    cyc_base = base_addr + preamble_beats * wb_bytes
+    for i in range(beats_per_cycle):
+        memory[cyc_base + i * wb_bytes] = (0x7700 + i) & ((1 << wb_data_width) - 1)
+
+    cocotb.start_soon(Clock(dut.clk, CLOCK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    cocotb.start_soon(wishbone_slave(dut, memory))
+
+    captured, cycles, expected = await _drive_loader(
+        dut, memory, base_addr, beats_per_cycle, num_cycles,
+        backpressure=2, preamble_beats=preamble_beats,
+    )
+    dut._log.info(
+        f"two-segment run: captured {len(captured)} beats "
+        f"({preamble_beats} preamble + {beats_per_cycle}x{num_cycles}) in {cycles} cycles"
+    )
+    assert len(captured) == preamble_beats + beats_per_cycle * num_cycles
+    assert captured == expected, (
+        f"two-segment mismatch: got {captured[:10]}... expected {expected[:10]}..."
     )

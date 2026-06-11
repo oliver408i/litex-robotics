@@ -6,7 +6,8 @@
 //
 // Commands:
 //   'P'                                           ping  -> 'p'
-//   'C' + u32 weight_base + u32 beats + u32 cyc   configure loader CSRs -> 'c'
+//   'C' + u32 weight_base + u32 preamble + u32 beats + u32 cyc
+//                                                 configure loader CSRs -> 'c'
 //   'B' + 74*int16 biases (HIDDEN then OUT_SIZE)  load biases via CSRs  -> 'b'
 //   'W' + u32 length + length bytes               copy blob into SDRAM  -> 'w'
 //   'I' + 784*int16 pixels                        run inference         -> 'i'
@@ -101,10 +102,12 @@ static uint8_t spike_count_read(int i)
 
 static void cmd_configure(void)
 {
-    uint32_t base = uart_read_u32_le();
-    uint32_t bpc  = uart_read_u32_le();
-    uint32_t nc   = uart_read_u32_le();
+    uint32_t base     = uart_read_u32_le();
+    uint32_t preamble = uart_read_u32_le();
+    uint32_t bpc      = uart_read_u32_le();
+    uint32_t nc       = uart_read_u32_le();
     snn_weight_base_write(base);
+    snn_weight_preamble_beats_write(preamble);
     snn_weight_beats_per_cycle_write(bpc);
     snn_weight_num_cycles_write(nc);
     uart_write('c');

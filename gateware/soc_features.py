@@ -51,11 +51,20 @@ SR_WINC_RST = 7  # Qh -> WINC RESET_N (active low)         [TEMP: WINC back on d
 SR_TEST     = 3  # Qd -> no-scope diagnostic loopback (see add_sr595_loopback)
 
 
+# SRCLK rate for the expander. The HC part itself is good for >20 MHz, but the
+# limit here is the jumper wiring (no controlled impedance / ground return), so
+# this is deliberately slow. Dropped from 2 MHz to 200 kHz while chasing an
+# intermittent, boot-random output bug whose FPGA-side signals all metered
+# correct -- 10x more setup/hold + edge-settling margin on the breadboard. An
+# update still lands in ~50 us, orders of magnitude under the ms reset timing.
+_SR595_SCLK_FREQ = 200e3
+
 def _sr595_connect(soc, bit, sig):
     """Drive one expander output from `sig`, creating the driver lazily."""
     if not hasattr(soc, "sr595"):
         soc.platform.add_extension(_sr595_io)
-        soc.sr595 = SR595(soc.platform.request("sr595"), soc.sys_clk_freq)
+        soc.sr595 = SR595(soc.platform.request("sr595"), soc.sys_clk_freq,
+                          sclk_freq=_SR595_SCLK_FREQ)
     soc.comb += soc.sr595.value[bit].eq(sig)
 
 

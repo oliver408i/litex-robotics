@@ -36,14 +36,23 @@ WEIGHT_BITS = 16          # Q4.12 word in the low bits of each beat
 WORD_BYTES = 4            # 32-bit Wishbone
 
 
-def pack_one_step(model, n_mac: int) -> tuple[bytes, int]:
+def pack_one_step(model, n_mac: int) -> tuple[bytes, int, int, int]:
+    """Returns (blob, total_beats, w1_beats, w2_beats).
+
+    Blob layout is unchanged: the W1 block (w1_beats) followed by the W2 block
+    (w2_beats). The loader streams the W1 prefix once (preamble) and replays the
+    W2 suffix per timestep, so w1_beats / w2_beats become the loader's
+    preamble_beats / beats_per_cycle.
+    """
     cfg = model.config
     W1 = model.W1_q
     W2 = model.W2_q
 
     l1_tiles = (cfg.hidden + n_mac - 1) // n_mac
     l2_tiles = (cfg.out_size + n_mac - 1) // n_mac
-    beats = l1_tiles * cfg.in_size + l2_tiles * cfg.hidden
+    w1_beats = l1_tiles * cfg.in_size
+    w2_beats = l2_tiles * cfg.hidden
+    beats = w1_beats + w2_beats
 
     blob = bytearray()
     weight_mask = (1 << WEIGHT_BITS) - 1
@@ -71,7 +80,7 @@ def pack_one_step(model, n_mac: int) -> tuple[bytes, int]:
             emit(beat)
 
     assert len(blob) == beats * WORD_BYTES, "blob size mismatch"
-    return bytes(blob), beats
+    return bytes(blob), beats, w1_beats, w2_beats
 
 
 def pack_biases(model) -> list[int]:
@@ -105,7 +114,7 @@ def main() -> int:
 
     model = load_checkpoint(args.checkpoint)
     cfg = model.config
-    blob, beats = pack_one_step(model, args.n_mac)
+    blob, beats, w1_beats, w2_beats = pack_one_step(model, args.n_mac)
     biases = pack_biases(model)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -116,10 +125,13 @@ def main() -> int:
     print(f"n_mac:            {args.n_mac}")
     print(f"blob path:        {args.out}")
     print(f"blob size:        {len(blob)} bytes ({beats} beats * {WORD_BYTES} bytes)")
+    print(f"  W1 prefix:      {w1_beats} beats (streamed once)")
+    print(f"  W2 block:       {w2_beats} beats (streamed per timestep x{cfg.timesteps})")
     print()
     print("Loader CSR values to write before each inference:")
     print(f"  weight_base             = <SDRAM byte address where the blob was loaded>")
-    print(f"  weight_beats_per_cycle  = {beats}")
+    print(f"  weight_preamble_beats   = {w1_beats}")
+    print(f"  weight_beats_per_cycle  = {w2_beats}")
     print(f"  weight_num_cycles       = {cfg.timesteps}")
     print()
     print(f"Bias load sequence (HIDDEN={cfg.hidden} then OUT_SIZE={cfg.out_size}, "
@@ -138,7 +150,9 @@ def main() -> int:
             "hidden": cfg.hidden,
             "out_size": cfg.out_size,
             "timesteps": cfg.timesteps,
-            "beats_per_cycle": beats,
+            "total_beats": beats,
+            "preamble_beats": w1_beats,
+            "beats_per_cycle": w2_beats,
             "num_cycles": cfg.timesteps,
             "biases_q412": biases,
         }, indent=2))

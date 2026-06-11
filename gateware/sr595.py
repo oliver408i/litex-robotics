@@ -42,6 +42,24 @@ class SR595(LiteXModule):
         dirty  = Signal(reset=1)  # force one shift after (soft) reset
         idx    = Signal(3)
 
+        # SER/SRCLK/RCLK are decoded combinationally from the (binary-encoded)
+        # FSM state. A bare comb decode to the pins can glitch while the state
+        # bits settle with skew on a transition -- a spurious SRCLK edge shifts
+        # every bit one position (Qa/Qb diverge even though firmware drives them
+        # identically), and a spurious RCLK latches a half-shifted register.
+        # Those hazards show up as random "half-works / didn't work this boot"
+        # behaviour across power cycles. Drive the comb decode into output flops
+        # so the pins only change on a clock edge, after the decode has settled:
+        # the glitches never reach the wire. The one extra sys-clk of latency is
+        # applied equally to all three, so their relative timing is preserved
+        # (and div >> 1, so it is negligible against the SRCLK half-period).
+        ser_c, srclk_c, rclk_c = Signal(), Signal(), Signal()
+        self.sync += [
+            pads.ser.eq(ser_c),
+            pads.srclk.eq(srclk_c),
+            pads.rclk.eq(rclk_c),
+        ]
+
         self.fsm = fsm = FSM(reset_state="IDLE")
         fsm.act("IDLE",
             If(tick & (dirty | (self.value != last)),
@@ -53,12 +71,12 @@ class SR595(LiteXModule):
             ),
         )
         fsm.act("LOW",   # SRCLK low half: present the data bit
-            pads.ser.eq(shadow[7]),
+            ser_c.eq(shadow[7]),
             If(tick, NextState("HIGH")),
         )
         fsm.act("HIGH",  # SRCLK high half: bit was captured on the rising edge
-            pads.ser.eq(shadow[7]),
-            pads.srclk.eq(1),
+            ser_c.eq(shadow[7]),
+            srclk_c.eq(1),
             If(tick,
                 NextValue(shadow, Cat(Signal(), shadow[:7])),
                 If(idx == 7,
@@ -70,6 +88,6 @@ class SR595(LiteXModule):
             ),
         )
         fsm.act("LATCH",  # RCLK rising edge moves the shift reg to the outputs
-            pads.rclk.eq(1),
+            rclk_c.eq(1),
             If(tick, NextState("IDLE")),
         )

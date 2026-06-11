@@ -3,7 +3,7 @@
  * checkpoint : snn_mnist.pt
  * shape      : 784->64->10  T=25
  * n_mac      : 2
- * blob       : 101632 bytes (25408 beats * 4)
+ * blob       : 101632 bytes (25408 beats * 4 = 25088 W1 + 320 W2)
  */
 #pragma once
 
@@ -11,7 +11,10 @@
 #define SNN_HIDDEN           64
 #define SNN_OUT_SIZE         10
 #define SNN_BIAS_COUNT       74
-#define SNN_BEATS_PER_CYCLE  25408u
+/* Core hoists layer-1 out of the timestep loop: W1 prefix streamed once,
+ * W2 block streamed per timestep. See verilog/snn_weight_loader.v. */
+#define SNN_PREAMBLE_BEATS   25088u
+#define SNN_BEATS_PER_CYCLE  320u
 #define SNN_NUM_CYCLES       25u
 #define SNN_FRAC_BITS        12
 /* pixel_q = (gray01 * SNN_INPUT_SCALE_Q) >> 0, where gray01 is already scaled

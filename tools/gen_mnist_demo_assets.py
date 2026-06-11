@@ -68,7 +68,7 @@ def main() -> int:
 
     model = load_checkpoint(args.checkpoint)
     cfg = model.config
-    blob, beats = pack_one_step(model, args.n_mac)
+    blob, beats, w1_beats, w2_beats = pack_one_step(model, args.n_mac)
     biases = pack_biases(model)
 
     frac_bits = cfg.frac_bits
@@ -83,7 +83,7 @@ def main() -> int:
  * checkpoint : {args.checkpoint.name}
  * shape      : {cfg.in_size}->{cfg.hidden}->{cfg.out_size}  T={cfg.timesteps}
  * n_mac      : {args.n_mac}
- * blob       : {len(blob)} bytes ({beats} beats * 4)
+ * blob       : {len(blob)} bytes ({beats} beats * 4 = {w1_beats} W1 + {w2_beats} W2)
  */
 #pragma once
 
@@ -91,7 +91,10 @@ def main() -> int:
 #define SNN_HIDDEN           {cfg.hidden}
 #define SNN_OUT_SIZE         {cfg.out_size}
 #define SNN_BIAS_COUNT       {len(biases)}
-#define SNN_BEATS_PER_CYCLE  {beats}u
+/* Core hoists layer-1 out of the timestep loop: W1 prefix streamed once,
+ * W2 block streamed per timestep. See verilog/snn_weight_loader.v. */
+#define SNN_PREAMBLE_BEATS   {w1_beats}u
+#define SNN_BEATS_PER_CYCLE  {w2_beats}u
 #define SNN_NUM_CYCLES       {cfg.timesteps}u
 #define SNN_FRAC_BITS        {frac_bits}
 /* pixel_q = (gray01 * SNN_INPUT_SCALE_Q) >> 0, where gray01 is already scaled
@@ -104,7 +107,8 @@ def main() -> int:
 """
     args.out.write_text(header)
     print(f"wrote {args.out}  ({len(blob)} byte blob, {len(biases)} biases, "
-          f"beats={beats}, T={cfg.timesteps}, input_scale_q={input_scale_q})")
+          f"preamble={w1_beats}, beats_per_cycle={w2_beats}, T={cfg.timesteps}, "
+          f"input_scale_q={input_scale_q})")
     return 0
 
 

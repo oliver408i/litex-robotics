@@ -87,28 +87,37 @@ def pack_weight_stream(
 ) -> np.ndarray:
     """Build the weight beat sequence as a [n_beats, n_mac] int32 array.
 
-    Each timestep replays the same per-layer beats, so we build one timestep
-    and np.tile across T. Layout matches the DUT's expected consumption order.
+    The DUT hoists the layer-1 MAC out of the timestep loop (the layer-1 current
+    is time-invariant for a static image), so W1 is consumed ONCE up front and
+    only the W2 block repeats per timestep. Layout matches the DUT's consumption
+    order: [W1 block] + tile([W2 block], T).
     """
     L1_tiles = (hidden + n_mac - 1) // n_mac
     L2_tiles = (out_size + n_mac - 1) // n_mac
-    beats_per_step = L1_tiles * in_size + L2_tiles * hidden
-    one_step = np.zeros((beats_per_step, n_mac), dtype=np.int32)
 
+    # W1 block: consumed once (phase 1).
+    w1_beats = L1_tiles * in_size
+    w1_block = np.zeros((w1_beats, n_mac), dtype=np.int32)
     idx = 0
     for tile in range(L1_tiles):
         for i in range(in_size):
             for m in range(n_mac):
                 n = tile * n_mac + m
-                one_step[idx, m] = int(W1_q[n, i]) if n < hidden else 0
+                w1_block[idx, m] = int(W1_q[n, i]) if n < hidden else 0
             idx += 1
+
+    # W2 block: consumed once per timestep (phase 2).
+    w2_beats = L2_tiles * hidden
+    w2_block = np.zeros((w2_beats, n_mac), dtype=np.int32)
+    idx = 0
     for tile in range(L2_tiles):
         for i in range(hidden):
             for m in range(n_mac):
                 n = tile * n_mac + m
-                one_step[idx, m] = int(W2_q[n, i]) if n < out_size else 0
+                w2_block[idx, m] = int(W2_q[n, i]) if n < out_size else 0
             idx += 1
-    return np.tile(one_step, (timesteps, 1))
+
+    return np.concatenate([w1_block, np.tile(w2_block, (timesteps, 1))], axis=0)
 
 
 def pack_beat(beat, n_mac: int) -> int:

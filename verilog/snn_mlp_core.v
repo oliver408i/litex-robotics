@@ -9,12 +9,22 @@
 // Schedule (image-major):
 //   1. Host writes pixels into pixel_mem (CSR write port).
 //   2. Host writes biases into bias_mem (CSR write port).
-//   3. start pulse -> for t in [0, TIMESTEPS):
-//        for each layer-1 tile of N_MAC neurons:
-//          IN_SIZE cycles of N_MAC-parallel MACs (weights streamed in)
-//          1 cycle: shift + bias + leak + clip + threshold per neuron
-//        same for layer 2 over the HIDDEN spike vector (no shift after MAC
-//        since spike inputs are unitless 0/1).
+//   3. start pulse ->
+//      Phase 1 (ONCE): for each layer-1 tile of N_MAC neurons:
+//          IN_SIZE cycles of N_MAC-parallel MACs (W1 streamed in)
+//          1 cycle: store constant current acc1_const = (mac >> frac) + bias
+//                   into l1_acc[neuron].
+//        The layer-1 synaptic current is constant across time under static
+//        direct-current input encoding, so it is computed once here instead of
+//        every timestep. This mirrors sim/snn_mlp.py:125-134 exactly and cuts
+//        the dominant layer-1 MAC cost by a factor of TIMESTEPS. Consequence:
+//        W1 is streamed ONCE (here), W2 is streamed every timestep.
+//      Phase 2: for t in [0, TIMESTEPS):
+//          for each layer-1 tile: leak(mem1) + l1_acc -> clip + threshold
+//            (2 cycles/tile, no MAC, no weight stream).
+//          for each layer-2 tile over the HIDDEN spike vector: spike-driven
+//            accumulate (W2 streamed in, no shift since spikes are unitless 0/1)
+//            -> leak + bias -> clip + threshold.
 //      After all timesteps, argmax(spk_count) -> classification.
 //
 // Weights are consumed via a ready/valid stream so the core is agnostic to
@@ -53,11 +63,14 @@ module snn_mlp_core #(
     input  wire signed [DATA_WIDTH-1:0]        bias_data,
 
     // Weight stream: N_MAC Q4.12 words per beat.
-    // Expected order, per timestep:
-    //   for each layer-1 tile (0..L1_TILES-1):
-    //     for each input i (0..IN_SIZE-1): beat[m]=W1[tile*N_MAC+m][i]  (pad 0 for partial tile)
-    //   for each layer-2 tile (0..L2_TILES-1):
-    //     for each hidden h (0..HIDDEN-1): beat[m]=W2[tile*N_MAC+m][h]  (pad 0 for partial tile)
+    // Expected order:
+    //   Phase 1, ONCE:
+    //     for each layer-1 tile (0..L1_TILES-1):
+    //       for each input i (0..IN_SIZE-1): beat[m]=W1[tile*N_MAC+m][i]  (pad 0 for partial tile)
+    //   Phase 2, repeated TIMESTEPS times:
+    //     for each layer-2 tile (0..L2_TILES-1):
+    //       for each hidden h (0..HIDDEN-1): beat[m]=W2[tile*N_MAC+m][h]  (pad 0 for partial tile)
+    // i.e. the W1 block is consumed once up front; only the W2 block repeats.
     input  wire                                w_valid,
     output wire                                w_ready,
     input  wire signed [N_MAC*DATA_WIDTH-1:0]  w_data,
@@ -83,6 +96,10 @@ module snn_mlp_core #(
     reg signed [DATA_WIDTH-1:0] bias_mem  [0:HIDDEN+OUT_SIZE-1];
     reg signed [DATA_WIDTH-1:0] mem1      [0:HIDDEN-1];
     reg signed [DATA_WIDTH-1:0] mem2      [0:OUT_SIZE-1];
+    // Constant layer-1 current per hidden neuron: (sum pixel*W1 >> frac) + bias.
+    // Computed once in phase 1 (S_L1_ACC) and reused every timestep, since the
+    // static image makes this term time-invariant (see header / sim/snn_mlp.py).
+    reg signed [ACC_WIDTH-1:0]  l1_acc    [0:HIDDEN-1];
     reg                          spk1_buf [0:HIDDEN-1];
     reg        [SPK_WIDTH-1:0]   spk_count [0:OUT_SIZE-1];
 
@@ -102,15 +119,16 @@ module snn_mlp_core #(
     // the lif_step combinational chain blew the 50 MHz period on ECP5.
     localparam [3:0]
         S_IDLE     = 4'd0,
-        S_L1_MAC   = 4'd1,
-        S_L1_FIN_A = 4'd2,
-        S_L1_FIN_B = 4'd3,
-        S_L2_MAC   = 4'd4,
-        S_L2_FIN_A = 4'd5,
-        S_L2_FIN_B = 4'd6,
-        S_NEXT_T   = 4'd7,
-        S_ARGMAX   = 4'd8,
-        S_DONE     = 4'd9;
+        S_L1_MAC   = 4'd1,   // phase 1 (once): accumulate pixel * W1
+        S_L1_ACC   = 4'd2,   // phase 1 (once): store constant current to l1_acc
+        S_L1_DYN_A = 4'd3,   // per-timestep: leak(mem1) + l1_acc -> pre_reg
+        S_L1_DYN_B = 4'd4,   // per-timestep: clip + threshold pre_reg
+        S_L2_MAC   = 4'd5,
+        S_L2_FIN_A = 4'd6,
+        S_L2_FIN_B = 4'd7,
+        S_NEXT_T   = 4'd8,
+        S_ARGMAX   = 4'd9,
+        S_DONE     = 4'd10;
 
     reg [3:0]  state;
     reg [15:0] t_step;
@@ -231,6 +249,7 @@ module snn_mlp_core #(
                     end
                 end
 
+                // --- Phase 1 (runs ONCE per inference) ---
                 // Layer-1 MAC phase. One pixel per beat, N_MAC products in parallel.
                 S_L1_MAC: begin
                     if (w_valid) begin
@@ -240,21 +259,24 @@ module snn_mlp_core #(
                         end
                         if (in_idx == IN_SIZE - 1) begin
                             in_idx <= 16'd0;
-                            state  <= S_L1_FIN_A;
+                            state  <= S_L1_ACC;
                         end else begin
                             in_idx <= in_idx + 16'd1;
                         end
                     end
                 end
 
-                // Stage A: compute pre = leak + shifted + bias, register it.
+                // Store the time-invariant layer-1 current: acc1_const =
+                // (mac >> FRAC_BITS) + bias. Reusing lif_stage_a with prev_mem=0
+                // gives exactly leak(0) + (mac>>frac) + bias = (mac>>frac)+bias,
+                // with no clip/threshold (clip happens per timestep on `pre`).
                 // Also clear the MAC accumulator for the next tile/layer.
-                S_L1_FIN_A: begin
+                S_L1_ACC: begin
                     for (m = 0; m < N_MAC; m = m + 1) begin
                         neuron = tile_idx * N_MAC + m;
                         if (neuron < HIDDEN) begin
-                            pre_reg[m] <= lif_stage_a(
-                                mem1[neuron],
+                            l1_acc[neuron] <= lif_stage_a(
+                                {DATA_WIDTH{1'b0}},  // prev_mem = 0 -> no leak term
                                 mac_acc[m],
                                 bias_mem[neuron],
                                 1'b1                 // apply >> FRAC_BITS for layer 1
@@ -262,12 +284,38 @@ module snn_mlp_core #(
                         end
                         mac_acc[m] <= {ACC_WIDTH{1'b0}};
                     end
-                    state <= S_L1_FIN_B;
+                    if (tile_idx == L1_TILES - 1) begin
+                        tile_idx <= 16'd0;
+                        in_idx   <= 16'd0;
+                        state    <= S_L1_DYN_A;   // enter the timestep loop
+                    end else begin
+                        tile_idx <= tile_idx + 16'd1;
+                        in_idx   <= 16'd0;
+                        state    <= S_L1_MAC;
+                    end
+                end
+
+                // --- Phase 2: per-timestep layer-1 dynamics (no MAC) ---
+                // Stage A: pre = leak(mem1) + l1_acc. l1_acc already holds the
+                // shifted+biased current, so apply_shift=0 and bias=0 here.
+                S_L1_DYN_A: begin
+                    for (m = 0; m < N_MAC; m = m + 1) begin
+                        neuron = tile_idx * N_MAC + m;
+                        if (neuron < HIDDEN) begin
+                            pre_reg[m] <= lif_stage_a(
+                                mem1[neuron],
+                                l1_acc[neuron],
+                                {DATA_WIDTH{1'b0}},
+                                1'b0
+                            );
+                        end
+                    end
+                    state <= S_L1_DYN_B;
                 end
 
                 // Stage B: clip + threshold pre_reg, write back mem1/spk1_buf,
                 // advance tile.
-                S_L1_FIN_B: begin
+                S_L1_DYN_B: begin
                     for (m = 0; m < N_MAC; m = m + 1) begin
                         neuron = tile_idx * N_MAC + m;
                         if (neuron < HIDDEN) begin
@@ -283,7 +331,7 @@ module snn_mlp_core #(
                     end else begin
                         tile_idx <= tile_idx + 16'd1;
                         in_idx   <= 16'd0;
-                        state    <= S_L1_MAC;
+                        state    <= S_L1_DYN_A;
                     end
                 end
 
@@ -350,7 +398,7 @@ module snn_mlp_core #(
                         state      <= S_ARGMAX;
                     end else begin
                         t_step <= t_step + 16'd1;
-                        state  <= S_L1_MAC;
+                        state  <= S_L1_DYN_A;   // layer-1 MAC already done in phase 1
                     end
                 end
 

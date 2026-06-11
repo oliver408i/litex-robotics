@@ -42,7 +42,10 @@ became clear closing it out, and they matter more than any remaining polish:
    wearing a LIF activation, run for 25 timesteps over a constant (DC-encoded)
    input to get a spike-count readout. A plain quantized 784→64→10 ReLU MLP would
    beat it on *every* axis: ~97% vs 95.67% accuracy, one forward pass instead of
-   25, and ~25× less memory traffic. The "SNN-ness" is pure overhead on this task.
+   25, and (originally) ~25× less memory traffic. The "SNN-ness" is pure overhead
+   on this task. *(The memory-traffic gap is now largely closed: layer-1 is
+   computed once and only the small W2 block replays per timestep — see the
+   performance section. The accuracy and single-pass advantages still stand.)*
 
 2. **The real deliverable is the substrate, not the classifier.** A parameterized
    LIF inference core, Q4.12 numerics, a snntorch QAT training pipeline, a
@@ -103,9 +106,19 @@ driven by `GENSDRPHY` at **1:1 with sys_clk (50 MHz)**. Raw ceiling:
 16 bits × 50 MHz = 100 MB/s   (peak; ~70–85 realistic after refresh/activate)
 ```
 
-Every weight (Q4.12 = 16 bits) must cross the bus from SDRAM once per timestep,
-and the loader replays the whole blob `num_cycles = 25` times. A 32-bit Wishbone
-word holds exactly **two** Q4.12 weights:
+> **Update (layer-1 hoist landed).** The figures in this section are the
+> *pre-hoist* numbers, kept for the N_MAC tradeoff analysis. Layer-1 is now
+> computed **once** per image rather than every timestep (see "What would push
+> past 25 ms" item 1 below — now implemented), so the loader streams the W1
+> prefix once and replays only the small W2 block 25×. Measured core cost dropped
+> from ~1.27M to **~70K cycles/image** at N_MAC=1, and SDRAM weight traffic from
+> ~635K to ~33K beats — roughly **18–19×** on both, while staying bit-exact and
+> still an SNN. The N_MAC discussion below still holds for the W2 block; the
+> system is now core-bound rather than DRAM-bound.
+
+A 32-bit Wishbone word holds exactly **two** Q4.12 weights. Pre-hoist, every
+weight crossed the bus once per timestep (loader replayed the whole blob
+`num_cycles = 25` times):
 
 | N_MAC | weights/beat | bits/beat | words/beat | core cycles/img | SDRAM words/img | verdict |
 |---:|---:|---:|---:|---:|---:|---|
@@ -129,16 +142,19 @@ So:
 
 What *would* push past 25 ms (ranked by leverage / risk):
 
-1. **Stop re-reading constant data 25×** (highest leverage, bit-exact, contained).
-   The input is DC-encoded — the same pixel vector every timestep — so layer-1's
-   pre-activation `W1·x + b1` is *identical* across all 25 steps. Today the core
-   recomputes it and the loader re-streams all of W1 every step. Compute it
-   **once**, cache the 64 hidden input-currents on-chip, then run the 25-step LIF
-   loop over that cached value. Layer-2 weights are tiny (10×64 = 640 ≈ 1.3 KB) —
-   cache them on-chip too. That collapses DRAM weight traffic ~25× (→ ~1 ms floor),
-   is bit-exact by construction (factoring out a constant), and makes the system
-   core-bound — at which point N_MAC parallelism pays off again. Composes with
-   pixel-sparsity skipping (only fetch/MAC the non-zero ~20% of MNIST pixels).
+1. **Stop re-reading constant data 25× — ✅ IMPLEMENTED.** The input is DC-encoded
+   — the same pixel vector every timestep — so layer-1's pre-activation `W1·x + b1`
+   is *identical* across all 25 steps. The core now computes it **once** in a
+   phase-1 pass (`S_L1_MAC`→`S_L1_ACC`), caches the per-hidden input currents in
+   `l1_acc[HIDDEN]`, and the 25-step loop runs leak+threshold over that cached
+   value (`S_L1_DYN_A/B`). The loader streams the W1 prefix once and replays only
+   the W2 block per timestep (`preamble_beats` / `beats_per_cycle` split in
+   `snn_weight_loader.v`). Bit-exact by construction (factoring out a constant —
+   `sim/snn_mlp.py:125` already did this) and verified against the cocotb MNIST
+   test. ~18–19× fewer core cycles and DRAM beats; the system is now core-bound,
+   at which point N_MAC parallelism pays off again. Still composes with the next
+   lever: pixel-sparsity skipping (only fetch/MAC the non-zero ~20% of pixels) and
+   on-chip caching of the tiny W2 block (10×64 ≈ 1.3 KB).
 2. **Faster SDRAM clock** (~2×, bounded, much bigger lift). The W9825G6KH6 is rated
    ≥133 MHz. `GENSDRPHY` is 1:1, so the only way to run DRAM faster is a separate,
    faster clock domain for {LiteDRAM + loader + core} with a CDC to the 50 MHz CPU
