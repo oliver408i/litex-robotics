@@ -1,8 +1,0 @@
-<testsuites name="results">
-  <testsuite name="all" package="all">
-    <property name="random_seed" value="1781122860" />
-    <testcase name="loader_streams_expected_sequence" classname="test_snn_weight_loader" file="/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/cocotb/test_snn_weight_loader.py" lineno="137" time="0.00687861442565918" sim_time_ns="800.0" ratio_time="116302.49211465807" />
-    <testcase name="loader_handles_backpressure" classname="test_snn_weight_loader" file="/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/cocotb/test_snn_weight_loader.py" lineno="167" time="0.0030951499938964844" sim_time_ns="410.0" ratio_time="132465.30888923124" />
-    <testcase name="loader_streams_preamble_then_cycles" classname="test_snn_weight_loader" file="/run/media/mp2/af99f329-f82e-4702-883f-eb45eeaf5a26/vscode-linux/fpga-mcu/sim/cocotb/test_snn_weight_loader.py" lineno="196" time="0.004533529281616211" sim_time_ns="630.0" ratio_time="138964.5816460689" />
-  </testsuite>
-</testsuites>
