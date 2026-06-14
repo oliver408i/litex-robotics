@@ -1,5 +1,7 @@
 // Wishbone-master weight stream loader for snn_mlp_core.
 //
+// DEPRECATED: Superceded by LiteDRAMDMAReader (see gateware/snn_mlp.py)
+//
 // Reads weight words sequentially from SDRAM (via a Wishbone-classic master
 // port) and emits them on a ready/valid stream the core consumes.
 //
