@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """LiteX wrapper for the SNN-MLP MNIST inference core.
 
-Instantiates verilog/snn_mlp_core.v + verilog/snn_weight_loader.v together
-and exposes them as a LiteX peripheral with:
+Instantiates verilog/snn_mlp_core.v and exposes it as a LiteX peripheral with:
 
 - control / status CSRs
 - pixel write port (host writes 784 Q4.12 pixel values into the core's BRAM)
 - bias write port (host writes HIDDEN + OUT_SIZE Q4.12 bias values once)
 - weight base pointer + per-cycle/cycle-count CSRs (configured once)
 - spike-count readback (per-output 8-bit counters, packed)
-- Wishbone master to SDRAM for streaming the weight blob
+- a burst weight loader: a Migen address-gen FSM feeding a LiteDRAMDMAReader
+  on a dedicated native SDRAM port (replaces the old single-beat Wishbone
+  verilog/snn_weight_loader.v -- now unused). Pipelined reads stream the
+  weight blob as row-hit bursts at ~SDRAM bandwidth, which is what lets the
+  half-rate (2x) SDRAM clock actually speed up weight loading. The core's
+  stream protocol (w_valid/w_ready/w_data) is unchanged.
 
 Per-image flow from the firmware:
     write 784 pixels via pixel_addr / pixel_data / pixel_ctl.we
@@ -23,9 +27,11 @@ from __future__ import annotations
 import os
 
 from migen import *
+from migen.genlib.fsm import FSM, NextState, NextValue
 from litex.gen import LiteXModule
-from litex.soc.interconnect import wishbone
 from litex.soc.interconnect.csr import AutoCSR, CSRField, CSRStatus, CSRStorage
+
+from litedram.frontend.dma import LiteDRAMDMAReader
 
 
 class SNNMLP(LiteXModule, AutoCSR):
@@ -34,6 +40,7 @@ class SNNMLP(LiteXModule, AutoCSR):
     def __init__(
         self,
         platform,
+        dram_port,
         in_size: int = 784,
         hidden: int = 64,
         out_size: int = 10,
@@ -46,8 +53,8 @@ class SNNMLP(LiteXModule, AutoCSR):
     ):
         # Verilog sources --------------------------------------------------
         repo_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        for vfile in ("verilog/snn_mlp_core.v", "verilog/snn_weight_loader.v"):
-            platform.add_source(os.path.join(repo_root, vfile))
+        # snn_weight_loader.v is superseded by the DMA loader below.
+        platform.add_source(os.path.join(repo_root, "verilog/snn_mlp_core.v"))
 
         self.n_mac = n_mac
         self.out_size = out_size
@@ -111,19 +118,10 @@ class SNNMLP(LiteXModule, AutoCSR):
             setattr(self, name, CSRStatus(spk_width, name=name,
                 description=f"Spike count for output neuron {i} after the last inference."))
 
-        # --- Wishbone master to SDRAM ------------------------------------
-        # LiteX wishbone is word-addressed; the loader speaks byte addresses
-        # internally, so we drop the bottom 2 bits below.
-        self.wb = wishbone.Interface(data_width=32, adr_width=30)
-
         # --- Shared signals between loader and core ----------------------
         w_valid_int = Signal()
         w_ready_int = Signal()
         w_data_int  = Signal(n_mac * data_width)
-
-        loader_busy = Signal()
-        loader_done = Signal()
-        loader_wb_adr_byte = Signal(32)
 
         core_busy = Signal()
         core_done = Signal()
@@ -131,41 +129,117 @@ class SNNMLP(LiteXModule, AutoCSR):
         cls_valid = Signal()
         spk_packed = Signal(out_size * spk_width)
 
-        # --- Instantiate the loader --------------------------------------
-        self.specials += Instance(
-            "snn_weight_loader",
-            p_WB_DATA_WIDTH = 32,
-            p_WB_ADDR_WIDTH = 32,
-            p_N_MAC         = n_mac,
-            p_DATA_WIDTH    = data_width,
+        # --- Burst weight loader: address-gen FSM + LiteDRAMDMAReader -----
+        # Reads the weight blob from a dedicated native SDRAM port (bypassing
+        # the CPU's Wishbone/L2 path). The port width is fixed at 32 bits to
+        # mirror the old WB_DATA_WIDTH=32: each beat is one 32-bit word and the
+        # core takes the low N_MAC*DATA_WIDTH bits. The DMA reader pipelines
+        # reads (internal FIFO), so the blob streams as row-hit bursts.
+        DMA_WORD_BITS = 32
+        assert dram_port.data_width == DMA_WORD_BITS, (
+            f"SNN DMA needs a {DMA_WORD_BITS}-bit native port, got "
+            f"{dram_port.data_width} (see add_snn_mlp / SDRAM controller width)."
+        )
+        assert n_mac * data_width <= DMA_WORD_BITS
 
-            i_clk = ClockSignal(),
-            i_rst = ResetSignal(),
+        self.dma = dma = LiteDRAMDMAReader(dram_port, fifo_depth=32)
 
-            i_start            = self.control.fields.start,
-            i_base_addr        = self.weight_base.storage,
-            i_preamble_beats   = self.weight_preamble_beats.storage,
-            i_beats_per_cycle  = self.weight_beats_per_cycle.storage,
-            i_num_cycles       = self.weight_num_cycles.storage,
-            o_busy             = loader_busy,
-            o_done             = loader_done,
+        aw    = dram_port.address_width
+        shift = (DMA_WORD_BITS // 8).bit_length() - 1   # byte addr -> word addr (==2)
 
-            o_wb_cyc   = self.wb.cyc,
-            o_wb_stb   = self.wb.stb,
-            o_wb_we    = self.wb.we,
-            o_wb_adr   = loader_wb_adr_byte,
-            o_wb_dat_w = self.wb.dat_w,
-            o_wb_sel   = self.wb.sel,
-            i_wb_ack   = self.wb.ack,
-            i_wb_dat_r = self.wb.dat_r,
+        # CSRs carry SDRAM BYTE addresses; the native port is 32-bit-word
+        # addressed. preamble/beats counts are already in words (== beats).
+        base_word = Signal(aw)
+        self.comb += base_word.eq(self.weight_base.storage[shift:shift + aw])
+        preamble = self.weight_preamble_beats.storage
+        bpc      = self.weight_beats_per_cycle.storage
+        ncyc     = self.weight_num_cycles.storage
 
-            o_w_valid = w_valid_int,
-            i_w_ready = w_ready_int,
-            o_w_data  = w_data_int,
+        addr      = Signal(aw)
+        cyc_base  = Signal(aw)   # word base of the repeated (W2) block
+        beat_idx  = Signal(32)
+        cycle_idx = Signal(32)
+        in_pre    = Signal()     # streaming the one-shot W1 prefix
+
+        # Outstanding native reads (issued to sink, not yet drained at source).
+        # Bounded by the reader's internal FIFOs (sink backpressures), so 8
+        # bits is ample; lets us know when the last word has reached the core.
+        outstanding = Signal(8)
+        sink_fire   = Signal()
+        source_fire = Signal()
+        self.comb += [
+            sink_fire.eq(dma.sink.valid & dma.sink.ready),
+            source_fire.eq(dma.source.valid & dma.source.ready),
+        ]
+        self.sync += [
+            If(sink_fire & ~source_fire, outstanding.eq(outstanding + 1)),
+            If(source_fire & ~sink_fire, outstanding.eq(outstanding - 1)),
+        ]
+
+        # Pipe DMA data -> core stream (low N_MAC*DATA_WIDTH bits per beat).
+        self.comb += [
+            w_valid_int.eq(dma.source.valid),
+            dma.source.ready.eq(w_ready_int),
+            w_data_int.eq(dma.source.data[:n_mac * data_width]),
+        ]
+
+        # Address generator: same schedule as the old verilog loader --
+        # `preamble` words from base_word ONCE, then `bpc` words replayed
+        # `ncyc` times from cyc_base (= base_word + preamble). preamble=0
+        # collapses to the legacy single-segment behavior.
+        self.gen_fsm = gen = FSM(reset_state="IDLE")
+        gen.act("IDLE",
+            If(self.control.fields.start,
+                NextValue(addr, base_word),
+                NextValue(cyc_base, base_word + preamble[:aw]),
+                NextValue(in_pre, preamble != 0),
+                NextValue(beat_idx, 0),
+                NextValue(cycle_idx, 0),
+                NextState("GEN"),
+            )
+        )
+        gen.act("GEN",
+            dma.sink.valid.eq(1),
+            dma.sink.address.eq(addr),
+            If(dma.sink.ready,
+                If(in_pre,
+                    If(beat_idx == (preamble - 1),
+                        NextValue(in_pre, 0),
+                        NextValue(beat_idx, 0),
+                        NextValue(cycle_idx, 0),
+                        NextValue(addr, cyc_base),
+                    ).Else(
+                        NextValue(beat_idx, beat_idx + 1),
+                        NextValue(addr, addr + 1),
+                    )
+                ).Elif(beat_idx == (bpc - 1),
+                    If(cycle_idx == (ncyc - 1),
+                        NextState("DRAIN"),
+                    ).Else(
+                        NextValue(cycle_idx, cycle_idx + 1),
+                        NextValue(beat_idx, 0),
+                        NextValue(addr, cyc_base),
+                    )
+                ).Else(
+                    NextValue(beat_idx, beat_idx + 1),
+                    NextValue(addr, addr + 1),
+                )
+            )
+        )
+        # All addresses issued; wait for the last data word to reach the core.
+        gen.act("DRAIN",
+            If(outstanding == 0, NextState("IDLE")),
         )
 
-        # Byte -> word address (drop the 2 LSBs for the 32-bit-data bus).
-        self.comb += self.wb.adr.eq(loader_wb_adr_byte[2:])
+        # Status: busy from start through drain; done sticky until next start
+        # (matches the old loader's level semantics).
+        loader_busy = Signal()
+        loader_done = Signal()
+        self.comb += loader_busy.eq(~gen.ongoing("IDLE"))
+        self.sync += [
+            If(gen.ongoing("DRAIN") & (outstanding == 0), loader_done.eq(1)),
+            If(self.control.fields.start, loader_done.eq(0)),
+        ]
 
         # --- Instantiate the core ----------------------------------------
         self.specials += Instance(

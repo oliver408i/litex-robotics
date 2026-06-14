@@ -4,13 +4,14 @@
 Composes every proven peripheral (gateware/soc_features.py) on one BaseSoC:
 
   - ST7796S LCD engine + FT6336U touch    (lcd, ctp_i2c, ctp_int; 10 pins)
-  - SNN-MLP MNIST classifier              (snn; no pins, snn_wb DMA master)
+  - SNN-MLP MNIST classifier              (snn; no pins, native SDRAM burst DMA)
   - shared aux SPI bus + ATWINC1500 WiFi  (aux_spi, winc_*; 9 pins)
   - SPI flash with XIP BIOS + LiteSPI master (always on, see below)
 
 Pin budget: 20 of 27 GPIO claimed (incl. the WINC EN), disjoint by
 construction -- see docs/icepi_zero_pin_mapping.md. Wishbone masters: cpu +
-lcd_dma + snn_wb. The LSM6DS3 IMU has no block of its own -- it rides the aux
+lcd_dma (the SNN streams weights over its own native LiteDRAM burst port, not
+Wishbone). The LSM6DS3 IMU has no block of its own -- it rides the aux
 bus as AUX_IMU (add_winc_aux, cs[1]).
 
 Unlike the per-feature tops this always builds the deployment shape: XIP

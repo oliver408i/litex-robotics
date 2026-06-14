@@ -9,8 +9,9 @@ Fuses the two previously-separate projects into one SoC:
 so a single firmware can let the user finger-draw a digit on the touchscreen,
 run it through the on-FPGA SNN, and show the prediction on the same panel.
 
-Both peripherals add a Wishbone master to the system bus (lcd_dma + snn_wb);
-both expose CSRs. The LCD engine only adds depth-4 async FIFOs (LUTRAM, not
+The LCD engine adds a Wishbone master (lcd_dma); the SNN streams weights over a
+dedicated native LiteDRAM port (burst DMA), not the Wishbone bus. Both expose
+CSRs. The LCD engine only adds depth-4 async FIFOs (LUTRAM, not
 block RAM), so the combined SoC stays within the MNIST build's ~78% BRAM budget
 -- the gate to confirm is PnR timing, whose margin at N_MAC=2 is thin (~2%).
 

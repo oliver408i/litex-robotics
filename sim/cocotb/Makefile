@@ -35,6 +35,20 @@ ifeq ($(TARGET),core)
     COMPILE_ARGS += -P$(TOPLEVEL).OUT_SIZE=$(OUT_SIZE)
     COMPILE_ARGS += -P$(TOPLEVEL).TIMESTEPS=$(TIMESTEPS)
     COMPILE_ARGS += -P$(TOPLEVEL).N_MAC=$(N_MAC)
+else ifeq ($(TARGET),pisc)
+    TOPLEVEL = pisc
+    MODULE   = test_pisc
+    VERILOG_SOURCES = $(abspath $(CURDIR)/../../verilog/pisc.v)
+
+    IMEM_WORDS ?= 256
+    NUM_OUT    ?= 8
+    NUM_IN     ?= 8
+
+    SIM_BUILD = sim_build_pisc_$(IMEM_WORDS)_$(NUM_OUT)_$(NUM_IN)
+
+    COMPILE_ARGS += -P$(TOPLEVEL).IMEM_WORDS=$(IMEM_WORDS)
+    COMPILE_ARGS += -P$(TOPLEVEL).NUM_OUT=$(NUM_OUT)
+    COMPILE_ARGS += -P$(TOPLEVEL).NUM_IN=$(NUM_IN)
 else ifeq ($(TARGET),loader)
     TOPLEVEL = snn_weight_loader
     MODULE   = test_snn_weight_loader
@@ -52,7 +66,7 @@ else ifeq ($(TARGET),loader)
     COMPILE_ARGS += -P$(TOPLEVEL).N_MAC=$(N_MAC)
     COMPILE_ARGS += -P$(TOPLEVEL).DATA_WIDTH=$(DATA_WIDTH)
 else
-    $(error unknown TARGET '$(TARGET)'; use TARGET=core or TARGET=loader)
+    $(error unknown TARGET '$(TARGET)'; use TARGET=core, TARGET=loader or TARGET=pisc)
 endif
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

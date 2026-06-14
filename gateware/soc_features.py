@@ -111,9 +111,12 @@ def add_snn_mlp(soc, n_mac=2, leds=None):
     leds=(busy_idx, done_idx) mirrors status on user LEDs when the board
     exposes them (silently skipped otherwise).
     """
-    soc.snn = SNNMLP(soc.platform, n_mac=n_mac)
+    # Dedicated native SDRAM read port for the burst weight loader (32-bit to
+    # match the core's N_MAC*DATA_WIDTH=32 beat). Bypasses the CPU Wishbone/L2
+    # path, so weight streaming rides the SDRAM bandwidth directly.
+    snn_port = soc.sdram.crossbar.get_port(mode="read", data_width=32)
+    soc.snn = SNNMLP(soc.platform, dram_port=snn_port, n_mac=n_mac)
     soc.add_csr("snn")
-    soc.bus.add_master(name="snn_wb", master=soc.snn.wb)
 
     if leds is not None:
         try:

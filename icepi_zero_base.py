@@ -32,7 +32,7 @@ from litex.soc.integration.soc import SoCRegion
 from litex.soc.integration.builder import Builder
 
 from litedram import modules as litedram_modules
-from litedram.phy import GENSDRPHY
+from litedram.phy import HalfRateGENSDRPHY
 
 
 # CRG ----------------------------------------------------------------------------------------------
@@ -41,27 +41,38 @@ class _CRG(LiteXModule):
     def __init__(self, platform, sys_clk_freq, spi_clk_freq=None, ext_reset_n=None):
         self.rst      = Signal()
         self.user_rst = Signal()  # extra reset source (e.g. BootCtl's FTDI RTS reset)
-        self.cd_sys = ClockDomain()
-        self.cd_sdram = ClockDomain(reset_less=True)
+        self.cd_sys      = ClockDomain()
+        self.cd_sys2x    = ClockDomain()             # 2x sys: SDRAM PHY (HalfRateGENSDRPHY) lives here
+        self.cd_sys2x_ps = ClockDomain(reset_less=True)  # 2x sys, +90deg: drives the SDRAM clock pin
         if spi_clk_freq is not None:
             self.cd_spi = ClockDomain()
 
         clk50 = platform.request("clk50")
         rst   = platform.request("rst")
 
+        rst_comb = ~rst | self.rst | self.user_rst
+        if ext_reset_n is not None:
+            rst_comb = rst_comb | ~ext_reset_n
+
+        # PLL #1 -- core clocks. sys and sys2x MUST share one VCO so the half-rate
+        # PHY's sys<->sys2x serdes sees an edge-aligned 2x clock. sys2x_ps is the
+        # same 2x clock shifted 90deg to sample the SDRAM in the middle of its
+        # data-valid window (this replaces the old cd_sdram).
         self.pll = pll = ECP5PLL()
-        if ext_reset_n is None:
-            self.comb += pll.reset.eq(~rst | self.rst | self.user_rst)
-        else:
-            self.comb += pll.reset.eq(~rst | self.rst | ~ext_reset_n | self.user_rst)
+        self.comb += pll.reset.eq(rst_comb)
         pll.register_clkin(clk50, 50e6)
+        pll.create_clkout(self.cd_sys,      sys_clk_freq)
+        pll.create_clkout(self.cd_sys2x,    2*sys_clk_freq)
+        pll.create_clkout(self.cd_sys2x_ps, 2*sys_clk_freq, phase=90)
 
-        pll.create_clkout(self.cd_sys, sys_clk_freq)
-        # SDRAM clock: phase shifted 90deg so data is sampled in the middle of the valid window.
-        pll.create_clkout(self.cd_sdram, sys_clk_freq, phase=90)
-
+        # PLL #2 -- LCD SPI clock. It's async-crossed (AsyncFIFO in lcd_engine), so
+        # it needs no phase relationship to sys, and 185MHz can't share a VCO with
+        # 50/100MHz -- so it gets its own PLL. See docs on the half-rate SDRAM plan.
         if spi_clk_freq is not None:
-            pll.create_clkout(self.cd_spi, spi_clk_freq)
+            self.pll2 = pll2 = ECP5PLL()
+            self.comb += pll2.reset.eq(rst_comb)
+            pll2.register_clkin(clk50, 50e6)
+            pll2.create_clkout(self.cd_spi, spi_clk_freq)
 
 
 # BaseSoC ------------------------------------------------------------------------------------------
@@ -129,12 +140,16 @@ class BaseSoC(SoCCore):
 
         # SDR SDRAM --------------------------------------------------------------------------------
         sdram_pads = platform.request("sdram")
-        self.sdrphy = GENSDRPHY(sdram_pads, sys_clk_freq)
-        # Drive the SDRAM clock pin from the phase-shifted domain.
-        self.comb += platform.request("sdram_clock").eq(self.crg.cd_sdram.clk)
+        # Half-rate PHY: the SDRAM runs in cd_sys2x (2x sys) while the controller
+        # and the rest of the SoC stay in cd_sys. This doubles raw SDRAM bandwidth
+        # without raising the CPU clock. The chip (W9825G6KH6 -6) is rated 166MHz,
+        # so 2*sys=100MHz is comfortable.
+        self.sdrphy = HalfRateGENSDRPHY(sdram_pads, sys_clk_freq)
+        # Drive the SDRAM clock pin from the 90deg-shifted 2x domain.
+        self.comb += platform.request("sdram_clock").eq(self.crg.cd_sys2x_ps.clk)
         self.add_sdram("sdram",
             phy           = self.sdrphy,
-            module        = litedram_modules.W9825G6KH6(sys_clk_freq, "1:1"),
+            module        = litedram_modules.W9825G6KH6(sys_clk_freq, "1:2"),
             l2_cache_size = 8192,
         )
 
