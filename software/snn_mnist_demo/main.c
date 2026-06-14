@@ -139,7 +139,8 @@ static void cmd_load_weights(void)
         i += chunk;
         uart_write('.');
     }
-    // Make sure CPU-side writes are visible to the SNN's Wishbone master.
+    // Mandatory: the SNN's DMA loader reads via a native SDRAM port that
+    // bypasses the L2, so push CPU-side writes out to physical SDRAM first.
     flush_cpu_dcache();
 #ifdef CONFIG_L2_SIZE
     flush_l2_cache();

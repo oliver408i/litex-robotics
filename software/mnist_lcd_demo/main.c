@@ -91,8 +91,10 @@ static uint8_t spike_count_read(int i)
 }
 
 /* One-time loader/bias setup. The weight blob lives in .rodata (SDRAM); point
- * the loader straight at it. Flush caches so the SNN's Wishbone master sees
- * the bytes the CPU loaded (see docs/snn_mnist.md "LiteDRAM L2 coherence"). */
+ * the loader straight at it. The flush is mandatory: the loader's DMA reads via
+ * a dedicated native SDRAM port that BYPASSES the L2, so dirty CPU writes must
+ * be pushed out to physical SDRAM first (see docs/snn_mnist.md "LiteDRAM L2
+ * coherence"). */
 static void snn_setup(void)
 {
 	snn_weight_base_write((uint32_t)(uintptr_t)snn_weights_blob);

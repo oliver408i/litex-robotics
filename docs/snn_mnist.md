@@ -49,8 +49,8 @@ became clear closing it out, and they matter more than any remaining polish:
 
 2. **The real deliverable is the substrate, not the classifier.** A parameterized
    LIF inference core, Q4.12 numerics, a snntorch QAT training pipeline, a
-   schedule-bit-exact simulator, and — critically — **SDRAM weight streaming over
-   a Wishbone master**. That last piece is exactly what killed the earlier
+   schedule-bit-exact simulator, and — critically — **SDRAM weight streaming**
+   (now a native-port burst DMA). That last piece is exactly what killed the earlier
    classical-MLP attempts (Perceptron A/B died on "BRAM too tight for MNIST
    weights"). We solved the MLP blocker sideways: this substrate *is* an MLP
    accelerator. Swap LIF→ReLU and drop the timestep loop and you have the MLP
@@ -78,8 +78,8 @@ train_snn_mnist.py    ╮              vexriscv ─── snn_mlp peripheral
 build/snn_mnist.pt    │                   │           │       parameterized
         ↓             │                   │           │       FIN_A/FIN_B pipelined
 pack_snn_mnist_weights.py                 │           │
-   --n-mac 2          │                   │           ├── snn_weight_loader (verilog)
-   tile-major blob    │                   │           │       Wishbone master, wraps
+   --n-mac 2          │                   │           ├── weight loader (snn_mlp.py)
+   tile-major blob    │                   │           │       native-port DMA, wraps
         ↓             │                   │           │       beats_per_cycle × T
 build/snn_mnist_weights.bin               │           │
    101 KB             │                   │
@@ -88,7 +88,7 @@ stream_snn_mnist_uart.py ───UART(1Mbaud)──▶ snn_mnist_demo (firmware
    chunked-ack proto  ╯              ╰── CSR control + pixel/bias writes
                                                       │
                                                       ↓
-                                              LiteDRAM ←── snn_wb master
+                                              LiteDRAM ←── snn DMA port
                                               (16-bit SDR SDRAM, 32 MB)
                                               ├── firmware
                                               └── weight blob @ +1 MiB
@@ -96,11 +96,14 @@ stream_snn_mnist_uart.py ───UART(1Mbaud)──▶ snn_mnist_demo (firmware
 
 ## Performance ceiling — why N_MAC stops paying off at 2
 
-This is the analysis that closed the chapter. The headline: **the 16-bit SDR
-SDRAM is the wall, not the MAC count.**
+This is the analysis that closed the chapter. The headline at the time: **the
+16-bit SDR SDRAM is the wall, not the MAC count.** *(That wall was later moved —
+see the roadmap below: a 2× half-rate SDRAM clock + a burst-DMA loader made the
+core compute-bound. The pre-change analysis here still explains the N_MAC tradeoff.)*
 
-The board's DRAM is a Winbond **W9825G6KH6** — 16-bit data bus, single-data-rate,
-driven by `GENSDRPHY` at **1:1 with sys_clk (50 MHz)**. Raw ceiling:
+The board's DRAM is a Winbond **W9825G6KH6** — 16-bit data bus, single-data-rate.
+At the time of this analysis it was driven by `GENSDRPHY` at **1:1 with sys_clk
+(50 MHz)** (since moved to `HalfRateGENSDRPHY`, 100 MHz). Raw ceiling at 50 MHz:
 
 ```
 16 bits × 50 MHz = 100 MB/s   (peak; ~70–85 realistic after refresh/activate)
@@ -148,19 +151,26 @@ What *would* push past 25 ms (ranked by leverage / risk):
    phase-1 pass (`S_L1_MAC`→`S_L1_ACC`), caches the per-hidden input currents in
    `l1_acc[HIDDEN]`, and the 25-step loop runs leak+threshold over that cached
    value (`S_L1_DYN_A/B`). The loader streams the W1 prefix once and replays only
-   the W2 block per timestep (`preamble_beats` / `beats_per_cycle` split in
-   `snn_weight_loader.v`). Bit-exact by construction (factoring out a constant —
+   the W2 block per timestep (`preamble_beats` / `beats_per_cycle` split in the
+   weight-loader FSM in `gateware/snn_mlp.py`). Bit-exact by construction (factoring out a constant —
    `sim/snn_mlp.py:125` already did this) and verified against the cocotb MNIST
    test. ~18–19× fewer core cycles and DRAM beats; the system is now core-bound,
    at which point N_MAC parallelism pays off again. Still composes with the next
    lever: pixel-sparsity skipping (only fetch/MAC the non-zero ~20% of pixels) and
    on-chip caching of the tiny W2 block (10×64 ≈ 1.3 KB).
-2. **Faster SDRAM clock** (~2×, bounded, much bigger lift). The W9825G6KH6 is rated
-   ≥133 MHz. `GENSDRPHY` is 1:1, so the only way to run DRAM faster is a separate,
-   faster clock domain for {LiteDRAM + loader + core} with a CDC to the 50 MHz CPU
-   — custom CRG, a CDC boundary, PHY timing re-closure, and re-pipelining the core
-   for 100 MHz (the FIN split was needed just for 50). **This is really a separate
-   memory/SoC-clocking project, not MNIST polish.**
+2. **Faster SDRAM clock — ✅ IMPLEMENTED (2026-06).** The W9825G6KH6 is rated
+   ≥133 MHz. Instead of moving the whole {LiteDRAM + loader + core} to a faster
+   domain, `GENSDRPHY` (1:1) was swapped for `HalfRateGENSDRPHY` (1:2): the SDRAM
+   runs at 2× (100 MHz, `cd_sys2x`) while the controller, loader, and core stay at
+   50 MHz — so no core re-pipelining and no new CDC in the datapath. See
+   `icepi_zero_base.py` and the half-rate SDRAM notes.
+3. **Burst weight loader — ✅ IMPLEMENTED (2026-06).** The single-beat Wishbone
+   loader (`verilog/snn_weight_loader.v`) was replaced by a Migen address-gen FSM
+   driving a `LiteDRAMDMAReader` on a dedicated native SDRAM port
+   (`gateware/snn_mlp.py`), bypassing the CPU Wishbone/L2 path. Pipelined row-hit
+   bursts removed the per-word handshake that was starving the MAC array. Together
+   with (2) this took core inference **5 ms → 0.73 ms (6.8×)**; the core is now
+   ~compute-bound, so `N_MAC` parallelism is the next lever.
 
 ## Event-driven sparsity — present for correctness, not performance
 
@@ -211,16 +221,19 @@ a task where the input is genuinely sparse-in-time.
   (clip + threshold + write back)** to break a ~21 ns combinational chain that
   missed 50 MHz on ECP5. The N_MAC>1 path is now verified bit-exact in cocotb
   (it had never actually been simulated before 2026-05-26).
-- `verilog/snn_weight_loader.v` — Wishbone-classic master streaming weights
-  from SDRAM. Holds one timestep's worth of weights in SDRAM and replays it
-  `num_cycles` times by wrapping `base_addr → base_addr + beats_per_cycle`.
-  Per-beat: one Wishbone read; data held until downstream `w_ready`. Slices the
-  low `N_MAC*DATA_WIDTH` bits of each 32-bit word — so **N_MAC≤2 only** without
-  a multi-word-per-beat rework.
+- `verilog/snn_weight_loader.v` — **superseded (2026-06), no longer built.** The
+  original single-beat Wishbone-classic loader; kept for reference only (it still
+  has its own standalone cocotb tests). Replaced by the DMA loader in
+  `gateware/snn_mlp.py`.
 - `gateware/snn_mlp.py` — LiteX wrapper. Default **`n_mac=2`**. Instantiates the
-  core + loader, exposes CSRs: `control` (start/clear pulses), `status`,
-  `weight_base/beats_per_cycle/num_cycles`, `pixel_*`, `bias_*`, and 10
-  `spike_count_<i>` readback CSRs. Owns a Wishbone master (`self.wb`).
+  core and the weight loader: a Migen address-gen FSM driving a `LiteDRAMDMAReader`
+  on a dedicated **native SDRAM port** (pipelined bursts, bypasses the CPU
+  Wishbone/L2 path — so its reads need an explicit `flush_l2_cache()` first). Same
+  two-segment schedule as before (W1 preamble once, then `beats_per_cycle` words
+  replayed `num_cycles` times) and still slices the low `N_MAC*DATA_WIDTH` bits of
+  each 32-bit word (**N_MAC≤2** without rework). Exposes CSRs: `control`
+  (start/clear pulses), `status`, `weight_base/preamble_beats/beats_per_cycle/
+  num_cycles`, `pixel_*`, `bias_*`, and 10 `spike_count_<i>` readback CSRs.
 - `icepi_zero_mnist.py` — SoC target wrapping `BaseSoC` with the `SNNMLP`
   peripheral. `N_MAC = 2` constant at the top (must match the packer's
   `--n-mac`), plus LED status indicators.
@@ -254,7 +267,8 @@ a task where the input is genuinely sparse-in-time.
   - **tiny** (4→2→2, T=3, hand-crafted weights) — fast smoke test
   - **MNIST** (784→64→10, T=25, trained checkpoint) — full-scale bit-exact
 - `verilog/snn_weight_loader.v` has its own cocotb tests with a mocked Wishbone
-  slave (sequential reads + backpressure).
+  slave (sequential reads + backpressure) — but the module is superseded and no
+  longer in the build, so these now exercise reference-only code.
 - `sim/cocotb/run.sh` — single entry point; forwards args to `make`. Uses a
   custom `vvp-shim/` so cocotb's Python 3.12 and system glibc load correctly.
 - Targets via `TARGET=core` (default) or `TARGET=loader`; `N_MAC=<n>` overrides
@@ -366,14 +380,17 @@ reinforces the bandwidth story above.
   (critical path is in the L2 cache, not the core). If you ever go past N_MAC=2
   *and* widen the memory path to make it worthwhile, re-validate the split; a
   third stage may be needed.
-- **The Wishbone byte→word address conversion** in `gateware/snn_mlp.py` drops
-  the bottom 2 bits via `self.wb.adr.eq(loader_wb_adr_byte[2:])`. Assumes
-  `WB_DATA_WIDTH=32`. Breaks if the bus widens.
+- **The byte→word address conversion** in `gateware/snn_mlp.py`: the native port
+  is 32-bit-word addressed, so the FSM slices `weight_base[2:2+aw]`. That slice
+  also strips the SDRAM base (`0x40000000` sits above the `aw`-bit window), so an
+  absolute CPU SDRAM address lands at the right native offset. Assumes a 32-bit
+  port and a `2^(aw+2)`-aligned SDRAM origin.
 - **Chunked-ack weight upload** assumes both ends agree on `WEIGHT_CHUNK_SIZE`
   (256). Change it in firmware → change it in the host driver.
 - **LiteDRAM L2 coherence** between CPU writes and SNN reads relies on
-  `flush_cpu_dcache()` + `flush_l2_cache()` after the `W` command. Don't remove
-  them or weights become invisible to the SNN's Wishbone master.
+  `flush_cpu_dcache()` + `flush_l2_cache()` after weights land in SDRAM (the `W`
+  command / boot copy). This is now *mandatory*: the loader's native DMA port
+  bypasses the L2, so without the flush it reads stale SDRAM behind dirty L2 lines.
 
 ## Where to go next (and where NOT to)
 

@@ -8,7 +8,7 @@ image instead of streamed over UART. This script emits a single header:
     software/mnist_lcd_demo/snn_assets.h
 
 containing:
-  - snn_weights_blob[]  : the exact tile-major blob snn_weight_loader.v expects,
+  - snn_weights_blob[]  : the exact tile-major blob the SNN weight loader expects,
                           byte-identical to tools/pack_snn_mnist_weights.py output
                           (reused here so there is one source of truth).
   - snn_biases[]        : 74 Q4.12 biases (HIDDEN then OUT_SIZE).
@@ -92,7 +92,7 @@ def main() -> int:
 #define SNN_OUT_SIZE         {cfg.out_size}
 #define SNN_BIAS_COUNT       {len(biases)}
 /* Core hoists layer-1 out of the timestep loop: W1 prefix streamed once,
- * W2 block streamed per timestep. See verilog/snn_weight_loader.v. */
+ * W2 block streamed per timestep. See the DMA loader in gateware/snn_mlp.py. */
 #define SNN_PREAMBLE_BEATS   {w1_beats}u
 #define SNN_BEATS_PER_CYCLE  {w2_beats}u
 #define SNN_NUM_CYCLES       {cfg.timesteps}u

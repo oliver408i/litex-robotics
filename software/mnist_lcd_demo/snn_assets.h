@@ -12,7 +12,7 @@
 #define SNN_OUT_SIZE         10
 #define SNN_BIAS_COUNT       74
 /* Core hoists layer-1 out of the timestep loop: W1 prefix streamed once,
- * W2 block streamed per timestep. See verilog/snn_weight_loader.v. */
+ * W2 block streamed per timestep. See the DMA loader in gateware/snn_mlp.py. */
 #define SNN_PREAMBLE_BEATS   25088u
 #define SNN_BEATS_PER_CYCLE  320u
 #define SNN_NUM_CYCLES       25u

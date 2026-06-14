@@ -71,8 +71,8 @@ class SNNMLP(LiteXModule, AutoCSR):
         self.status = CSRStatus(fields=[
             CSRField("busy", size=1, description="snn_mlp_core busy"),
             CSRField("done", size=1, description="snn_mlp_core inference complete"),
-            CSRField("loader_busy", size=1, description="snn_weight_loader busy"),
-            CSRField("loader_done", size=1, description="snn_weight_loader completed"),
+            CSRField("loader_busy", size=1, description="weight DMA loader busy"),
+            CSRField("loader_done", size=1, description="weight DMA loader completed"),
             CSRField("classification_valid", size=1),
             CSRField("classification", size=4, description="argmax of output spike counts"),
         ])

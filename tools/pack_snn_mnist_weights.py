@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Pack a trained snn_mnist checkpoint into the SDRAM weight blob.
 
-Layout matches what verilog/snn_weight_loader.v consumes per timestep — the
-loader replays this block T times. Each beat is one 32-bit little-endian
-word holding N_MAC Q4.12 weights in the low N_MAC*16 bits.
+Layout matches what the SNN weight loader (gateware/snn_mlp.py, native-port DMA)
+consumes per timestep — the loader replays this block T times. Each beat is one
+32-bit little-endian word holding N_MAC Q4.12 weights in the low N_MAC*16 bits.
 
 Within one timestep:
   for tile in 0..ceil(HIDDEN/N_MAC)-1:    # layer 1 tiles

@@ -6,9 +6,10 @@ Generated from the LiteX source and the build's `csr.csv` / `soc.h`; if you
 change the bus topology or address map, re-derive it from
 `build/icepi_zero/csr.csv`.
 
-The thing worth seeing here is the **interconnect**: three Wishbone masters
-(CPU + two DMA engines) arbitrate for one shared SDRAM, and the design spans
-**three clock domains** (50 MHz `sys`, a 90°-shifted `sdram`, and a fast
+The thing worth seeing here is the **interconnect**: two Wishbone masters (CPU +
+the LCD DMA) plus the SNN's own native LiteDRAM port arbitrate for one shared
+SDRAM, and the design spans **three clock domains** (50 MHz `sys`, a 2× 100 MHz
+`sys2x` driving the SDRAM PHY, and a fast
 `spi`). Everything else — the aux SPI bus (WINC/IMU/MCP), the flash master,
 boot control — is CSR-driven with no bus mastering of its own.
 
@@ -39,7 +40,7 @@ flowchart LR
 
         cpu  -- master --> arb
         lcd  -- "master: lcd_dma" --> arb
-        snn  -- "master: snn_wb" --> arb
+        snn  -- "native port (burst DMA,<br/>bypasses arb + L2)" --> dramctl
 
         arb --> flash
         arb --> sram
@@ -51,8 +52,8 @@ flowchart LR
         csrbr -.-> bootctl
     end
 
-    subgraph sdramcd["sdram — 50 MHz, +90°"]
-        phy["GENSDRPHY"]
+    subgraph sdramcd["sys2x — 100 MHz (clk pin +90°)"]
+        phy["HalfRateGENSDRPHY"]
         ddr[("W9825G6KH6<br/>32 MB 16-bit SDR<br/>0x4000_0000")]
     end
 
@@ -235,8 +236,9 @@ strided blits.
 
 # SNN engine detail
 
-Sources: `gateware/snn_mlp.py` (LiteX wrapper: CSRs + Wishbone master) wrapping
-`verilog/snn_weight_loader.v` and `verilog/snn_mlp_core.v`. Default shape
+Sources: `gateware/snn_mlp.py` (LiteX wrapper: CSRs + a Migen weight-loader FSM
+driving a `LiteDRAMDMAReader` on a dedicated native SDRAM port) wrapping
+`verilog/snn_mlp_core.v`. Default shape
 **784 → 64 → 10**, 25 timesteps, Q4.12 fixed-point, `N_MAC=2`.
 
 The loader and core run in lockstep over a simple **valid/ready handshake**:
@@ -254,7 +256,7 @@ flowchart LR
     fw -->|"control.clear_state + start"| ldr
 
     subgraph snn["SNNMLP peripheral — sys domain"]
-        ldr["snn_weight_loader<br/>FSM + WB master"]
+        ldr["weight loader<br/>FSM + LiteDRAM DMA"]
         core["snn_mlp_core<br/>LIF datapath"]
         pmem[("pixel BRAM<br/>784 × Q4.12")]
         bmem[("bias mem<br/>HIDDEN+OUT")]
@@ -265,30 +267,34 @@ flowchart LR
         bmem --> core
     end
 
-    ldr -->|"wb read, 1 beat/word<br/>no bursts"| sdram[("SDRAM<br/>weight blob @ +1 MiB<br/>replayed × T")]
+    ldr -->|"native-port DMA<br/>pipelined bursts"| sdram[("SDRAM<br/>weight blob<br/>replayed × T")]
 
     core -->|"argmax classification<br/>+ spike_count_0..9"| fw
     core -->|busy → LED0| leds["status LEDs"]
     core -->|done → LED1| leds
 ```
 
-## Weight-loader FSM
+## Weight-loader FSM (address generator)
+
+The Migen FSM only *generates the address stream*; the `LiteDRAMDMAReader` it
+feeds issues the reads (up to `fifo_depth` in flight) and buffers returned data,
+which then drains to the core over `w_valid/w_ready`. So the FSM can race ahead
+while the core consumes at its own pace.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> S_IDLE
-    S_IDLE --> S_READ: start<br/>(reset beat/cycle, addr=base)
-    S_READ --> S_HOLD: wb_ack → latch w_data,<br/>w_valid=1
-    S_HOLD --> S_READ: w_ready & more beats<br/>(advance addr)
-    S_HOLD --> S_READ: w_ready & cycle done<br/>& more cycles (replay from base)
-    S_HOLD --> S_DONE: w_ready & last beat<br/>of last cycle
-    S_DONE --> [*]
+    [*] --> IDLE
+    IDLE --> GEN: start<br/>(addr=base, in_preamble=preamble≠0)
+    GEN --> GEN: sink.ready<br/>(push next addr: advance,<br/>or wrap to W2 base per cycle)
+    GEN --> DRAIN: last address issued
+    DRAIN --> IDLE: outstanding==0<br/>(last word reached the core)
 ```
 
-The blob holds **one timestep** of weights; `num_cycles` (= T = 25) replays it
-from `base_addr` each timestep. No bursts/pipelining — the core's per-input MAC
-cost dominates, so SDRAM has idle headroom (this is the bandwidth argument
-behind `N_MAC=2` in `docs/snn_mnist.md`).
+The blob holds the **W1 prefix once + one timestep of W2**; the preamble streams
+W1 once, then `num_cycles` (= T = 25) replays the W2 block from `cyc_base` each
+timestep. Reads are pipelined row-hit bursts on a dedicated native port (bypasses
+the CPU Wishbone/L2 path), so weight streaming runs at ~SDRAM bandwidth — the
+core is now compute-bound, not memory-bound.
 
 ## Core FSM (per timestep, ×T then argmax)
 
