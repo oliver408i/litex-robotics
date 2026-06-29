@@ -17,6 +17,7 @@ for rel_path in [
     "migen",
     "litedram",
     "litespi",
+    "litesdcard",
 ]:
     candidate = os.path.join(LITEX_SETUP_ROOT, rel_path)
     if os.path.isdir(candidate) and candidate not in sys.path:
@@ -201,7 +202,7 @@ def make_parser(description):
     os.environ["PYTHON"] = sys.executable
     extra_pythonpaths = [
         os.path.join(LITEX_SETUP_ROOT, p)
-        for p in ("litex", "litex-boards", "migen", "litedram", "litespi")
+        for p in ("litex", "litex-boards", "migen", "litedram", "litespi", "litesdcard")
     ]
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     os.environ["PYTHONPATH"] = os.pathsep.join(

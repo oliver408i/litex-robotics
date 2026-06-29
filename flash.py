@@ -74,6 +74,10 @@ def parse_args():
                             const=os.path.join(REPO, default),
                             help=f"flash FILE to the {slot} slot @0x{offset:06x} "
                                  f"(default: {default})")
+    ap.add_argument("--syspkg", metavar="FILE",
+                    help="flash a matched SoC variant from a .syspkg archive "
+                         "(see syspkg.py) -- bitstream+bios+app(+loader) in one "
+                         "session; combinable with explicit slot flags")
     ap.add_argument("--run", metavar="FILE",
                     help="load FILE into SDRAM and execute it immediately -- "
                          "nothing is flashed, the flashed app slot is untouched "
@@ -99,8 +103,20 @@ def parse_args():
 
 
 def build_jobs(args):
-    """[(label, offset, data)] from slot presets and/or the legacy form."""
-    jobs = []
+    """[(label, offset, data)] from a syspkg, slot presets and/or the legacy form.
+
+    An explicit slot flag overrides the same offset coming from a --syspkg, so
+    you can flash a packaged variant but swap in a locally rebuilt app."""
+    by_offset = {}      # offset -> (label, offset, data); later writes win
+
+    if args.syspkg:
+        import syspkg
+        pkg_jobs, manifest = syspkg.jobs_from_syspkg(args.syspkg)
+        print(f"syspkg '{manifest['name']}' ({manifest['git']}, "
+              f"csr {str(manifest.get('csr_sha256'))[:12]})")
+        for label, offset, data in pkg_jobs:
+            by_offset[offset] = (label, offset, data)
+
     for slot, (offset, wrap, _default) in SLOTS.items():
         path = getattr(args, slot)
         if path is None:
@@ -113,7 +129,7 @@ def build_jobs(args):
             data = f.read()
         if wrap:
             data = struct.pack("<II", len(data), zlib.crc32(data)) + data
-        jobs.append((f"{slot}:{os.path.relpath(path)}", offset, data))
+        by_offset[offset] = (f"{slot}:{os.path.relpath(path)}", offset, data)
     if args.file is not None:
         if args.offset is None:
             sys.exit("positional file needs --offset (or use a slot preset)")
@@ -121,9 +137,10 @@ def build_jobs(args):
             data = f.read()
         if args.fbi:
             data = struct.pack("<II", len(data), zlib.crc32(data)) + data
-        jobs.append((args.file, args.offset, data))
+        by_offset[args.offset] = (args.file, args.offset, data)
+    jobs = list(by_offset.values())
     if not jobs and not args.run:
-        sys.exit("nothing to do -- give a slot preset, FILE --offset X, or --run")
+        sys.exit("nothing to do -- give a slot preset, --syspkg, FILE --offset X, or --run")
     return sorted(jobs, key=lambda j: j[1])
 
 

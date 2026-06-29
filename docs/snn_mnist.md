@@ -66,6 +66,38 @@ sparse data (DVS event cameras, audio keyword spotting, sensor anomaly detection
 **with** event-driven sparsity actually built in. Both the tracker PoC and MNIST
 were tasks that didn't exercise that — don't make it three.
 
+## A second retrospective: the project that did not close
+
+The project was declared closed on 2026-05-26. Development then continued for
+roughly three more weeks — and a "closed" project that keeps accruing substantive
+commits was not finished, only mislabeled. What had been called the ending was the
+point at which the classifier stopped being the objective.
+
+1. **The headline memory critique is now largely obsolete — which validates the
+   substrate thesis.** That critique centered on the ~25× memory traffic from
+   replaying 25 timesteps. Layer-1 hoisting, native-port burst DMA, and half-rate
+   SDRAM have closed the gap to the point where inference is **compute-bound at
+   ~0.73 ms (6.8× faster)**. The gain came from better infrastructure beneath the
+   network, not a smarter network — exactly where the first retrospective located
+   the value.
+
+2. **The classifier was scaffolding for a platform.** The post-closure work — a
+   native-port burst-DMA pattern, a half-rate SDRAM bring-up, and **PISC, a
+   separate programmable I/O sequencer** with its own ISA and assembler — is
+   largely independent of MNIST. The SNN was the forcing function that justified
+   building reusable substrate; once it existed, it generated work unrelated to
+   spiking inference.
+
+3. **The central limitation is unchanged: event-driven sparsity remains
+   unexploited.** The system is now a faster MLP in an SNN form factor, but the
+   form factor is still cosmetic — optimization standing in for reconsideration.
+
+**Takeaway:** the first lesson ("pick the task to fit the capability") gains a
+corollary — *identify what is actually being built.* The stated objective was a
+classifier; the real output was a substrate, with the classifier as its excuse.
+That redefines the ending too: a project concludes not when its stated goal is met,
+but when the work stops producing reusable infrastructure.
+
 ## Architecture
 
 ```

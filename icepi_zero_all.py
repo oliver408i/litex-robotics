@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """IcePi Zero "everything" SoC -- all non-conflicting gateware in one build.
 
+DEPRECATED for deployment: the SD card cannot route alongside LCD+SNN on the
+25F (see the capacity note below), so `--no-sdcard` is the only shape that
+builds -- and that is exactly icepi_zero_mnist_lcd.py, now the canonical
+WiFi-updatable flagship. Keep this top only for A/B PnR experiments on the SD
+cost; ship icepi_zero_mnist_lcd.py instead.
+
 Composes every proven peripheral (gateware/soc_features.py) on one BaseSoC:
 
   - ST7796S LCD engine + FT6336U touch    (lcd, ctp_i2c, ctp_int; 10 pins)
   - SNN-MLP MNIST classifier              (snn; no pins, native SDRAM burst DMA)
   - shared aux SPI bus + ATWINC1500 WiFi  (aux_spi, winc_*; 9 pins)
+  - native 4-bit SDIO SD card             (sdcard; dedicated pins, +2 DMA masters)
   - SPI flash with XIP BIOS + LiteSPI master (always on, see below)
 
 Pin budget: 20 of 27 GPIO claimed (incl. the WINC EN), disjoint by
@@ -32,7 +39,8 @@ from gateware.soc_features import (add_lcd_touch, add_snn_mlp, add_winc_aux,
 
 class AllSoC(BaseSoC):
     def __init__(self, sys_clk_freq=50e6, flash_boot_offset=None,
-                 lcd_spi_clk_freq=185e6, winc_spi_clk_freq=12.5e6, **kwargs):
+                 lcd_spi_clk_freq=185e6, winc_spi_clk_freq=12.5e6,
+                 with_sdcard=True, **kwargs):
         super().__init__(
             sys_clk_freq             = sys_clk_freq,
             with_spi_flash           = True,   # deployment shape: always XIP
@@ -47,6 +55,13 @@ class AllSoC(BaseSoC):
         add_snn_mlp(self, leds=(0, 1))
         add_winc_aux(self, winc_spi_clk_freq, busy_led=2)  # led2 optional
         add_boot_ctl(self)  # sticky boot flag + FTDI DTR/RTS sense
+        # Native 4-bit SDIO for the IMU data logger (FAT32 via libfatfs). SPI-mode
+        # SD is read-only in LiteX, so the logger needs the native core. Uses the
+        # dedicated sdcard pins (P15/N16 + P14/R14/M15/M14), no GPIO contention,
+        # and adds two block-DMA Wishbone masters. This is the tight build:
+        # confirm Fmax >= 50 MHz and BRAM fit after PnR. --no-sdcard drops it.
+        if with_sdcard:
+            self.add_sdcard("sdcard")
 
 
 def main():
@@ -59,6 +74,9 @@ def main():
                                help="WINC SPI SCK frequency (Hz). Default 12.5 MHz = tested "
                                     "ceiling (25 MHz corrupts MISO on jumper wiring). "
                                     "Runtime-adjustable via the aux_spi clk_divider CSR.")
+    parser.add_target_argument("--no-sdcard", action="store_true",
+                               help="Drop the SDIO SD card core. Use to A/B the PnR cost or "
+                                    "if timing/BRAM won't fit the full build. Default: SD on.")
     args = parser.parse_args()
 
     # Standalone boot by default: BIOS flash-boots the firmware at the
@@ -74,6 +92,7 @@ def main():
         spiflash_clk_freq = args.spiflash_clk_freq,
         lcd_spi_clk_freq  = args.lcd_spi_clk_freq,
         winc_spi_clk_freq = args.winc_spi_clk_freq,
+        with_sdcard       = not args.no_sdcard,
         **parser.soc_argdict,
     )
     run_build(soc, args, parser)
