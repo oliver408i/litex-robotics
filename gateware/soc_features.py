@@ -16,7 +16,8 @@ from migen.genlib.cdc import MultiReg
 from litex.gen import LiteXModule
 from litex.build.generic_platform import Pins, Subsignal, IOStandard, Misc
 from litex.soc.cores.i2c import I2CMaster as HWI2CMaster
-from litex.soc.cores.gpio import GPIOIn, GPIOOut
+from litex.soc.cores.gpio import GPIOIn, GPIOOut, GPIOTristate
+from litex.soc.cores.spi.spi_bone import SPIBone
 from litex.soc.interconnect.csr import AutoCSR, CSRStorage
 
 from litex.soc.integration.soc import SoCRegion
@@ -24,6 +25,8 @@ from litex.soc.integration.soc import SoCRegion
 from gateware.lcd_engine import LCDEngine
 from gateware.snn_mlp import SNNMLP
 from gateware.aux_spi import AuxSPIMaster
+from gateware.logic_analyzer import LogicAnalyzer
+from gateware.spi_slave import SPISlave
 
 
 # LCD / Touch --------------------------------------------------------------------------------------
@@ -201,6 +204,160 @@ def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
             pass
 
 
+# Aux SPI bus, IMU only (no WiFi) ------------------------------------------------------------------
+# Same bus pins and CS ordering as add_winc_aux, so the aux_spi.c HAL
+# (AUX_CS_IMU = cs[1]) is byte-for-byte unchanged. The WINC (cs[0]) and MCP
+# (cs[2]) lines simply park high -- nothing is wired to them in a logger build.
+# Keep these pins in sync with _winc_io's aux_spi subsignal.
+_aux_imu_io = [
+    ("aux_spi", 0,
+        Subsignal("clk",  Pins("T2")),            # IO2  -- shared sclk
+        Subsignal("mosi", Pins("H2")),            # IO8  -- shared mosi
+        Subsignal("miso", Pins("J2")),            # IO25 -- shared miso
+        Subsignal("cs_n", Pins("M2 F3 R2")),      # cs[0]=WINC cs[1]=IMU(IO6) cs[2]=MCP
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_aux_imu(soc, imu_spi_clk_freq=1e6, busy_led=None):
+    """Shared aux SPI bus without WINC sidebands (IMU cs[1] / MCP3008 cs[2]).
+
+    The WINC-free aux bus: bus pins and CS indices match add_winc_aux exactly,
+    so firmware reuses aux_spi.c's AUX_IMU device with no changes. cs[0] (the
+    old WINC line) simply parks high -- nothing is wired to it post-WINC. CS is
+    software-held; runtime divider via the aux_spi clk_divider CSR (LSM6DS3 tops
+    out at 10 MHz; bus at sys/2). busy_led, if given, lights an LED while an
+    aux-bus transfer is in flight.
+    """
+    platform = soc.platform
+    platform.add_extension(_aux_imu_io)
+
+    soc.aux_spi = AuxSPIMaster(
+        pads                 = platform.request("aux_spi"),
+        platform             = platform,
+        sys_clk_freq         = soc.sys_clk_freq,
+        default_spi_clk_freq = int(imu_spi_clk_freq),
+    )
+    soc.add_csr("aux_spi")
+
+    soc.add_constant("AUX_CS_WINC", AUX_CS_WINC)  # cs[0] parks unused post-WINC
+    soc.add_constant("AUX_CS_IMU",  AUX_CS_IMU)
+    soc.add_constant("AUX_CS_MCP",  AUX_CS_MCP)
+
+    if busy_led is not None:
+        # Sanity LED: lit while an aux-bus SPI transfer is in flight.
+        try:
+            soc.comb += platform.request("user_led", busy_led).eq(soc.aux_spi.busy)
+        except Exception:
+            pass
+
+
+# MCP23S17 SPI GPIO expander on the aux bus -------------------------------------------------------
+# Replaces the retired ATWINC1500 in the aux-bus slot (board refactor 2026-06-25):
+# the WINC is physically gone (an ESP32-C3 will later take over the WiFi-loader
+# role), and the long-planned SPI GPIO expander (see docs/reset_sidebands.md +
+# the sr595 retirement) is finally wired in. The expander shares the same
+# sclk/mosi/miso as the IMU + MCP3008 and adds a 4th chip-select plus a reset and
+# an interrupt sideband.
+#
+# Pins (physical wiring, 2026-06-25):
+#   CS    = IO11 / G2   -- 4th aux-bus chip-select (cs[3], AUX_CS_IOX)
+#   RESET = IO10 / L2   -- active low (this was the *direct* LCD/CTP reset pin;
+#                          in an expander build the LCD/CTP resets move onto
+#                          expander OUTPUT pins, freeing L2 to reset the expander)
+#   INTA  = IO22 / P2   -- interrupt in (this was the WINC CHIP_EN pin)
+#
+# TWO namespace/pin traps to remember:
+#  (1) "MCP" on this bus historically means the MCP3008 ADC (cs[2], AUX_CS_MCP).
+#      This expander is a DISTINCT chip -> it uses AUX_CS_IOX / iox_* / "IOX".
+#  (2) CS pin IO11/G2 is ALSO the NMEA GPS UART TX (add_gps_uart). The expander
+#      and a GPS-on-IO11 build are mutually exclusive until one is repinned.
+# Both reset (L2) and INTA (P2) collide with add_lcd_touch / add_winc_aux pins,
+# so this adder is for the standalone bring-up top (icepi_zero_mcp.py) until the
+# deployables are migrated off the WINC and the LCD reset is rerouted.
+_mcp_io = [
+    ("aux_spi", 0,
+        Subsignal("clk",  Pins("T2")),               # IO2  -- shared sclk
+        Subsignal("mosi", Pins("H2")),               # IO8  -- shared mosi
+        Subsignal("miso", Pins("J2")),               # IO25 -- shared miso
+        Subsignal("cs_n", Pins("M2 F3 R2 G2")),      # cs0=unused(was WINC,IO23) cs1=IMU(IO6) cs2=MCP3008(IO3) cs3=IOX(IO11)
+        IOStandard("LVCMOS33"),
+    ),
+    ("iox_ctrl", 0,
+        Subsignal("reset_n", Pins("L2")),            # IO10 -> MCP23S17 RESET (active low)
+        Subsignal("inta",    Pins("P2"), Misc("PULLMODE=UP")),  # IO22 <- MCP23S17 INTA
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+# Chip-select index for the MCP23S17 I/O expander on the shared aux bus (4th line).
+AUX_CS_IOX = 3
+
+
+def add_mcp_expander(soc, iox_spi_clk_freq=1e6, busy_led=None):
+    """Shared aux SPI bus + MCP23S17 SPI GPIO-expander sidebands (reset + INTA).
+
+    The expander rides the same AuxSPIMaster as the IMU/MCP3008 on a 4th CS
+    (AUX_CS_IOX). reset_n is a GPIOOut that defaults to 0, so the expander powers
+    up held in reset until firmware releases it (mcp23s17_reset()). inta is a
+    GPIOIn with IRQ (firmware picks the edge; MCP23S17 INTA defaults active-low).
+    busy_led mirrors in-flight aux transfers. This is the post-WINC replacement
+    for add_winc_aux during expander bring-up; cs[0] (the old WINC line) parks
+    high -- nothing is wired to it.
+    """
+    platform = soc.platform
+    platform.add_extension(_mcp_io)
+
+    soc.aux_spi = AuxSPIMaster(
+        pads                 = platform.request("aux_spi"),
+        platform             = platform,
+        sys_clk_freq         = soc.sys_clk_freq,
+        default_spi_clk_freq = int(iox_spi_clk_freq),
+    )
+    soc.add_csr("aux_spi")
+
+    ctrl = platform.request("iox_ctrl")
+    soc.iox_reset = GPIOOut(ctrl.reset_n)        # write 0 = assert reset, 1 = release
+    soc.iox_inta  = GPIOIn(ctrl.inta, with_irq=True)
+    soc.add_csr("iox_reset")
+    soc.add_csr("iox_inta")
+    soc.irq.add("iox_inta", use_loc_if_exists=True)
+
+    soc.add_constant("IOX_SPI_DEFAULT_FREQUENCY", int(iox_spi_clk_freq))
+    soc.add_constant("AUX_CS_IMU", AUX_CS_IMU)
+    soc.add_constant("AUX_CS_MCP", AUX_CS_MCP)   # MCP3008 ADC, NOT the expander
+    soc.add_constant("AUX_CS_IOX", AUX_CS_IOX)   # MCP23S17 GPIO expander
+
+    if busy_led is not None:
+        # Sanity LED: lit while an aux-bus SPI transfer is in flight.
+        try:
+            soc.comb += platform.request("user_led", busy_led).eq(soc.aux_spi.busy)
+        except Exception:
+            pass
+
+
+# GPA7 loopback test fixture (expander bring-up only) ---------------------------------------------
+# IO24 / L1 (the freed WINC IRQ pin) is wired on the bench to the MCP23S17's
+# GPA7. Exposed as a tristate GPIO so firmware can drive BOTH directions of a
+# closed-loop test through the expander's real GPIO silicon:
+#   - expander GPA7 = output -> FPGA reads IO24      (proves the expander drives pins)
+#   - FPGA drives IO24       -> expander reads GPA7   (proves expander input + SPI read)
+# This is a bench fixture, not part of the expander interface -- drop the adder
+# once the expander is verified. CSR accessors:
+#   gpa7_loop_oe_write / gpa7_loop_out_write / gpa7_loop_in_read.
+_gpa7_loop_io = [
+    ("gpa7_loop", 0, Pins("L1"), IOStandard("LVCMOS33")),   # IO24 <-> MCP23S17 GPA7
+]
+
+
+def add_gpa7_loopback(soc):
+    """Tristate GPIO on IO24/L1 for the MCP23S17 GPA7 bench loopback test."""
+    soc.platform.add_extension(_gpa7_loop_io)
+    soc.gpa7_loop = GPIOTristate(soc.platform.request("gpa7_loop"))
+    soc.add_csr("gpa7_loop")
+
+
 # Boot control: sticky boot-request flag + FTDI sideband reset/sense -------------------------------
 # FT231X DTR# -> L15, RTS# -> L16 (plain FPGA IO, active low). esptool-style
 # cross-conditions -- both-asserted MUST be idle because the OS asserts both
@@ -254,6 +411,233 @@ class BootCtl(LiteXModule, AutoCSR):
         self.comb += self.reset_request.eq(combo & armed & (count == stable))
 
 
+# ESP32-C3 SPI flash-loader link ------------------------------------------------------------------
+# Dedicated SPI bus where the FPGA is the SLAVE and the ESP32-C3 (master) streams
+# flash erase/program/verify commands -- the post-WINC loader transport (see
+# docs/c3_loader.md and gateware/spi_slave.py). All pins were freed by the WINC
+# removal and are fully separate from the aux bus (IMU/MCP), so no contention.
+#   SCLK=IO27/P3  MOSI=IO24/L1  MISO=IO23/M2  CS#=IO12/J3   (C3 drives all but MISO)
+#   READY=IO4/R1  -- FPGA->C3 BUSY/READY flow-control (the C3's "GPIO10").
+_c3_io = [
+    ("c3_spi", 0,
+        # Pull-downs on the clocked inputs so a marginal/open contact reads LOW
+        # (no spurious edges -> no rx flood) instead of floating and spewing
+        # noise; CS pulls UP so a floating CS reads deasserted. Real drive from
+        # the C3 overrides these weak pulls.
+        Subsignal("sclk",  Pins("P3"), Misc("PULLMODE=DOWN")),  # IO27 <- C3 SCLK
+        Subsignal("mosi",  Pins("L1"), Misc("PULLMODE=DOWN")),  # IO24 <- C3 MOSI
+        Subsignal("miso",  Pins("M2")),                         # IO23 -> C3 MISO
+        Subsignal("cs_n",  Pins("J3"), Misc("PULLMODE=UP")),    # IO12 <- C3 CS# (idle high)
+        Subsignal("ready", Pins("R1")),                         # IO4  -> C3 BUSY/READY
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_c3_loader(soc):
+    """ESP32-C3 SPI flash-loader link: the FPGA is the SPI SLAVE.
+
+    Instantiates the SPISlave transport core (gateware/spi_slave.py) on the
+    dedicated C3 bus. Firmware drains its RX FIFO, parses the C3 command stream,
+    and drives the LiteSPI master to program flash -- so the caller must build
+    BaseSoC with with_spi_flash=True + flash_master=True. The READY pad (IO4) is
+    firmware-driven flow-control. No SDRAM dependency (the C3 stages the image).
+    """
+    platform = soc.platform
+    platform.add_extension(_c3_io)
+    soc.c3 = SPISlave(platform.request("c3_spi"))
+    soc.add_csr("c3")
+
+
+# C3 link bring-up diagnostic ---------------------------------------------------------------------
+# The SPI link to the ESP32-C3 has "never worked" despite both sides looking
+# healthy. This strips the link down to raw bidirectional GPIO on the *exact same
+# five balls* as the c3 SPI bus (no shift register, no clock domain, no protocol)
+# so firmware can drive any pin to any level and read any pin's actual voltage.
+# It isolates wiring / pin damage (the 5V incident) / strapping-pin conflicts from
+# SPI timing + protocol. Pins MUST match add_c3_loader's _c3_io exactly.
+#   bit0=SCLK/P3  bit1=MOSI/L1  bit2=MISO/M2  bit3=CS#/J3  bit4=READY/R1
+# No pull Misc() here on purpose: a diag must see the *undriven* level (float/short)
+# without a weak pull masking it. Real drive from either end still dominates.
+_c3_diag_io = [
+    ("c3_diag", 0,
+        Subsignal("pins", Pins("P3 L1 M2 J3 R1")),
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_c3_diag(soc):
+    """Raw 5-bit tristate GPIO on the C3 SPI balls -- link continuity diagnostic.
+
+    LiteX GPIOTristate exposes per-pin CSRs the firmware drives directly:
+      c3diag_oe_write(mask)   1 = drive that pin (output), 0 = high-Z input.
+      c3diag_out_write(mask)  output level per pin (when oe bit set).
+      c3diag_in_read()        live readback of every pin's actual level.
+    Bit order matches _c3_diag_io: 0=SCLK 1=MOSI 2=MISO 3=CS# 4=READY.
+    """
+    platform = soc.platform
+    platform.add_extension(_c3_diag_io)
+    soc.c3diag = GPIOTristate(platform.request("c3_diag").pins)
+    soc.add_csr("c3diag")
+
+
+# C3 link via SPIBone (verified Wishbone-over-SPI bridge) -----------------------------------------
+# Post-diagnostic direction: the raw-GPIO diag (add_c3_diag) proved all 5 wires
+# are electrically perfect both ways, so the "never worked" bug was in the custom
+# SPISlave stack -- we replace that whole stack (custom slave + PING/ERASE/PROGRAM
+# command protocol + READY pin) with LiteX's maintained SPIBone bridge (the core
+# wishbone-tool speaks). The ESP32-C3 becomes a Wishbone master and reads/writes
+# the SoC bus directly. 4-wire, CPOL0/CPHA0, big-endian, MSB-first; SCLK must be
+# <= sys/4 (~12.5 MHz at 50 MHz sys). Same four balls as the c3 SPI bus; the READY
+# pad (R1/IO4) is no longer needed (SPIBone signals busy in-band on MISO).
+#   SCLK=P3/IO27  MOSI=L1/IO24  MISO=M2/IO23  CS#=J3/IO12   (C3 is the master)
+_c3_spibone_io = [
+    ("c3_spibone", 0,
+        Subsignal("clk",  Pins("P3")),   # IO27 <- C3 SCLK
+        Subsignal("mosi", Pins("L1")),   # IO24 <- C3 MOSI
+        Subsignal("miso", Pins("M2")),   # IO23 -> C3 MISO (driven only while CS# low)
+        Subsignal("cs_n", Pins("J3")),   # IO12 <- C3 CS# (active low)
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_c3_spibone(soc):
+    """ESP32-C3 link as a Wishbone master via the verified SPIBone bridge.
+
+    The C3 (SPI master) can then read/write the whole SoC bus -- CSRs, RAM, and
+    (once flash_master is enabled) the LiteSPI master registers to program flash
+    -- with no custom slave gateware and no command protocol. Added as a bus
+    master; LiteX inserts an arbiter so it coexists with the CPU.
+    """
+    platform = soc.platform
+    platform.add_extension(_c3_spibone_io)
+    soc.c3_spibone = SPIBone(platform.request("c3_spibone"), wires=4)
+    soc.bus.add_master(name="c3_spibone", master=soc.c3_spibone.bus)
+
+
+# C3 link UART echo -- transport sanity check (is it SPI-specific, or dead?) -----------------------
+# Two independent, well-tested SPI implementations (custom SPISlave + LiteX
+# SPIBone) both failed with "MISO returns 00", while the raw-GPIO diag proved
+# every wire good both ways. This tests a totally different protocol -- async
+# UART -- with none of SPI's traps (no CS, no clock phase, no MISO tristate, no
+# bus-master framing). Pure-gateware echo (RX stream -> FIFO -> TX stream): no
+# CPU, no firmware. If bytes echo, the channel + a real protocol work and the bug
+# is SPI-specific; if not, something deeper is wrong.
+#
+# Reuses the existing MOSI/MISO wires as the UART pair (NO rewiring):
+#   RX = L1/IO24  <- C3 TX (GPIO1, the old MOSI wire)
+#   TX = M2/IO23  -> C3 RX (GPIO3, the old MISO wire)
+# RX pulls UP so it idles high (UART idle) before the C3 drives it -> no boot glitch.
+_c3_uart_io = [
+    ("c3_uart", 0,
+        Subsignal("rx", Pins("L1"), Misc("PULLMODE=UP")),  # <- C3 TX (GPIO1)
+        Subsignal("tx", Pins("M2")),                       # -> C3 RX (GPIO3)
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_c3_uart_echo(soc, baudrate=115200):
+    """Pure-gateware UART loopback on the C3 link (no CPU/firmware).
+
+    Instantiates an RS232 PHY on the reused MOSI/MISO wires and echoes every
+    received byte straight back through a small FIFO. The ESP32-C3 sends bytes on
+    its UART and checks they come back -- a transport sanity test independent of
+    the (twice-failed) SPI path.
+    """
+    from litex.soc.cores.uart import RS232PHY
+    from litex.soc.interconnect import stream
+    soc.platform.add_extension(_c3_uart_io)
+    pads = soc.platform.request("c3_uart")
+    soc.submodules.c3_uart_phy = phy = RS232PHY(pads, soc.sys_clk_freq, baudrate)
+    soc.submodules.c3_uart_fifo = fifo = stream.SyncFIFO([("data", 8)], 16)
+    soc.comb += [
+        phy.source.connect(fifo.sink),   # RX -> FIFO
+        fifo.source.connect(phy.sink),   # FIFO -> TX  (echo)
+    ]
+
+
+# C3 link via UARTBone (verified Wishbone-over-UART bridge) ----------------------------------------
+# The async twin of add_c3_spibone: LiteX's UARTBone is the most battle-tested
+# transport in the tree (it's how litex_server/wishbone-tool talk over serial).
+# After BOTH SPI paths failed with "MISO returns 00", this makes the ESP32-C3 a
+# Wishbone master over plain UART -- no CS, no clock phase, no tristate, no
+# firmware. Same loader goal (C3 -> WB master -> flash) on a non-SPI transport.
+#
+# Reuses the MOSI/MISO wires as the UART pair (NO rewiring), same as the echo:
+#   rx = L1/IO24 <- C3 TX (GPIO1)     tx = M2/IO23 -> C3 RX (GPIO3)
+# Protocol (software/c3_uartbone_esp mirrors it), all over 8N1 UART:
+#   READ : 0x02, len(words), addr[WORD, big-endian] ; FPGA returns len*4 data bytes (BE).
+#   WRITE: 0x01, len(words), addr[WORD, big-endian], data[4 BE per word] ; no reply.
+# NOTE the address is a *word* address (byte_addr >> 2) -- Stream2Wishbone drives
+# wishbone.adr directly (unlike SPIBone, which shifted internally).
+_c3_uartbone_io = [
+    ("c3_uartbone", 0,
+        Subsignal("rx", Pins("L1"), Misc("PULLMODE=UP")),  # <- C3 TX (GPIO1)
+        Subsignal("tx", Pins("M2")),                       # -> C3 RX (GPIO3)
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_c3_uartbone(soc, baudrate=115200):
+    """ESP32-C3 as a Wishbone master via the verified UARTBone bridge (no firmware)."""
+    soc.platform.add_extension(_c3_uartbone_io)
+    soc.add_uartbone(name="c3_uartbone", uart_name="c3_uartbone", baudrate=baudrate)
+
+
+def add_c3_uart_beacon(soc, baudrate=1200):
+    """One-way UART beacon: FPGA continuously transmits an incrementing byte on M2.
+
+    Direction-isolation test. Every C3->FPGA transport has failed identically
+    (FPGA never acts on what the C3 sends); this tests the OTHER direction alone.
+    No RX, no CPU, no firmware -- if the C3 (listening on GPIO3, proven good)
+    sees a clean 00,01,02,... stream, then FPGA->C3 works and the fault is the
+    C3->FPGA direction. Reuses the same M2/L1 pads as the echo (tx=M2 used; rx
+    drained). See software/c3_uart_listen_esp.
+    """
+    from litex.soc.cores.uart import RS232PHY
+    soc.platform.add_extension(_c3_uart_io)
+    pads = soc.platform.request("c3_uart")
+    soc.submodules.c3_uart_phy = phy = RS232PHY(pads, soc.sys_clk_freq, baudrate)
+    counter = Signal(8)
+    soc.comb += [
+        phy.sink.valid.eq(1),            # always have a byte to send
+        phy.sink.data.eq(counter),
+        phy.source.ready.eq(1),          # drain RX (unused)
+    ]
+    soc.sync += If(phy.sink.valid & phy.sink.ready, counter.eq(counter + 1))
+
+
+def add_c3_uart_rxreport(soc, baudrate=1200):
+    """RX-report: FPGA reflects the last byte it received on L1 back out M2.
+
+    The beacon proved FPGA->C3 works; this gives us eyes on the RECEIVE side
+    (C3->FPGA on L1), the direction every transport failed on. The FPGA captures
+    each byte arriving on its RX and continuously re-transmits that last byte on
+    TX (the proven-good M2->C3 path). No CPU/firmware. The C3 sends a known value
+    and checks what comes back:
+      reflects the sent value  -> FPGA IS receiving on L1 correctly (link fine;
+                                  bug was in protocol framing).
+      reflects 0x00 forever    -> FPGA receives nothing on L1 (dead RX pin/input).
+      reflects garbage         -> receiving, but mis-framed (baud/clock issue).
+    """
+    from litex.soc.cores.uart import RS232PHY
+    soc.platform.add_extension(_c3_uart_io)
+    pads = soc.platform.request("c3_uart")
+    soc.submodules.c3_uart_phy = phy = RS232PHY(pads, soc.sys_clk_freq, baudrate)
+    last_byte = Signal(8)
+    soc.comb += [
+        phy.source.ready.eq(1),          # accept every received byte
+        phy.sink.valid.eq(1),            # always transmitting
+        phy.sink.data.eq(last_byte),     # ...the last byte we received
+    ]
+    soc.sync += If(phy.source.valid & phy.source.ready,
+                   last_byte.eq(phy.source.data))
+
+
 def add_boot_ctl(soc):
     """Sticky boot flag + FTDI DTR/RTS host reset + level sense."""
     soc.platform.add_extension(_ftdi_io)
@@ -267,3 +651,105 @@ def add_boot_ctl(soc):
     # bit0 = dtr_n, bit1 = rts_n: the loader's "stay in loader" level + wiring check.
     soc.ftdi_sense = GPIOIn(Cat(pads.dtr_n, pads.rts_n))
     soc.add_csr("ftdi_sense")
+
+
+# NMEA GPS UART ------------------------------------------------------------------------------------
+# A second hardware UART for an NMEA GPS module (the logger's position source;
+# fixes become IMU_REC_GPS records on the same timer0 timebase as the IMU). The
+# module's own TX is on IO5 (E1) and its RX on IO11 (G2), so from the FPGA side
+# rx=E1 (we receive the module's NMEA stream) and tx=G2 (we transmit, e.g. UBX
+# config). Pins are free: the LCD/aux/SD blocks don't touch E1 or G2.
+#
+# Most NMEA modules power up at 9600 8N1; override via add_gps_uart(baudrate=).
+# add_uart wires a full CSR UART named "gps" (gps_rxtx / gps_rxempty / gps_txfull
+# + an ev IRQ), so firmware reads it independently of the console "serial" UART.
+_gps_io = [
+    ("gps_serial", 0,
+        Subsignal("tx", Pins("G2")),   # IO11 -> GPS RX  (FPGA transmits)
+        Subsignal("rx", Pins("E1")),   # IO5  <- GPS TX  (FPGA receives)
+        IOStandard("LVCMOS33"),
+    ),
+]
+
+
+def add_gps_uart(soc, baudrate=9600):
+    """Second hardware UART (CSR + IRQ) for an NMEA GPS on IO5(rx)/IO11(tx)."""
+    soc.platform.add_extension(_gps_io)
+    soc.add_uart(name="gps", uart_name="gps_serial", baudrate=baudrate)
+    soc.add_constant("GPS_UART_BAUDRATE", baudrate)
+
+
+# Logic analyzer -----------------------------------------------------------------------------------
+# A 3.3 V logic analyzer that captures into an SDRAM ring (gateware/logic_analyzer.py).
+# It coexists with the mandatory WINC aux bus: the probe pins are all OUTSIDE that
+# bus, so capturing can't disturb WiFi flashing. The IMU (cs[1]) and MCP3008 (cs[2])
+# stay parked-deasserted on the aux bus exactly as in any WINC build.
+#
+# The 18 probe channels are the GPIO-bank pins that are free once the LCD/touch
+# module is unplugged (see docs/icepi_zero_pin_mapping.md + docs/logic_analyzer.md).
+# Bit order below == channel index (bit0..bit17); host channel labels follow it.
+#   ch:  0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17
+#   IO:  1    4    5    7    9   10   11   12   13   14   15   16   17   18   19   21   26   27
+#  pin: K3   R1   E1   G1   J1   L2   G2   J3   E3   P1   N1   H3   R3   N4   E4   F2   D4   P3
+#
+# All channels get an internal pull-DOWN: unconnected probes idle low (clean LA
+# trace), AND it powers the LCD-present guard -- the FT6336U touch I2C lines
+# (ch10/IO15 = CTP_SCL, ch13/IO18 = CTP_SDA) carry on-module pull-ups, so if the
+# module is still attached those two channels read HIGH against our pull-down.
+# guard_mask = (1<<10)|(1<<13) = 0x2400; firmware refuses to arm if it trips.
+#
+# P1/IO14 is the LCD backlight pin: the LA top MUST build BaseSoC with
+# force_lcd_backlight_off=False so this block can own P1 as a probe channel.
+_la_io = [
+    ("la_probe", 0,
+        Pins("K3 R1 E1 G1 J1 L2 G2 J3 E3 P1 N1 H3 R3 N4 E4 F2 D4 P3"),
+        IOStandard("LVCMOS33"), Misc("PULLMODE=DOWN")),
+]
+
+LA_N_CHANNELS = 18
+LA_GUARD_MASK = (1 << 10) | (1 << 13)   # ch10 (IO15/CTP_SCL) + ch13 (IO18/CTP_SDA)
+
+
+def add_logic_analyzer(soc, n_channels=LA_N_CHANNELS, guard_mask=LA_GUARD_MASK,
+                       fifo_depth=512):
+    """SDRAM-streaming 3.3 V logic analyzer on the freed GPIO-bank pins.
+
+    Caller contract: BaseSoC must be built with force_lcd_backlight_off=False
+    (this block owns P1/IO14 as a probe channel). The capture core takes a
+    dedicated native SDRAM write port, like the SNN's read port -- it streams
+    samples straight to DRAM bandwidth, independent of the CPU Wishbone path.
+    """
+    platform = soc.platform
+    platform.add_extension(_la_io)
+    probe = platform.request("la_probe")
+
+    port = soc.sdram.crossbar.get_port(mode="write", data_width=32)
+    soc.la = LogicAnalyzer(port, probe, n_channels=n_channels,
+                           guard_mask=guard_mask, fifo_depth=fifo_depth)
+    soc.add_csr("la")
+
+    soc.add_constant("LA_N_CHANNELS", n_channels)
+    soc.add_constant("LA_GUARD_MASK", guard_mask)
+
+
+# Deployable baseline ------------------------------------------------------------------------------
+# The shared aux SPI bus + the boot-manager flag/reset: the common machinery
+# every DEPLOYABLE top composes. The IMU (cs[1]) and MCP3008 (cs[2]) ride the
+# aux bus for free, so a logger needs no extra SPI block.
+#
+# NOTE (post-WINC, 2026-06-28): the ATWINC1500 was removed (smoked); this no
+# longer instantiates the WINC sidebands, and flash.py's WiFi OTA path is dark
+# until the ESP32-C3 loader (on separate free SPI pins) lands. Until then, load
+# over UART (litex_term --kernel) or bit-banged JTAG. The aux bus cs[0] (old
+# WINC line) parks unused. with_spi_flash=True + flash_master=True (XIP BIOS +
+# LiteSPI master) is still the deployment shape so the flash slot map survives
+# for the eventual C3 OTA. See docs/boot_chain.md and the winc-archive branch.
+#
+# Caller contract: construct BaseSoC with with_spi_flash=True and
+# flash_master=True; this adds the aux bus + boot_ctl. busy_led mirrors aux-bus
+# traffic -- pass an LED index NOT used by another block (the SNN takes 0,1, so
+# pass 2 in builds that include the SNN).
+def add_flashing_baseline(soc, aux_spi_clk_freq=12.5e6, busy_led=0):
+    """Aux SPI bus (IMU cs[1] / MCP3008 cs[2]) + boot_ctl: baseline for deployables."""
+    add_aux_imu(soc, imu_spi_clk_freq=aux_spi_clk_freq, busy_led=busy_led)
+    add_boot_ctl(soc)

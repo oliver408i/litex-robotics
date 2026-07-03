@@ -26,10 +26,8 @@ include $(SOC_DIRECTORY)/software/common.mak
 LVGL_DIR   := ../lvgl
 LVGL_BUILD := lvgl_build
 
-# Pull in every C file under lvgl/src/ except:
-#  - drivers/   : HW-specific display/input drivers (SDL, FBDEV, ...); we
-#                 write our own glue in this demo.
-#  - vg_lite_*  : Vivante GPU bindings - headers not vendored.
+# Pull in every C file under lvgl/src/ except HW drivers (we glue our own) and
+# the Vivante GPU bindings (headers not vendored).
 LVGL_SRCS := $(shell find $(LVGL_DIR)/src -name '*.c' \
               -not -path '*/drivers/*' \
               -not -path '*/vg_lite_tvg/*' \
@@ -38,39 +36,47 @@ LVGL_OBJS := $(patsubst $(LVGL_DIR)/src/%.c,$(LVGL_BUILD)/%.o,$(LVGL_SRCS))
 
 CFLAGS += -I$(LVGL_DIR) -I$(LVGL_DIR)/src -I. -DLV_CONF_INCLUDE_SIMPLE
 
-# Shared firmware modules: LCD bring-up, HW I2C / FT6336U, UART log.
+# Shared firmware modules: LCD bring-up, HW I2C / FT6336U, UART log, aux ADC
+# (MCP3008 power), LSM6DS3 IMU + FatFs logger, NMEA GPS reader.
 COMMON_DIR := ../common
 CFLAGS    += -I$(COMMON_DIR)
-COMMON_OBJS = lcd.o touch.o log.o adc.o power.o lsm6ds3.o imu_log.o
+COMMON_OBJS = lcd.o touch.o log.o adc.o power.o lsm6ds3.o imu_log.o gps_nmea.o
 
-# IMU logger pulls in FatFs (libfatfs) + the SD card driver (liblitesdcard);
-# add their header dirs. The libraries themselves link automatically via
-# PACKAGES once the SoC is built with the SD core (icepi_zero_all w/o --no-sdcard).
+# FatFs (libfatfs) + SD card driver (liblitesdcard) header dirs. The libraries
+# link automatically via PACKAGES once the SoC is built with the SD core.
 CFLAGS += -I$(LIBFATFS_DIRECTORY) -I$(LIBLITESDCARD_DIRECTORY)
 
-# Shared aux SPI bus HAL lives in winc_test/ (reused here for the MCP3008 power
-# ADC + LSM6DS3 IMU, the same way winc_loader reuses it). Pull in its header dir
-# and build aux_spi.o via the VPATH addition below. Requires a SoC that exposes
-# the aux bus, i.e. build the gateware from icepi_zero_all.py (add_winc_aux).
+# Shared aux SPI bus HAL lives in winc_test/ (reused for the MCP3008 power ADC +
+# LSM6DS3 IMU). Pull in its header dir; aux_spi.o is built from source below.
 WINC_DIR := ../winc_test
 CFLAGS   += -I$(WINC_DIR)
 AUX_OBJS  = aux_spi.o
+
 # LVGL doesn't satisfy LiteX's stricter warning set; relax those without
 # silencing real bugs.
 CFLAGS += -Wno-strict-prototypes -Wno-old-style-definition -Wno-missing-prototypes
 # Help the linker drop the large slice of LVGL we don't reference.
 CFLAGS += -ffunction-sections -fdata-sections
 
-# Debug HUD: the on-screen FPS box (bottom-right) + memory box (bottom-left).
-# Off by default so shipping builds are clean. Re-enable for bring-up with:
-#   make DEBUG_HUD=1
-ifdef DEBUG_HUD
-CFLAGS += -DMNIST_DEBUG_HUD
+# Touch bring-up diagnostic: log what the FT6336U reports to the UART console.
+# Off by default. Enable with: make TOUCH_DEBUG=1
+ifdef TOUCH_DEBUG
+CFLAGS += -DTOUCH_DEBUG
+endif
+
+# IMU/SD logger bring-up breadcrumbs (localizes a blocking SD init). make IMU_LOG_DEBUG=1
+ifdef IMU_LOG_DEBUG
+CFLAGS += -DIMU_LOG_DEBUG
+endif
+
+# GPS: log failed-checksum sentences (corruption vs logic). make GPS_DEBUG=1
+ifdef GPS_DEBUG
+CFLAGS += -DGPS_DEBUG
 endif
 
 OBJECTS = main.o crt0.o $(COMMON_OBJS) $(AUX_OBJS)
 
-all: mnist_lcd_demo.bin
+all: imu_logger.bin
 
 %.bin: %.elf
 	$(OBJCOPY) -O binary $< $@
@@ -80,7 +86,7 @@ endif
 
 vpath %.a $(PACKAGES:%=$(BUILD_DIR)/software/%)
 
-mnist_lcd_demo.elf: $(OBJECTS) $(LVGL_OBJS)
+imu_logger.elf: $(OBJECTS) $(LVGL_OBJS)
 	$(CC) $(LDFLAGS) -T linker.ld -N -o $@ \
 		$(OBJECTS) $(LVGL_OBJS) \
 		$(PACKAGES:%=-L$(BUILD_DIR)/software/%) \
@@ -102,13 +108,10 @@ VPATH = $(BIOS_DIRECTORY):$(CPU_DIRECTORY):$(COMMON_DIR)
 	$(compile)
 
 # aux_spi.c lives in winc_test/. Build it into a LOCAL object from source --
-# don't put winc_test on VPATH, or make would pick up winc_test's prebuilt
-# aux_spi.o (compiled against a different SoC's csr.h, and unresolvable by the
-# linker under its bare name). Explicit rule => compiled fresh against our
-# generated headers.
-# aux_spi.c calls printf() on its timeout path but leaves the declaration to
-# its includer (winc_test force-includes a prelude that provides it). Force
-# <stdio.h> for just this object so the shared source stays untouched.
+# don't put winc_test on VPATH, or make would pick up its prebuilt aux_spi.o
+# (compiled against a different SoC's csr.h). aux_spi.c calls printf() on its
+# timeout path but leaves the declaration to its includer; force <stdio.h> for
+# just this object so the shared source stays untouched.
 aux_spi.o: CFLAGS += -include stdio.h
 aux_spi.o: $(WINC_DIR)/aux_spi.c
 	$(compile)
@@ -121,7 +124,7 @@ $(LVGL_BUILD)/%.o: $(LVGL_DIR)/src/%.c
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 clean:
-	$(RM) $(OBJECTS) mnist_lcd_demo.elf mnist_lcd_demo.bin mnist_lcd_demo.elf.map .*~ *~
+	$(RM) $(OBJECTS) imu_logger.elf imu_logger.bin imu_logger.elf.map .*~ *~
 	$(RM) -r $(LVGL_BUILD)
 
 .PHONY: all clean

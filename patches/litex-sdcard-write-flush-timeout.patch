@@ -1,0 +1,111 @@
+diff --git a/litex/soc/software/liblitesdcard/sdcard.c b/litex/soc/software/liblitesdcard/sdcard.c
+index ccd795590..f5b0a7b47 100644
+--- a/litex/soc/software/liblitesdcard/sdcard.c
++++ b/litex/soc/software/liblitesdcard/sdcard.c
+@@ -46,11 +46,16 @@ int sdcard_wait_cmd_done(void) {
+ 	uint32_t r[SD_CMD_RESPONSE_SIZE/4];
+ 	printf("cmdevt: wait for event & 0x1\n");
+ #endif
++	unsigned int cmd_to = 200000;   /* ~2 s @ 10 us/iter; bound so a stalled cmd can't hang */
+ 	for (;;) {
+ 		event = sdcard_core_cmd_event_read();
+ 		busy_wait_us(10);
+ 		if (event & 0x1)
+ 			break;
++		if (--cmd_to == 0) {
++			printf("sdcard: CMD wait TIMEOUT evt=0x%08x\n", event);
++			return SD_TIMEOUT;
++		}
+ 	}
+ #ifdef SDCARD_DEBUG
+ 	printf("cmdevt: %08x\n", event);
+@@ -70,10 +75,15 @@ int sdcard_wait_data_done(void) {
+ #ifdef SDCARD_DEBUG
+ 	printf("dataevt: wait for event & 0x1\n");
+ #endif
++	unsigned int data_to = 200000;   /* ~2 s @ 10 us/iter; bound so a stalled data phase can't hang */
+ 	for (;;) {
+ 		event = sdcard_core_data_event_read();
+ 		if (event & 0x1)
+ 			break;
++		if (--data_to == 0) {
++			printf("sdcard: DATA wait TIMEOUT evt=0x%08x\n", event);
++			return SD_TIMEOUT;
++		}
+ 		busy_wait_us(10);
+ 	}
+ #ifdef SDCARD_DEBUG
+@@ -515,6 +525,14 @@ void sdcard_read(uint32_t block, uint32_t count, uint8_t* buf)
+ 
+ void sdcard_write(uint32_t block, uint32_t count, uint8_t* buf)
+ {
++#ifndef CONFIG_CPU_HAS_DMA_BUS
++	/* Push dirty CPU writes out to physical SDRAM BEFORE the DMA runs: the
++	 * mem2block DMA reads buf via a native LiteDRAM port that BYPASSES the L2,
++	 * so without this it reads stale data (silent corruption). This mirrors the
++	 * read path's post-DMA flush; the upstream write path omits it. */
++	flush_cpu_dcache();
++	flush_l2_cache();
++#endif
+ 	while (count) {
+ 		uint32_t nblocks;
+ #ifdef SDCARD_CMD25_SUPPORT
+@@ -541,8 +559,16 @@ void sdcard_write(uint32_t block, uint32_t count, uint8_t* buf)
+ 		if (nblocks > 1)
+ 			sdcard_stop_transmission();
+ 
+-		/* Wait for DMA Reader to complete */
+-		while ((sdcard_mem2block_dma_done_read() & 0x1) == 0);
++		/* Wait for DMA Reader to complete -- BOUNDED so a stalled write can't
++		 * wedge the whole (single-threaded) system. Bare spin, no busy_wait():
++		 * busy_wait reloads timer0, which an LVGL app uses as its tick. */
++		unsigned int timeout = 1u << 24;   /* ~1-2 s @ 50 MHz; a 512 B block is sub-ms */
++		while ((sdcard_mem2block_dma_done_read() & 0x1) == 0) {
++			if (--timeout == 0) {
++				printf("sdcard_write: mem2block DMA timeout @ block %" PRIu32 "\n", block);
++				break;
++			}
++		}
+ 
+ 		/* Update Block/Buffer/Count */
+ 		block += nblocks;
+@@ -575,10 +601,39 @@ static DRESULT sd_disk_read(BYTE drv, BYTE *buf, LBA_t block, UINT count) {
+ 	return RES_OK;
+ }
+ 
++#ifdef CSR_SDCARD_MEM2BLOCK_DMA_BASE_ADDR
++/* The upstream native-SDCard DISKOPS wires up only read -- so FatFs f_write/
++ * f_sync call through NULL disk_write/disk_ioctl pointers and the SoC hangs.
++ * Wire the write path (sdcard_write) + a minimal ioctl. CTRL_SYNC is the one
++ * f_sync needs; writes are already synchronous (sdcard_write waits for the
++ * block + DMA to complete), so SYNC is a no-op. */
++static DRESULT sd_disk_write(BYTE drv, const BYTE *buf, LBA_t block, UINT count) {
++	if (drv) return RES_PARERR;
++	sdcard_write(block, count, (uint8_t *)(uintptr_t) buf);
++	return RES_OK;
++}
++
++static DRESULT sd_disk_ioctl(BYTE drv, BYTE cmd, void *buf) {
++	if (drv) return RES_PARERR;
++	switch (cmd) {
++	case CTRL_SYNC:       return RES_OK;   /* sdcard_write is synchronous */
++	case GET_BLOCK_SIZE:  *(DWORD *)buf = 1; return RES_OK;
++	case CTRL_TRIM:       return RES_OK;
++	/* GET_SECTOR_SIZE is compiled out (FF_MIN_SS == FF_MAX_SS). GET_SECTOR_COUNT
++	 * is only needed by f_mkfs/f_fdisk, which the logger never calls. */
++	default:              return RES_PARERR;
++	}
++}
++#endif
++
+ static DISKOPS SdCardDiskOps = {
+ 	.disk_initialize = sd_disk_initialize,
+ 	.disk_status = sd_disk_status,
+ 	.disk_read = sd_disk_read,
++#ifdef CSR_SDCARD_MEM2BLOCK_DMA_BASE_ADDR
++	.disk_write = sd_disk_write,
++	.disk_ioctl = sd_disk_ioctl,
++#endif
+ };
+ 
+ void fatfs_set_ops_sdcard(void) {
