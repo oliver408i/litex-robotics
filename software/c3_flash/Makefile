@@ -28,7 +28,7 @@ CFLAGS += -I. -ffunction-sections -fdata-sections
 # everything unused).
 OBJECTS = main.o crt0.o flash_w25q.o
 
-all: c3_loader.bin
+all: c3_flash.bin
 
 %.bin: %.elf
 	$(OBJCOPY) -O binary $< $@
@@ -38,7 +38,7 @@ endif
 
 vpath %.a $(PACKAGES:%=$(BUILD_DIR)/software/%)
 
-c3_loader.elf: $(OBJECTS)
+c3_flash.elf: $(OBJECTS)
 	$(CC) $(LDFLAGS) -T linker.ld -N -o $@ \
 		$(OBJECTS) \
 		$(PACKAGES:%=-L$(BUILD_DIR)/software/%) \
@@ -62,6 +62,6 @@ vpath %.S $(BIOS_DIRECTORY):$(CPU_DIRECTORY)
 	$(assemble)
 
 clean:
-	$(RM) $(OBJECTS) c3_loader.elf c3_loader.bin c3_loader.elf.map .*~ *~
+	$(RM) $(OBJECTS) c3_flash.elf c3_flash.bin c3_flash.elf.map .*~ *~
 
 .PHONY: all clean

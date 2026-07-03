@@ -5,7 +5,7 @@
  * stack -- lives there (it is real, working memory, unlike the dead SDRAM). The
  * BIOS loads us to MAIN_RAM_BASE on serialboot and keeps its own stack at the top
  * of main_ram during the load, exactly as in any normal LiteX boot:
- *   litex_term ... --kernel c3_loader.bin        (default load addr = main_ram)
+ *   litex_term ... --kernel c3_flash.bin        (default load addr = main_ram)
  */
 INCLUDE generated/output_format.ld
 ENTRY(_start)

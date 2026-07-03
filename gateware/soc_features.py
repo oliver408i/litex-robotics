@@ -588,6 +588,32 @@ def add_c3_uartbone(soc, baudrate=115200):
     soc.add_uartbone(name="c3_uartbone", uart_name="c3_uartbone", baudrate=baudrate)
 
 
+def add_c3_mailbox(soc, origin=0x90000000, size=0x400):
+    """Dedicated on-chip RAM slave used as the C3<->firmware loader mailbox.
+
+    Both the SPIBone master (C3) and the CPU (loader firmware) access it as plain
+    memory -- no CSRs, no clobber risk (separate from main_ram where the firmware
+    keeps its stack/data). Layout is a convention shared by software/c3_flash
+    (FPGA side) and software/c3_flash_esp (C3 side):
+        +0x00 cmd (doorbell; 0=idle/done)  +0x04 arg0  +0x08 arg1
+        +0x0C status                       +0x10 result   +0x40.. data[256]
+    The C3 writes args+data then cmd last; the firmware processes, writes
+    result+status, then clears cmd to 0 to signal completion.
+
+    UNCACHED on purpose: it is shared between two bus masters (the CPU running the
+    firmware, and the SPIBone master driven by the C3). A cached region would let
+    the VexRiscv D-cache hold the firmware's writes so the C3 sees stale RAM (and
+    vice-versa). cached=False makes every access hit the real BRAM -> coherent.
+    LiteX only permits uncached regions inside the IO space, so it lives at
+    0x90000000 (the CPU treats IO-region accesses as uncached).
+    """
+    from litex.soc.interconnect.wishbone import SRAM
+    mailbox = SRAM(size)
+    soc.submodules.c3_mailbox = mailbox
+    soc.bus.add_slave("mailbox", mailbox.bus,
+                      SoCRegion(origin=origin, size=size, cached=False))
+
+
 def add_c3_uart_beacon(soc, baudrate=1200):
     """One-way UART beacon: FPGA continuously transmits an incrementing byte on M2.
 
