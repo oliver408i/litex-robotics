@@ -24,6 +24,7 @@
  * result+status, then writes cmd=0. C3 polls cmd==0, then reads status+result.
  */
 #include <stdint.h>
+#include <system.h>            /* flush_cpu_dcache() */
 #include <libbase/crc.h>
 #include <generated/csr.h>
 #include <generated/mem.h>
@@ -101,6 +102,10 @@ int main(void)
 			break;
 		}
 		case CMD_CRC:
+			/* Invalidate the D-cache first: a prior CRC pulled the old flash
+			 * contents into cache; without this the read-back verify returns
+			 * stale data and never sees what PROGRAM just wrote. */
+			flush_cpu_dcache();
 			result = crc32((const unsigned char *)(SPIFLASH_BASE + MBX(MBX_ARG0)),
 			               MBX(MBX_ARG1));
 			break;

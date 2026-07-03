@@ -40,6 +40,23 @@
 #define CMD_REBOOT   0x05
 #define ST_OK        0x00
 
+/* SAFE scratch sector for the self-test: 15 MB into the 16 MB W25Q128, far above
+ * the bitstream (0), BIOS (0x100000) and app slot (0x280000). This region IS
+ * erased/programmed -- pick something known-unused. */
+#define TEST_OFF     0x00F00000UL
+
+/* Match LiteX libbase crc32 exactly (init 0xFFFFFFFF, reflected 0xEDB88320,
+ * final XOR) so our expected CRC equals the firmware's read-back CRC. */
+static uint32_t crc32_c3(const uint8_t *msg, uint32_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < len; i++) {
+        crc ^= msg[i];
+        for (int j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
+    }
+    return ~crc;
+}
+
 SPIClass spi(FSPI);
 
 static inline void cs_lo() { digitalWrite(PIN_CS, LOW); }
@@ -123,22 +140,131 @@ void setup() {
     cs_hi();
     spi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
 
-    Serial.println("\n[c3] SPIBone flash loader -- Stage 1 PING");
-    Serial.printf("[c3] SPI @%lu Hz, mailbox @0x%08lX\n",
+    Serial.println("\n[c3] SPIBone flash loader");
+    Serial.printf("[c3] SPI @%lu Hz, mailbox @0x%08lX. cmds: 't'=self-test  'p'=ping"
+                  "  'W..'=host image stream (flash_c3.py)\n",
                   (unsigned long)SPI_HZ, (unsigned long)MBX_BASE);
 }
 
-void loop() {
+/* Run one mailbox command; print a labelled line; return the status (or <0). */
+static int step(const char *label, uint8_t op, uint32_t a0, uint32_t a1,
+                const uint8_t *data, uint32_t n, uint32_t *result) {
+    int st = mbx_cmd(op, a0, a1, data, n, result);
+    if (st < 0)       Serial.printf("[c3] %-8s LINK ERROR %d\n", label, st);
+    else if (st != ST_OK) Serial.printf("[c3] %-8s NAK status 0x%02X\n", label, st);
+    return st;
+}
+
+static void run_selftest() {
+    /* Sanity PING first. */
     uint32_t jedec = 0;
-    int st = mbx_cmd(CMD_PING, 0, 0, nullptr, 0, &jedec);
-    if (st < 0) {
-        Serial.printf("[c3] PING link error %d (mailbox/SPIBone)\n", st);
-    } else if (st != ST_OK) {
-        Serial.printf("[c3] PING status 0x%02X (firmware NAK)\n", st);
-    } else {
-        Serial.printf("[c3] PING ok -- flash JEDEC 0x%06lX  %s\n",
-                      (unsigned long)(jedec & 0xFFFFFF),
-                      (jedec & 0xFFFFFF) == 0xEF4018 ? "(W25Q128) CHAIN PROVEN!" : "(unexpected id)");
+    if (step("PING", CMD_PING, 0, 0, nullptr, 0, &jedec) != ST_OK) return;
+    Serial.printf("[c3] PING     ok, JEDEC 0x%06lX\n", (unsigned long)(jedec & 0xFFFFFF));
+
+    /* Build a known 256-byte page + its expected CRCs. */
+    uint8_t pat[256], ff[256];
+    for (int i = 0; i < 256; i++) { pat[i] = (uint8_t)(i * 7 + 0x11); ff[i] = 0xFF; }
+    uint32_t exp_pat = crc32_c3(pat, 256);
+    uint32_t exp_ff  = crc32_c3(ff,  256);
+
+    /* Show what's currently in the test sector (informational / safety). */
+    uint32_t crc_before = 0;
+    step("CRC-pre", CMD_CRC, TEST_OFF, 256, nullptr, 0, &crc_before);
+    Serial.printf("[c3] before   CRC 0x%08lX %s\n", (unsigned long)crc_before,
+                  crc_before == exp_ff ? "(already blank)" : "(has data -- will be erased)");
+
+    /* 1) ERASE the 4 KB sector. */
+    if (step("ERASE", CMD_ERASE, TEST_OFF, 0x1000, nullptr, 0, nullptr) != ST_OK) return;
+
+    /* 2) verify erased -> reads all 0xFF. */
+    uint32_t crc_erased = 0;
+    step("CRC-er", CMD_CRC, TEST_OFF, 256, nullptr, 0, &crc_erased);
+    bool erase_ok = (crc_erased == exp_ff);
+    Serial.printf("[c3] erased   CRC 0x%08lX exp 0x%08lX  %s\n",
+                  (unsigned long)crc_erased, (unsigned long)exp_ff, erase_ok ? "OK" : "FAIL");
+
+    /* 3) PROGRAM the page. */
+    if (step("PROGRAM", CMD_PROGRAM, TEST_OFF, 256, pat, 256, nullptr) != ST_OK) return;
+
+    /* 4) read-back verify: firmware CRCs the flash mmap; compare to expected. */
+    uint32_t crc_prog = 0;
+    step("CRC-pr", CMD_CRC, TEST_OFF, 256, nullptr, 0, &crc_prog);
+    bool prog_ok = (crc_prog == exp_pat);
+    Serial.printf("[c3] program  CRC 0x%08lX exp 0x%08lX  %s\n",
+                  (unsigned long)crc_prog, (unsigned long)exp_pat, prog_ok ? "OK" : "FAIL");
+
+    Serial.printf("\n[c3] === SELF-TEST %s === (erase+program+verify over SPIBone)\n",
+                  (erase_ok && prog_ok) ? "PASS" : "FAIL");
+}
+
+/* ---- Host image-streaming protocol (flash_c3.py) over USB-CDC -------------- */
+static uint32_t read_exact(uint8_t *buf, uint32_t n, uint32_t timeout_ms) {
+    uint32_t got = 0, t0 = millis();
+    while (got < n) {
+        if (Serial.available()) { buf[got++] = Serial.read(); t0 = millis(); }
+        else if (millis() - t0 > timeout_ms) break;
     }
-    delay(1000);
+    return got;
+}
+static uint32_t le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+/* Binary reply: status byte + read-back CRC (LE). NO text on the 'W' path --
+ * Serial IS the protocol channel here. */
+static void host_reply(uint8_t status, uint32_t crc) {
+    uint8_t r[5] = { status, (uint8_t)crc, (uint8_t)(crc >> 8),
+                     (uint8_t)(crc >> 16), (uint8_t)(crc >> 24) };
+    Serial.write(r, 5);
+}
+
+/* 'W' consumed; header = off:u32 LE, len:u32 LE, crc:u32 LE ; then len data bytes
+ * sent one 256-byte page at a time, PACED by a per-page ack so the C3's USB RX
+ * buffer never overflows while it pauses to program (that was the 0xE2 underrun).
+ * Wire sequence:
+ *   host -> W, header
+ *   C3   -> 1 ack byte after ERASE   (0x01 ok, else 0xE1)
+ *   loop: host -> one page ; C3 -> 1 ack byte (0x01 ok, 0xE2 rx, 0xE3 program)
+ *   C3   -> final status(1) + read-back crc(4)  (0x00 ok / 0x05 mismatch / 0xE4) */
+static void handle_host_flash() {
+    uint8_t hdr[12];
+    if (read_exact(hdr, 12, 2000) != 12) { Serial.write((uint8_t)0xE0); return; }
+    uint32_t off = le32(hdr), len = le32(hdr + 4), exp = le32(hdr + 8);
+
+    if (mbx_cmd(CMD_ERASE, off, len, nullptr, 0, nullptr) != ST_OK) { Serial.write((uint8_t)0xE1); return; }
+    Serial.write((uint8_t)0x01);                 /* erase done -- start sending pages */
+
+    uint8_t page[256];
+    for (uint32_t pos = 0; pos < len; ) {
+        uint32_t n = (len - pos < 256) ? (len - pos) : 256;
+        if (read_exact(page, n, 5000) != n)      { Serial.write((uint8_t)0xE2); return; }
+        if (mbx_cmd(CMD_PROGRAM, off + pos, n, page, n, nullptr) != ST_OK) { Serial.write((uint8_t)0xE3); return; }
+        pos += n;
+        Serial.write((uint8_t)0x01);             /* page programmed -- send next */
+    }
+
+    uint32_t rb = 0;
+    if (mbx_cmd(CMD_CRC, off, len, nullptr, 0, &rb) != ST_OK) { host_reply(0xE4, 0); return; }
+    host_reply(rb == exp ? 0x00 : 0x05, rb);
+}
+
+void loop() {
+    if (!Serial.available()) return;
+    int c = Serial.read();
+    switch (c) {
+    case 'W':                                  /* host image stream (binary) */
+        handle_host_flash();
+        break;
+    case 't': case 'T':
+        Serial.println("\n[c3] --- running self-test ---");
+        run_selftest();
+        break;
+    case 'p': case 'P': {
+        uint32_t j = 0;
+        int st = mbx_cmd(CMD_PING, 0, 0, nullptr, 0, &j);
+        Serial.printf("[c3] PING st=%d JEDEC 0x%06lX\n", st, (unsigned long)(j & 0xFFFFFF));
+        break;
+    }
+    default:                                   /* ignore stray bytes / newlines */
+        break;
+    }
 }
