@@ -27,6 +27,7 @@ from migen import *
 from litex.gen import *
 
 from litex_boards.platforms import icepi_zero
+from litex.build.io import DDROutput
 from litex.soc.cores.clock import ECP5PLL
 from litex.soc.integration.soc_core import SoCCore
 from litex.soc.integration.soc import SoCRegion
@@ -44,7 +45,7 @@ class _CRG(LiteXModule):
         self.user_rst = Signal()  # extra reset source (e.g. BootCtl's FTDI RTS reset)
         self.cd_sys      = ClockDomain()
         self.cd_sys2x    = ClockDomain()             # 2x sys: SDRAM PHY (HalfRateGENSDRPHY) lives here
-        self.cd_sys2x_ps = ClockDomain(reset_less=True)  # 2x sys, +90deg: drives the SDRAM clock pin
+        self.cd_sys2x_ps = ClockDomain(reset_less=True)  # 2x sys, phase-shifted: drives the SDRAM clock pin
         if spi_clk_freq is not None:
             self.cd_spi = ClockDomain()
 
@@ -57,14 +58,16 @@ class _CRG(LiteXModule):
 
         # PLL #1 -- core clocks. sys and sys2x MUST share one VCO so the half-rate
         # PHY's sys<->sys2x serdes sees an edge-aligned 2x clock. sys2x_ps is the
-        # same 2x clock shifted 90deg to sample the SDRAM in the middle of its
-        # data-valid window (this replaces the old cd_sdram).
+        # same 2x clock, phase-shifted, used to drive the SDRAM clock pin. 90deg
+        # is the "ideal" shift but litex-boards' own icepi_zero target found 180deg
+        # is what this board's half-rate SDRAM actually needs (their _CRG, same
+        # PHY/module) -- match it rather than the untested ideal.
         self.pll = pll = ECP5PLL()
         self.comb += pll.reset.eq(rst_comb)
         pll.register_clkin(clk50, 50e6)
         pll.create_clkout(self.cd_sys,      sys_clk_freq)
         pll.create_clkout(self.cd_sys2x,    2*sys_clk_freq)
-        pll.create_clkout(self.cd_sys2x_ps, 2*sys_clk_freq, phase=90)
+        pll.create_clkout(self.cd_sys2x_ps, 2*sys_clk_freq, phase=180)
 
         # PLL #2 -- LCD SPI clock. It's async-crossed (AsyncFIFO in lcd_engine), so
         # it needs no phase relationship to sys, and 185MHz can't share a VCO with
@@ -161,8 +164,14 @@ class BaseSoC(SoCCore):
             # without raising the CPU clock. The chip (W9825G6KH6 -6) is rated 166MHz,
             # so 2*sys=100MHz is comfortable.
             self.sdrphy = HalfRateGENSDRPHY(sdram_pads, sys_clk_freq)
-            # Drive the SDRAM clock pin from the 90deg-shifted 2x domain.
-            self.comb += platform.request("sdram_clock").eq(self.crg.cd_sys2x_ps.clk)
+            # Drive the SDRAM clock pin through a DDR output register (IO-cell
+            # primitive), not a bare comb assignment. A plain `.comb +=` routes
+            # the clock through general fabric to the pin with placement-dependent
+            # delay that nextpnr's STA doesn't check as a clock path -- timing
+            # reports clean while the real clock-to-DQ phase at the chip drifts
+            # build-to-build. This matches litex-boards' own icepi_zero target.
+            self.specials += DDROutput(1, 0, platform.request("sdram_clock"),
+                                       self.crg.cd_sys2x_ps.clk)
             self.add_sdram("sdram",
                 phy           = self.sdrphy,
                 module        = litedram_modules.W9825G6KH6(sys_clk_freq, "1:2"),

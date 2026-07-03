@@ -4,11 +4,17 @@
 The C3 (software/c3_flash_esp) erases the target region, programs it page by
 page over SPIBone into the FPGA (software/c3_flash), and CRC-verifies the
 read-back against the CRC computed here. Uses the same standard CRC-32 as the
-FPGA's libbase crc32 (== zlib.crc32).
+FPGA's libbase crc32 (== zlib.crc32). Pages stream in WINDOW_PAGES-sized
+windows, acked once per window rather than once per page.
 
 Usage:
-    flash_c3.py <port> <offset> <file>
+    flash_c3.py <port> <offset> <file> [--fbi]
     e.g.  flash_c3.py /dev/ttyACM0 0xF00000 test.bin
+    e.g.  flash_c3.py /dev/ttyACM0 0x200000 software/c3_flash/c3_flash.bin --fbi
+
+--fbi prepends the LiteX flashboot header (u32le length + u32le crc32) before
+sending -- use it for the loader/app slots, which the BIOS's flashboot() reads
+via that header. Not used for the bitstream/BIOS slots (those are raw).
 
 Close any serial monitor on the port first (it is exclusive). Offset must be
 4 KB-aligned (erase granularity). Prints the status + read-back CRC.
@@ -23,6 +29,8 @@ try:
 except ImportError:
     sys.exit("pyserial required: pip install pyserial")
 
+WINDOW_PAGES = 16   # must match software/c3_flash_esp/src/main.cpp's WINDOW_PAGES
+
 STATUS = {
     0x00: "OK",
     0x05: "CRC MISMATCH",
@@ -35,17 +43,25 @@ STATUS = {
 
 
 def main():
-    if len(sys.argv) != 4:
+    argv = sys.argv[1:]
+    fbi = "--fbi" in argv
+    argv = [a for a in argv if a != "--fbi"]
+    if len(argv) != 3:
         sys.exit(__doc__)
-    port, off_s, path = sys.argv[1], sys.argv[2], sys.argv[3]
+    port, off_s, path = argv
     off = int(off_s, 0)
     data = open(path, "rb").read()
     if not data:
         sys.exit("empty file")
+    if fbi:
+        # .fbi = LiteX flashboot image: u32le length + u32le crc32 + payload
+        # (icepi_zero_base.py's run_build --flash-firmware path wraps the same way).
+        payload_crc = zlib.crc32(data) & 0xFFFFFFFF
+        data = len(data).to_bytes(4, "little") + payload_crc.to_bytes(4, "little") + data
     if off % 0x1000:
         sys.exit(f"offset 0x{off:X} not 4 KB-aligned")
 
-    crc = zlib.crc32(data) & 0xFFFFFFFF   # standard CRC-32 == FPGA libbase crc32
+    crc = zlib.crc32(data) & 0xFFFFFFFF   # standard CRC-32 == FPGA libbase crc32 (whole image, incl. .fbi header)
 
     ser = serial.Serial(port, 115200, timeout=15)
     time.sleep(2.5)                       # opening resets the C3 (native USB-CDC); let it reboot
@@ -61,16 +77,22 @@ def main():
         code = ea[0] if ea else -1
         sys.exit(f"erase ack failed: 0x{code:02X} ({STATUS.get(code, 'no reply')})")
 
-    # Stream pages, paced by a per-page ack (prevents C3 RX overflow).
+    # Stream pages in WINDOW_PAGES-sized windows, paced by one ack per window
+    # (not per page -- the C3's RX buffer comfortably holds a window, see
+    # RX_BUFFER_SIZE in main.cpp) instead of a full USB round-trip per 256 B.
     npages = (len(data) + 255) // 256
-    for i in range(npages):
-        page = data[i * 256:(i + 1) * 256]
-        ser.write(page)
+    i = 0
+    while i < npages:
+        window = min(WINDOW_PAGES, npages - i)
+        for j in range(window):
+            page = data[(i + j) * 256:(i + j + 1) * 256]
+            ser.write(page)
         ser.flush()
         a = ser.read(1)
         if a != b"\x01":
             code = a[0] if a else -1
-            sys.exit(f"page {i}/{npages} ack failed: 0x{code:02X} ({STATUS.get(code, 'no reply')})")
+            sys.exit(f"window at page {i}/{npages} ack failed: 0x{code:02X} ({STATUS.get(code, 'no reply')})")
+        i += window
 
     reply = ser.read(5)                   # final status + read-back crc
     dt = time.time() - t0

@@ -1,26 +1,41 @@
 # IcePi Zero boot chain
 
 How the board gets from power-on to application code, and how every stage is
-updated over WiFi. This absorbs the old `xip_bios.md` notes plus the
-boot-manager / FTDI / flash.py design.
+updated. This absorbs the old `xip_bios.md` notes plus the boot-manager /
+FTDI / flash.py design.
+
+> **2026-07-03 update: flashing moved from WiFi (WINC/WFL-over-UDP) to the
+> ESP32-C3 (SPIBone/USB-CDC).** The WINC chip is dead (see `winc-archive`
+> branch / `winc-final` tag). `./flash.py` now talks to the C3 over its
+> USB-CDC serial port instead of UDP -- see the rewritten **Host tooling**
+> section below. The Stage 3 / WFL-protocol / FTDI-sidebands sections further
+> down describe the *original* WINC boot-manager design (BIOS -> loader ->
+> stay-for-flashing | chain-boot an app); that full triage isn't built for
+> the C3 path yet (it needs SDRAM for the app's `chain_stub` landing spot;
+> SDRAM itself is fixed as of 2026-07-03, [[halfrate-sdram]], but the
+> boot-manager/chain-boot logic isn't built yet). Today the
+> C3-flash loader (`software/c3_flash` + `software/c3_flash_esp`) is
+> **flash-resident and always resident** -- BIOS auto-boots straight into it
+> on every reset/power-cycle, no stay/chain-boot decision to make yet. Kept
+> for design-intent reference; don't follow the WFL protocol table or the
+> FTDI DTR/RTS ladder for new host-tooling work. See also `docs/c3_loader.md`.
 
 ```
-power-on / FTDI reset / ctrl_reset
+power-on / C3 reset pulse / ctrl_reset
   └─ ECP5 self-config from flash @0x000000          (power-on only)
        └─ XIP BIOS @0x100000 (executes in place from flash)
-            └─ flashboot: winc_loader .fbi @0x200000 -> SDRAM 0x40000000
-                 ├─ stay requested?  -> WiFi loader mode (flash.py protocol)
-                 └─ otherwise        -> chain-boot app .fbi @0x280000
+            └─ flashboot: c3_flash loader .fbi @0x200000 -> main_ram (BRAM)
+                 └─ always resident (no app chain-boot yet -- see note above)
 ```
 
 ## Flash layout
 
 | Offset | Contents | Updated by |
 | --- | --- | --- |
-| `0x000000` | bitstream (ECP5 self-config) | `./flash.py --bitstream` (+ power-cycle) |
-| `0x100000` | BIOS, XIP (`--bios-flash-offset`; reset vector → `0x20100000`) | `./flash.py --bios` |
-| `0x200000` | winc_loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots first on every reset) | `./flash.py --loader` |
-| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) | `./flash.py --app FILE` |
+| `0x000000` | bitstream (ECP5 self-config) | `./flash.py --bitstream --port /dev/ttyACM0` (+ power-cycle) |
+| `0x100000` | BIOS, XIP (`--bios-flash-offset`; reset vector → `0x20100000`) | `./flash.py --bios --port /dev/ttyACM0` |
+| `0x200000` | c3_flash loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots first on every reset, always stays resident) | `./flash.py --loader --port /dev/ttyACM0` |
+| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) — reserved, no boot-manager consumes it yet | `./flash.py --app FILE --port /dev/ttyACM0` |
 
 `.fbi` = LiteX flashboot image: u32le length + u32le crc32 + payload. The
 slot offsets are single-sourced in `icepi_zero_base.py`
@@ -160,36 +175,44 @@ verification and the triage level).
 
 ## Host tooling — `./flash.py`
 
-Slot presets (`--bitstream/--bios/--loader` default to the standard build
-artifacts; `--app FILE` explicit), combinable in one session; legacy
-`FILE --offset X [--fbi]` form; `--run FILE` = SDRAM-load + execute without
-flashing (combinable with slots — the exec runs last and replaces the final
-reboot); `--reset` = plain FTDI reboot to app. Entry ladder:
+Rewritten 2026-07-03 to flash over the ESP32-C3's USB-CDC link instead of
+WiFi (see `docs/c3_loader.md`, `software/c3_flash_esp/flash_c3.py` for the
+wire protocol this is ported from). `--port /dev/ttyACMx` (the C3, not the
+FPGA's FTDI) is required for every invocation. Slot presets
+(`--bitstream/--bios/--loader` default to the standard build artifacts;
+`--app FILE` explicit) are combinable in one session; legacy
+`FILE --offset X [--fbi]` form still works; `--reset` pulses the C3-driven
+FPGA reset line (`'R'`, FPGA `ext_reset`/G3 <-> C3 GPIO7 — see
+`software/c3_flash_esp/src/main.cpp`).
 
-1. loader already answering :5557 → go
-2. app `loader_hook` on :5558 (`WFLE`) → reboots itself into the loader,
-   cable-free
-3. `--port` given → FTDI reset + stay level (button-free); falls back to
-   `'l'` spam + a "press reset" prompt on bitstreams without `BootCtl`
+No entry ladder is needed anymore: the loader is flash-resident (see the
+flash layout table above), so it's already running whenever the board is
+powered — `flash.py` just PINGs it through the mailbox as a pre-flight sanity
+check before flashing. (The old WiFi-era entry ladder — probing UDP :5557,
+the app's `loader_hook`, FTDI DTR/RTS reset+stay — is gone; there's no WiFi
+transport and no stay/chain-boot decision to make.) `--run` (WINC-era
+SDRAM-stage-and-execute) has no equivalent — the C3 loader has no SDRAM
+image buffer today.
 
-Apply rules: app/loader/BIOS changes take effect via the automatic `WFLR`
-(a soft reset re-XIPs the BIOS and re-chains); a flashed **bitstream
-suppresses the soft reset** — resetting there would run the old fabric
-against new flash contents (CSR mismatch) — power-cycle once instead.
+Apply rules: BIOS/loader/app changes take effect via the automatic reset
+pulse at the end of a session (re-XIPs the BIOS, which re-flashboots
+straight into the loader); a flashed **bitstream suppresses the automatic
+reset** — resetting there would run the old fabric against new flash
+contents (CSR mismatch) — power-cycle once instead.
 
 **Zero-JTAG full update**: from a running loader, flash bitstream + BIOS +
-loader + app in one session, then one power-cycle. Safe because nothing
-reads flash while the loader runs; every image is CRC-checked in SDRAM
-before its slot is erased. The only JTAG-recovery scenario left is power
-loss between erasing and rewriting the bitstream slot (or a new bitstream
-that doesn't come up at all — test risky gateware via JTAG SRAM `--load`
-first if worried).
+loader in one session (`flash.py --bitstream --bios --loader --port
+/dev/ttyACM0`), then one power-cycle. Safe because the loader firmware runs
+entirely from `main_ram` (BRAM), never fetching through the flash mmap, so
+it can't crash itself by erasing/reprogramming the region it booted from;
+every image is CRC-verified through the mailbox before the tool moves on.
+Hardware-validated end to end this session.
 
 ## Recovery matrix
 
 | Broken | Recovery |
 | --- | --- |
-| app image | automatic: loader catches the CRC, stays up; reflash `--app` |
-| loader image | BIOS flashboot fails → falls through to serialboot: `litex_term --kernel winc_loader.bin` |
+| loader image | BIOS flashboot fails → falls through to serialboot: `litex_term --kernel software/c3_flash/c3_flash.bin`, then reflash `--loader` once it's back up |
 | BIOS / bitstream | JTAG (`--flash-bios` / `--flash`); EBR-ROM build (`with_spi_flash=False`) as golden image |
-| wrong/mixed CSR maps | reflash all four slots together (one `flash.py` session) |
+| wrong/mixed CSR maps | reflash bitstream+BIOS+loader together (one `flash.py` session) |
+| app image | n/a — no boot-manager consumes the app slot yet (deferred, needs SDRAM) |

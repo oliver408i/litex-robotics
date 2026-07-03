@@ -21,8 +21,28 @@
 #define PIN_MISO   3
 #define PIN_CS     2
 
+/* C3 -> FPGA reset line: pulse low to reset the FPGA's CPU/clock domains via
+ * its ext_reset input (icepi_zero_base.py, ball G3, active-low, pulled up on
+ * the FPGA side -- no gateware changes needed, see [[c3-loader-production-scope]]).
+ * GPIO7 chosen deliberately: NOT a strapping pin (2/8/9), NOT UART0 (20/21 --
+ * both glitch this line during the C3's own boot/reset and would reset the
+ * FPGA every time the C3 resets, see [[c3-reset-line-gpio21-gotcha]]), NOT the
+ * native-USB D+/D- pins (18/19), and NOT GPIO10 (reserved for future direct
+ * FPGA communication). Driven open-drain style (only ever OUTPUT+LOW or
+ * INPUT) so it never fights the FPGA-side pull-up. */
+#define PIN_RESET  7
+#define RESET_PULSE_MS 10
+
 #define SPI_HZ     8000000UL     /* production clock: reliable, ~2x the flash ceiling */
 #define POLL_MAX   256
+
+/* Windowed ACK for the host image-streaming protocol: ack every WINDOW_PAGES
+ * (4 KB) instead of every single 256 B page -- profiling (2026-07-03) showed
+ * the per-page USB round-trip was ~26% of total transfer time. Must match
+ * flash_c3.py's WINDOW_PAGES. RX_BUFFER_SIZE must comfortably exceed one
+ * window's worth of bytes -- see setup(). */
+#define WINDOW_PAGES     16
+#define RX_BUFFER_SIZE   8192
 
 /* Mailbox (must match gateware add_c3_mailbox + software/c3_flash). */
 #define MBX_BASE   0x90000000UL
@@ -70,10 +90,24 @@ static int wait_marker() {
     return -1;
 }
 
-/* --- SPIBone Wishbone primitives (byte address; SPIBone shifts internally) --- */
+/* RAII SPI transaction guard. wb_read/wb_write used to open+close their own
+ * SPI transaction (clock/mode reconfiguration) on every single 32-bit word --
+ * fine in isolation, but a mailbox command fires 60+ of them back-to-back
+ * (arg0/arg1/64 data words/doorbell, then the doorbell-poll reads), and
+ * profiling (2026-07-03, real 640 KB transfer) showed that per-word overhead
+ * eating ~38% of total time. One transaction spans a whole mbx_cmd() instead;
+ * CS# still toggles per word (SPIBone's FSM resets on cs_n -- one word per
+ * CS-assert cycle is a hard protocol requirement, not just an optimization
+ * target -- see litex's spi_bone.py), only the SPI peripheral reconfig is hoisted. */
+struct SPISession {
+    SPISession()  { spi.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0)); }
+    ~SPISession() { spi.endTransaction(); }
+};
+
+/* --- SPIBone Wishbone primitives (byte address; SPIBone shifts internally).
+ * Caller must hold an open SPISession. --- */
 static bool wb_read(uint32_t addr, uint32_t *val) {
     bool ok = false;
-    spi.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0));
     cs_lo();
     spi.transfer(0x01);
     spi.transfer((addr >> 24) & 0xFF); spi.transfer((addr >> 16) & 0xFF);
@@ -84,12 +118,10 @@ static bool wb_read(uint32_t addr, uint32_t *val) {
         *val = d; ok = true;
     }
     cs_hi();
-    spi.endTransaction();
     return ok;
 }
 
 static bool wb_write(uint32_t addr, uint32_t val) {
-    spi.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0));
     cs_lo();
     spi.transfer(0x00);
     spi.transfer((addr >> 24) & 0xFF); spi.transfer((addr >> 16) & 0xFF);
@@ -98,7 +130,6 @@ static bool wb_write(uint32_t addr, uint32_t val) {
     spi.transfer((val >>  8) & 0xFF);  spi.transfer((val >>  0) & 0xFF);
     bool ok = (wait_marker() == 0x00);
     cs_hi();
-    spi.endTransaction();
     return ok;
 }
 
@@ -107,6 +138,7 @@ static bool wb_write(uint32_t addr, uint32_t val) {
  * link/timeout error) and *result. `data`/`n` used by PROGRAM (n<=256). */
 static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
                    const uint8_t *data, uint32_t n, uint32_t *result) {
+    SPISession _session;   /* one SPI transaction spans the whole command */
     if (!wb_write(MBX_BASE + MBX_ARG0, arg0)) return -10;
     if (!wb_write(MBX_BASE + MBX_ARG1, arg1)) return -10;
     /* Pack payload little-endian: word at DATA+4k -> RAM bytes [4k..4k+3], so
@@ -119,10 +151,10 @@ static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
     }
     if (!wb_write(MBX_BASE + MBX_CMD, op)) return -10;    /* doorbell */
 
-    uint32_t t0 = millis(), c = 0xffffffff;
+    uint32_t tm0 = millis(), c = 0xffffffff;
     do {
         if (!wb_read(MBX_BASE + MBX_CMD, &c)) return -11;
-        if (millis() - t0 > 5000) return -12;             /* firmware never cleared cmd */
+        if (millis() - tm0 > 5000) return -12;            /* firmware never cleared cmd */
     } while (c != 0);
 
     uint32_t status = 0xff;
@@ -132,6 +164,13 @@ static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
 }
 
 void setup() {
+    /* Native USB-Serial-JTAG RX has NO backpressure: HWCDC.cpp pulls bytes
+     * from the hardware FIFO in an ISR and silently DROPS whatever doesn't
+     * fit once the rx_queue is full (no NAK, no stall). Must be set before
+     * begin(); must stay >= a couple of WINDOW_PAGES worth of bytes so a
+     * whole window arriving while a page's flash-program blocks the drain
+     * loop can't overflow it. */
+    Serial.setRxBufferSize(RX_BUFFER_SIZE);
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && millis() - t0 < 3000) ;
@@ -140,10 +179,24 @@ void setup() {
     cs_hi();
     spi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
 
+    pinMode(PIN_RESET, INPUT);   /* idle: high-Z, FPGA-side pull-up holds it high */
+
     Serial.println("\n[c3] SPIBone flash loader");
     Serial.printf("[c3] SPI @%lu Hz, mailbox @0x%08lX. cmds: 't'=self-test  'p'=ping"
-                  "  'W..'=host image stream (flash_c3.py)\n",
+                  "  'R'=pulse FPGA reset  'W..'=host image stream (flash_c3.py)\n",
                   (unsigned long)SPI_HZ, (unsigned long)MBX_BASE);
+}
+
+/* Pulse the FPGA's ext_reset line low, open-drain style: only ever drive LOW
+ * or release to high-Z INPUT, never drive HIGH (avoids fighting the FPGA-side
+ * pull-up if the wiring or pin choice is ever wrong). Resets the CPU/clock
+ * domains only -- does NOT reconfigure the FPGA fabric (a bitstream change
+ * still needs a real power-cycle). */
+static void reset_pulse() {
+    pinMode(PIN_RESET, OUTPUT);
+    digitalWrite(PIN_RESET, LOW);
+    delay(RESET_PULSE_MS);
+    pinMode(PIN_RESET, INPUT);
 }
 
 /* Run one mailbox command; print a labelled line; return the status (or <0). */
@@ -218,13 +271,17 @@ static void host_reply(uint8_t status, uint32_t crc) {
 }
 
 /* 'W' consumed; header = off:u32 LE, len:u32 LE, crc:u32 LE ; then len data bytes
- * sent one 256-byte page at a time, PACED by a per-page ack so the C3's USB RX
- * buffer never overflows while it pauses to program (that was the 0xE2 underrun).
- * Wire sequence:
+ * sent 256-byte pages at a time, PACED by an ack every WINDOW_PAGES (or at the
+ * final partial window) so the C3's USB RX buffer never overflows while it
+ * pauses to program (that was the 0xE2 underrun -- see RX_BUFFER_SIZE/
+ * WINDOW_PAGES above). Wire sequence:
  *   host -> W, header
  *   C3   -> 1 ack byte after ERASE   (0x01 ok, else 0xE1)
- *   loop: host -> one page ; C3 -> 1 ack byte (0x01 ok, 0xE2 rx, 0xE3 program)
- *   C3   -> final status(1) + read-back crc(4)  (0x00 ok / 0x05 mismatch / 0xE4) */
+ *   loop: host -> up to WINDOW_PAGES pages ; C3 -> 1 ack byte (0x01 ok, 0xE2 rx, 0xE3 program)
+ *   C3   -> final status(1) + read-back crc(4)  (0x00 ok / 0x05 mismatch / 0xE4)
+ * NO text anywhere on this path, including on error returns -- flash.py may
+ * chain several 'W' commands in one serial session (e.g. bitstream+bios+
+ * loader), and any stray byte here gets misread as the NEXT command's ack. */
 static void handle_host_flash() {
     uint8_t hdr[12];
     if (read_exact(hdr, 12, 2000) != 12) { Serial.write((uint8_t)0xE0); return; }
@@ -234,12 +291,17 @@ static void handle_host_flash() {
     Serial.write((uint8_t)0x01);                 /* erase done -- start sending pages */
 
     uint8_t page[256];
+    uint32_t pages_in_window = 0;
     for (uint32_t pos = 0; pos < len; ) {
         uint32_t n = (len - pos < 256) ? (len - pos) : 256;
-        if (read_exact(page, n, 5000) != n)      { Serial.write((uint8_t)0xE2); return; }
+        uint32_t got = read_exact(page, n, 5000);
+        if (got != n)                            { Serial.write((uint8_t)0xE2); return; }
         if (mbx_cmd(CMD_PROGRAM, off + pos, n, page, n, nullptr) != ST_OK) { Serial.write((uint8_t)0xE3); return; }
         pos += n;
-        Serial.write((uint8_t)0x01);             /* page programmed -- send next */
+        if (++pages_in_window == WINDOW_PAGES || pos == len) {
+            Serial.write((uint8_t)0x01);         /* window programmed -- send next window */
+            pages_in_window = 0;
+        }
     }
 
     uint32_t rb = 0;
@@ -264,6 +326,10 @@ void loop() {
         Serial.printf("[c3] PING st=%d JEDEC 0x%06lX\n", st, (unsigned long)(j & 0xFFFFFF));
         break;
     }
+    case 'r': case 'R':
+        reset_pulse();
+        Serial.println("[c3] reset pulsed");
+        break;
     default:                                   /* ignore stray bytes / newlines */
         break;
     }

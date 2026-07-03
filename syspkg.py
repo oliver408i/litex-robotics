@@ -42,13 +42,25 @@ MANIFEST_NAME = "manifest.json"
 # gateware. Flashing a new variant's bitstream without its matching loader leaves
 # the stale loader CSR-mismatched against the new fabric -- which is itself the
 # brick-the-recovery-path failure. So a syspkg ships the loader built against
-# THIS variant; rebuild it (`make -C software/winc_loader`) after the gateware
-# build so winc_loader.bin matches (pack warns if it looks stale). Use --no-loader
+# THIS variant; rebuild it (`make -C software/c3_flash`) after the gateware
+# build so c3_flash.bin matches (pack warns if it looks stale). Use --no-loader
 # only to deliberately keep the existing on-flash loader.
+#
+# CAVEAT (2026-07-03, post-WINC->C3 pivot): unlike the old winc_loader, which
+# was rebuilt as part of EACH deployable variant's own gateware (so its CSR
+# addresses always matched that variant's fabric), c3_flash.bin is built
+# against the separate, fixed `icepi_zero_c3flash.py` SoC (SPIBone + mailbox
+# only, no deployable features) -- it is NOT rebuilt per variant and does NOT
+# share baseline's/mnist_lcd's/logger's CSR map. Packing a syspkg for one of
+# those variants with today's c3_flash.bin would ship a CSR-mismatched loader
+# despite the mtime check below passing (it only compares timestamps, not
+# actual CSR maps). Don't trust `--slots loader` for a non-c3flash variant
+# until add_c3_spibone/add_c3_mailbox are integrated into each deployable's
+# own build -- see [[c3-loader-production-scope]].
 SLOT_SOURCES = {
     "bitstream": "{build}/gateware/icepi_zero.bit",
     "bios":      "{build}/software/bios/bios.bin",
-    "loader":    "software/winc_loader/winc_loader.bin",
+    "loader":    "software/c3_flash/c3_flash.bin",
     "app":       None,
 }
 
@@ -101,9 +113,9 @@ def pack(args):
         bit_src    = SLOT_SOURCES["bitstream"].format(build=build)
         if os.path.exists(loader_src) and os.path.exists(bit_src) and \
            os.path.getmtime(loader_src) < os.path.getmtime(bit_src):
-            print("  WARNING: winc_loader.bin is OLDER than the bitstream -- it may be\n"
+            print("  WARNING: c3_flash.bin is OLDER than the bitstream -- it may be\n"
                   "           built against a different CSR map. Rebuild it to match:\n"
-                  "             make -C software/winc_loader\n"
+                  "             make -C software/c3_flash\n"
                   "           (or pass --no-loader to keep the existing on-flash loader).")
 
     members = {}          # arcname -> bytes

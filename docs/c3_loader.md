@@ -6,6 +6,25 @@ JTAG-free way to reflash the board for quick iteration. **Status: in progress** 
 the FPGA SPI-slave gateware is built and sim-verified; firmware and C3 side are
 next.
 
+> **2026-07-03 update: everything below this point describes the original
+> SPISlave design and is superseded.** The link stack that actually shipped
+> pivoted to LiteX's **SPIBone** (C3 as a Wishbone master) + a plain mailbox
+> RAM instead of the custom `SPISlave`/command-protocol design documented
+> here — see `gateware/soc_features.py`'s `add_c3_spibone`/`add_c3_mailbox`,
+> `icepi_zero_c3flash.py`, `software/c3_flash` (FPGA side) and
+> `software/c3_flash_esp` (C3 side, incl. `flash_c3.py`). It's hardware-
+> verified end to end: real bitstream/BIOS slots flashed and cold-booted with
+> no JTAG, a C3-driven reset line (`'R'` command, FPGA `ext_reset`/G3 <->
+> C3 GPIO7), and the loader itself is now flash-resident at the loader slot
+> (0x200000, `.fbi`-wrapped) — BIOS auto-boots straight into it on every
+> reset/power-cycle, no `litex_term --kernel` step needed. **Caveat:** this
+> makes the loader the default boot target on *every* reset — the
+> interactive BIOS console is unreachable during normal operation until a
+> real boot-manager (chain-boot to an app) exists, which needs SDRAM --
+> fixed as of 2026-07-03 ([[halfrate-sdram]]) -- and isn't built yet.
+> This doc's design section is kept for historical context; don't follow its
+> pin/protocol tables for new work.
+
 ## Architecture — hybrid (C3 brain, FPGA thin programmer)
 
 The valuable, validated logic that is *transport-agnostic* (flash erase/program,
