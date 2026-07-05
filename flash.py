@@ -197,7 +197,8 @@ def c3_ping_wait(ser, attempts=3, attempt_timeout=6.0):
 def c3_reset(ser):
     """Pulse the C3->FPGA reset line ('R', software/c3_flash_esp). Resets the
     CPU/clock domains only -- does NOT reconfigure the fabric; a bitstream
-    change still needs a real power-cycle."""
+    change still needs a real power-cycle. Honors the current boot-mode strap:
+    with it released (the default) this boots the app."""
     print("pulsing C3 -> FPGA reset line ('R')...", flush=True)
     ser.reset_input_buffer()
     ser.write(b"R")
@@ -205,13 +206,27 @@ def c3_reset(ser):
     print(f"  {reply.strip() or '(no reply)'}")
 
 
+def c3_enter_loader(ser):
+    """Force the FPGA into the resident loader ('l', software/c3_flash_esp): the
+    C3 asserts the boot-mode strap (IO4/R1) low and pulses reset, so the board
+    comes up in c3_flash regardless of what it was running. Needed because the
+    loader is NOT resident by default anymore -- a plain reset auto-boots the app
+    (docs/c3_loader.md). The C3 HOLDS the strap for the whole session, so a
+    mid-flash glitch-reset still lands in the loader; c3_boot_app() releases it."""
+    print("entering loader ('l': assert stay strap + reset)...", flush=True)
+    ser.reset_input_buffer()
+    ser.write(b"l")
+    reply = _read_line(ser)
+    print(f"  {reply.strip() or '(no reply)'}")
+
+
 def c3_boot_app(ser):
-    """Chain-boot the app slot ('b', software/c3_flash_esp). One-shot: the
-    loader's sticky boot flag self-clears once consumed, so the next reset
-    (from the app, GPIO7, or a power-cycle) lands back in the resident
-    loader with no separate 'return to loader' step. No FPGA-side reply to
-    wait for -- it's already resetting by the time it could answer."""
-    print("requesting boot-app ('b')...", flush=True)
+    """Boot the app ('b', software/c3_flash_esp): the C3 releases the boot-mode
+    strap (-> FPGA reads high) and pulses reset, so the loader chain-boots the
+    app slot. Also the normal end-of-session action -- once the strap is
+    released it idles high, so the board auto-boots the app on every later
+    reset/power-cycle. No FPGA-side reply to wait for (it's already resetting)."""
+    print("booting app ('b': release stay strap + reset)...", flush=True)
     ser.reset_input_buffer()
     ser.write(b"b")
     reply = _read_line(ser)
@@ -293,12 +308,12 @@ def main():
     jobs = build_jobs(args)
 
     ser = open_c3(args.port)
-    # Force the FPGA back into the resident loader before touching the
-    # mailbox, regardless of what it's currently running (e.g. a chain-booted
-    # app has no mailbox protocol at all -- PING would just get no reply).
-    # GPIO7 always lands back in c3_flash (resident by default, see
-    # docs/c3_loader.md), so this makes every session start from a known state.
-    c3_reset(ser)
+    # Force the FPGA into the resident loader before touching the mailbox,
+    # regardless of what it's currently running (a chain-booted app has no
+    # mailbox protocol -- PING would just get no reply). The loader is no longer
+    # resident by default (a plain reset auto-boots the app), so we assert the
+    # stay strap; the C3 holds it for the whole session. See docs/c3_loader.md.
+    c3_enter_loader(ser)
     c3_ping_wait(ser)
 
     t0 = time.monotonic()
@@ -310,17 +325,21 @@ def main():
     flashed = {label.split(":")[0] for label, _, _ in jobs}
     if "bitstream" in flashed and not args.reboot:
         # A soft reset here would boot the OLD (still-configured) bitstream
-        # against the NEW flash contents -- a CSR-map mismatch if the
-        # gateware changed. Skip it on purpose (including --boot-app -- it
-        # would chain-boot off the stale fabric); the loader itself only
-        # needs one power-cycle to pick up everything.
+        # against the NEW flash contents -- a CSR-map mismatch if the gateware
+        # changed. Skip it on purpose; POWER-CYCLE picks up the new fabric, and
+        # the C3 releases the stay strap on its own reboot so the board then
+        # auto-boots the app.
         print("NOTE: bitstream flashed -- POWER-CYCLE to apply everything "
-              "(reset/boot-app skipped on purpose)")
-    elif args.boot_app:
+              "(reset skipped on purpose; the board auto-boots the app after)")
+    elif args.no_reboot and not args.boot_app:
+        # Leave the board in the loader (strap still asserted by the C3). It
+        # will auto-boot the app on the next power-cycle (C3 reboot releases it).
+        print("left in resident loader (--no-reboot); power-cycle to auto-boot the app")
+    else:
+        # Normal end state: release the strap + reset -> chain-boot the app.
+        # (--boot-app, --reboot, or any app/bios/loader flash all land here;
+        # post-inversion "reboot to pick up new flash" means "boot the app".)
         c3_boot_app(ser)
-    elif (args.reboot or flashed & {"app", "loader", "bios"}) and not args.no_reboot:
-        c3_reset(ser)
-        print("reset pulsed -- BIOS/loader picked up the new flash contents")
 
 
 if __name__ == "__main__":

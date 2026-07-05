@@ -29,6 +29,12 @@ extern const aux_spi_dev_t AUX_WINC;
 /* LSM6DS3 IMU on the same bus (cs[1]); bus-health reference for diagnostics. */
 extern const aux_spi_dev_t AUX_IMU;
 
+/* MCP23S17 GPIO expander (cs[3], AUX_CS_IOX) -- only defined when the SoC was
+ * built with the expander (add_aux_imu with_iox / add_mcp_expander). Used by
+ * the shared common/mcp23s17.c driver. Absent (unresolved) in plain WINC/IMU
+ * builds -- nothing references it there. */
+extern const aux_spi_dev_t AUX_IOX;
+
 /* Program the device's SCLK divider and assert its CS (held until deselect). */
 void    aux_spi_select(const aux_spi_dev_t *dev);
 

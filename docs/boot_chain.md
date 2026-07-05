@@ -17,25 +17,25 @@ FTDI / flash.py design.
 > protocol table or the FTDI DTR/RTS ladder for new host-tooling work. See
 > also `docs/c3_loader.md`.
 >
-> **Chain-boot (added once SDRAM was fixed, [[halfrate-sdram]]):** the
-> C3-flash loader (`software/c3_flash` + `software/c3_flash_esp`) is
-> resident by default -- opposite of the WINC boot-manager's
-> resident-unless-told-to-stay -- and chain-boots the app slot only on
-> request: `flash.py --boot-app` sets a sticky one-shot flag
-> (`gateware/soc_features.py`'s `add_boot_flag`, deliberately with none of
-> `BootCtl`'s FTDI DTR/RTS coupling, so GPIO7 stays the only reset path) that
-> the loader checks at boot, clears, and chain-boots on. The *next* reset
-> lands back in the resident loader automatically -- no separate "return to
-> loader" step, and no `'l'`/FTDI-level stay-request mechanism needed since
-> staying resident is already the default.
+> **Chain-boot (added once SDRAM was fixed, [[halfrate-sdram]]; polarity
+> inverted to AUTO-BOOT 2026-07-05):** the C3-flash loader (`software/c3_flash`
+> + `software/c3_flash_esp`) now **chain-boots the app by default** and stays
+> resident only when a **boot-mode strap** is asserted -- matching the old WINC
+> boot-manager's "boot-app-unless-told-to-stay". The strap is the `loader_stay`
+> GPIOIn on **IO4/R1** (the old SPISlave READY wire, driven by the C3's GPIO10):
+> pulled up so high = boot the app; the C3 pulls it LOW to request staying.
+> `flash.py` sends `'l'` (assert stay + reset) to enter the loader before
+> flashing and `'b'` (release + reset) to boot the app after. The `add_boot_flag`
+> reset_less CSR is kept as a secondary software path (`STAY_IN_LOADER_MAGIC`).
+> GPIO7 stays the reset line.
 
 ```
 power-on / C3 reset pulse / ctrl_reset
   └─ ECP5 self-config from flash @0x000000          (power-on only)
        └─ XIP BIOS @0x100000 (executes in place from flash)
             └─ flashboot: c3_flash loader .fbi @0x200000 -> main_ram (SDRAM)
-                 └─ resident by default; chain-boots the app slot only on
-                    a --boot-app request (one-shot, see note above)
+                 └─ chain-boots the app slot BY DEFAULT; stays resident only
+                    when the IO4/R1 boot-mode strap is asserted (see note above)
 ```
 
 ## Flash layout
@@ -44,8 +44,8 @@ power-on / C3 reset pulse / ctrl_reset
 | --- | --- | --- |
 | `0x000000` | bitstream (ECP5 self-config) | `./flash.py --bitstream --port /dev/ttyACM0` (+ power-cycle) |
 | `0x100000` | BIOS, XIP (`--bios-flash-offset`; reset vector → `0x20100000`) | `./flash.py --bios --port /dev/ttyACM0` |
-| `0x200000` | c3_flash loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots first on every reset, resident by default) | `./flash.py --loader --port /dev/ttyACM0` |
-| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) — chain-booted via `./flash.py --boot-app` | `./flash.py --app FILE --port /dev/ttyACM0` |
+| `0x200000` | c3_flash loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots first on every reset; chain-boots the app unless the IO4 strap says stay) | `./flash.py --loader --port /dev/ttyACM0` |
+| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) — auto chain-booted on power-on; `./flash.py --boot-app` forces it | `./flash.py --app FILE --port /dev/ttyACM0` |
 
 `.fbi` = LiteX flashboot image: u32le length + u32le crc32 + payload. The
 slot offsets are single-sourced in `icepi_zero_base.py`

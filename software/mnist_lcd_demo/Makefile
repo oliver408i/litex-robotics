@@ -38,20 +38,19 @@ LVGL_OBJS := $(patsubst $(LVGL_DIR)/src/%.c,$(LVGL_BUILD)/%.o,$(LVGL_SRCS))
 
 CFLAGS += -I$(LVGL_DIR) -I$(LVGL_DIR)/src -I. -DLV_CONF_INCLUDE_SIMPLE
 
-# Shared firmware modules: LCD bring-up, HW I2C / FT6336U, UART log.
+# Shared firmware modules for the MNIST touch demo: LCD bring-up, HW I2C /
+# FT6336U touch, UART log, and the MCP23S17 expander driver (lcd.c drives
+# LCD/CTP reset through it on this variant -- see the CSR_IOX_RESET_BASE path).
+# mcp23s17.c #includes "aux_spi.h", which resolves to winc_test/aux_spi.h below.
 COMMON_DIR := ../common
 CFLAGS    += -I$(COMMON_DIR)
-COMMON_OBJS = lcd.o touch.o log.o adc.o power.o lsm6ds3.o imu_log.o
+COMMON_OBJS = lcd.o touch.o log.o mcp23s17.o
 
-# IMU logger pulls in FatFs (libfatfs) + the SD card driver (liblitesdcard);
-# add their header dirs. The libraries themselves link automatically via
-# PACKAGES once the SoC is built with the SD core (icepi_zero_all w/o --no-sdcard).
-CFLAGS += -I$(LIBFATFS_DIRECTORY) -I$(LIBLITESDCARD_DIRECTORY)
-
-# Shared aux SPI bus HAL lives in winc_test/ (reused here for the MCP3008 power
-# ADC + LSM6DS3 IMU, the same way winc_loader reuses it). Pull in its header dir
-# and build aux_spi.o via the VPATH addition below. Requires a SoC that exposes
-# the aux bus, i.e. build the gateware from icepi_zero_all.py (add_winc_aux).
+# Shared aux SPI bus HAL lives in winc_test/. This demo uses it ONLY for the
+# MCP23S17 expander (common/mcp23s17.c) that drives LCD/CTP reset -- there is no
+# IMU/ADC/SD logging in this MNIST-only build. Requires the aux bus + expander
+# CS, i.e. icepi_zero_mnist_lcd.py (add_aux_imu with_iox=True). aux_spi.o is
+# built via the explicit rule below (not VPATH -- see the note there).
 WINC_DIR := ../winc_test
 CFLAGS   += -I$(WINC_DIR)
 AUX_OBJS  = aux_spi.o

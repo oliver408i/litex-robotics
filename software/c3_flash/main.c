@@ -53,16 +53,19 @@
 #define CMD_PROGRAM  0x03
 #define CMD_CRC      0x04
 #define CMD_REBOOT   0x05
-#define CMD_BOOT_APP 0x06
+#define CMD_BOOT_APP 0x06   /* clear stay flag + reset -> chain-boot the app */
+#define CMD_STAY     0x07   /* set stay flag + reset -> stay resident (flag path) */
 
 /* Status codes. */
 #define ST_OK        0x00
 #define ST_BAD_CMD   0x01
 #define ST_BAD_ARG   0x02
 
-/* Shared with the host's flash.py --boot-app (value has no meaning outside
- * this pairing -- same constant winc_loader used, no reason to change it). */
-#define BOOT_APP_MAGIC 0xB007F1A5u
+/* boot_ctl flag value that requests staying in the loader. This is the SECONDARY
+ * (software) path -- the primary boot-mode signal is the IO4/R1 strap driven by
+ * the C3's GPIO10 (see stay_requested()). Distinct arbitrary magic; the flag is
+ * reset_less so it survives a soft/C3 reset and reads 0 at power-on. */
+#define STAY_IN_LOADER_MAGIC 0x57A9F1A5u
 
 #ifndef FLASH_APP_OFFSET   /* soc.h constant when the SoC provides it */
 #define FLASH_APP_OFFSET 0x280000
@@ -134,6 +137,22 @@ static void try_chain_boot(void)
 	__builtin_unreachable();
 }
 
+/* Should the loader stay resident (for flashing) instead of chain-booting the
+ * app? Primary signal: the boot-mode strap on IO4/R1 (loader_stay GPIOIn),
+ * driven by the C3's GPIO10 -- pulled up, so high = boot the app (default), and
+ * the C3 pulls it LOW to request staying. Secondary path: the reset_less
+ * boot_ctl flag set to STAY_IN_LOADER_MAGIC (consumed here), for a software-
+ * triggered stay when the strap isn't used. See docs/c3_loader.md. */
+static int stay_requested(void)
+{
+	int stay = ((loader_stay_in_read() & 1u) == 0u);   /* strap asserted low */
+	if (boot_ctl_flag_read() == STAY_IN_LOADER_MAGIC) {
+		boot_ctl_flag_write(0);                        /* consume one-shot */
+		stay = 1;
+	}
+	return stay;
+}
+
 int main(void)
 {
 	MBX(MBX_CMD) = 0;               /* idle before we advertise readiness */
@@ -143,10 +162,14 @@ int main(void)
 	log_hex(id);
 	log_puts(id == 0x00EF4018 ? " (W25Q128)\n" : " (UNEXPECTED)\n");
 
-	if (boot_ctl_flag_read() == BOOT_APP_MAGIC) {
-		boot_ctl_flag_write(0);
-		log_puts("boot-app flag set -- ");
-		try_chain_boot();   /* returns only without a valid app image */
+	/* Resident-only when asked (strap or flag); otherwise chain-boot the app.
+	 * This is the auto-boot polarity: a normal power-on runs the app, and you
+	 * enter the loader deliberately (C3 pulls the IO4 strap low, then resets). */
+	if (stay_requested()) {
+		log_puts("stay requested -- resident loader\n");
+	} else {
+		log_puts("no stay request -- ");
+		try_chain_boot();   /* chain-boots the app; returns only without a valid image */
 	}
 
 	log_puts("waiting for C3 mailbox commands @0x90000000...\n");
@@ -185,9 +208,19 @@ int main(void)
 			ctrl_reset_write(1);
 			break;
 		case CMD_BOOT_APP:
+			/* Clear any stay flag and reboot. With the strap released (C3
+			 * GPIO10 high) the loader chain-boots the app next boot. */
 			log_puts("boot-app requested\n");
 			uart_sync();
-			boot_ctl_flag_write(BOOT_APP_MAGIC);
+			boot_ctl_flag_write(0);
+			ctrl_reset_write(1);
+			break;
+		case CMD_STAY:
+			/* Software "stay in loader" request (secondary to the IO4 strap):
+			 * set the flag and reboot; stay_requested() consumes it next boot. */
+			log_puts("stay requested (flag)\n");
+			uart_sync();
+			boot_ctl_flag_write(STAY_IN_LOADER_MAGIC);
 			ctrl_reset_write(1);
 			break;
 		default:

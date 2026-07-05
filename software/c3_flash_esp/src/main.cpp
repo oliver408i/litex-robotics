@@ -33,6 +33,14 @@
 #define PIN_RESET  7
 #define RESET_PULSE_MS 10
 
+/* C3 -> FPGA boot-mode strap: the old SPISlave READY wire (C3 GPIO10 <-> FPGA
+ * IO4/R1, unused by SPIBone -- GPIO10 was reserved for "future direct FPGA
+ * communication", this is it). Tells the resident loader whether to stay for
+ * flashing or chain-boot the app (gateware loader_stay GPIOIn, pulled up FPGA
+ * side; loader stay_requested()). Open-drain like PIN_RESET: OUTPUT+LOW =
+ * request STAY; INPUT/Hi-Z = release -> FPGA reads high -> chain-boot the app. */
+#define PIN_STAY   10
+
 #define SPI_HZ     8000000UL     /* production clock: reliable, ~2x the flash ceiling */
 #define POLL_MAX   256
 
@@ -165,9 +173,11 @@ static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
 }
 
 /* Fire-and-forget doorbell: rings the mailbox with no arg writes and no
- * completion poll. Used only for CMD_BOOT_APP -- the firmware resets itself
- * to chain-boot the app right after seeing the doorbell, so it never gets to
- * clear MBX_CMD; mbx_cmd()'s poll loop would just time out waiting for it. */
+ * completion poll -- for opcodes where the firmware resets itself right after
+ * seeing the doorbell (CMD_BOOT_APP / CMD_STAY) and so never clears MBX_CMD;
+ * mbx_cmd()'s poll loop would just time out. Kept (unused by the strap-based
+ * 'l'/'b' commands) as the flag-path fallback -- see the loader's boot_ctl flag. */
+static void mbx_fire(uint8_t op) __attribute__((unused));
 static void mbx_fire(uint8_t op) {
     SPISession _session;
     wb_write(MBX_BASE + MBX_CMD, op);
@@ -190,10 +200,11 @@ void setup() {
     spi.begin(PIN_SCLK, PIN_MISO, PIN_MOSI, -1);
 
     pinMode(PIN_RESET, INPUT);   /* idle: high-Z, FPGA-side pull-up holds it high */
+    pinMode(PIN_STAY,  INPUT);   /* idle: released -> FPGA reads high -> boot app */
 
     Serial.println("\n[c3] SPIBone flash loader");
     Serial.printf("[c3] SPI @%lu Hz, mailbox @0x%08lX. cmds: 't'=self-test  'p'=ping"
-                  "  'R'=pulse FPGA reset  'b'=boot app (chain-boot)"
+                  "  'R'=pulse FPGA reset  'l'=enter loader (stay)  'b'=boot app"
                   "  'W..'=host image stream (flash_c3.py)\n",
                   (unsigned long)SPI_HZ, (unsigned long)MBX_BASE);
 }
@@ -209,6 +220,14 @@ static void reset_pulse() {
     delay(RESET_PULSE_MS);
     pinMode(PIN_RESET, INPUT);
 }
+
+/* Boot-mode strap (see PIN_STAY). Open-drain: only ever drive LOW or release to
+ * high-Z INPUT, never drive HIGH (never fights the FPGA-side pull-up). The level
+ * is held across reset_pulse() so the loader samples it at boot; keep it
+ * asserted for the whole flashing session so a mid-flash reset stays in the
+ * loader. */
+static void stay_assert()  { pinMode(PIN_STAY, OUTPUT); digitalWrite(PIN_STAY, LOW); }
+static void stay_release() { pinMode(PIN_STAY, INPUT); }
 
 /* Run one mailbox command; print a labelled line; return the status (or <0). */
 static int step(const char *label, uint8_t op, uint32_t a0, uint32_t a1,
@@ -341,9 +360,15 @@ void loop() {
         reset_pulse();
         Serial.println("[c3] reset pulsed");
         break;
-    case 'b': case 'B':
-        mbx_fire(CMD_BOOT_APP);
-        Serial.println("[c3] boot-app requested (FPGA resetting)");
+    case 'l': case 'L':                        /* enter loader: assert stay + reset */
+        stay_assert();
+        reset_pulse();
+        Serial.println("[c3] enter loader: stay asserted, FPGA reset (stays resident)");
+        break;
+    case 'b': case 'B':                        /* boot app: release stay + reset */
+        stay_release();
+        reset_pulse();
+        Serial.println("[c3] boot app: stay released, FPGA reset (chain-boots app)");
         break;
     default:                                   /* ignore stray bytes / newlines */
         break;

@@ -21,18 +21,19 @@ next.
 > section is kept for historical context; don't follow its pin/protocol
 > tables for new work.
 >
-> **Boot-manager / chain-boot (added once SDRAM was fixed, [[halfrate-sdram]]):**
-> the loader is resident by default (opposite of the old winc_loader, which
-> defaulted to chain-booting). A sticky one-shot flag (`gateware/soc_features.py`'s
-> `add_boot_flag`/`BootFlag` — the CSR half of `BootCtl`, deliberately with
-> none of its FTDI DTR/RTS coupling, so GPIO7 stays the *only* reset path)
-> gates `try_chain_boot()` in `software/c3_flash/main.c`: the host sets it via
-> a new mailbox opcode (`CMD_BOOT_APP`, `flash.py --boot-app`), the loader
-> copies the app slot (0x280000) to `main_ram` and jumps, clearing the flag
-> first — so the *next* reset (from the app, GPIO7, or a power-cycle) lands
-> back in the resident loader automatically, no separate "return to loader"
-> step. Hardware-verified: `--boot-app` chain-booted `software/diag` (the
-> generic SoC-agnostic test console) successfully.
+> **Boot-manager / chain-boot (added once SDRAM was fixed, [[halfrate-sdram]];
+> polarity inverted to AUTO-BOOT 2026-07-05):** the loader now **chain-boots the
+> app by default** and stays resident only when asked — so a deployable bitstream
+> (mnist_lcd) auto-runs its app on power-on, matching the old winc_loader
+> polarity. The stay-vs-boot decision is a **boot-mode strap** (`stay_requested()`
+> in `software/c3_flash/main.c`): the `loader_stay` GPIOIn on **IO4/R1** — the old
+> SPISlave READY wire, driven by the **C3's GPIO10** — pulled up so high = boot
+> the app; the C3 pulls it LOW to request staying. `flash.py` asserts it (`'l'`,
+> C3 holds it for the whole session) before flashing and releases it (`'b'`)
+> after. The `add_boot_flag`/`BootFlag` reset_less CSR is KEPT as a secondary
+> software path (`STAY_IN_LOADER_MAGIC`, `CMD_STAY`/`CMD_BOOT_APP`) — the strap is
+> primary. GPIO7 remains the reset line; `try_chain_boot()` copies the app slot
+> (0x280000) to `main_ram` and jumps.
 
 ## Architecture — hybrid (C3 brain, FPGA thin programmer)
 

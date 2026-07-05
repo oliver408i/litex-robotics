@@ -30,44 +30,58 @@ from gateware.spi_slave import SPISlave
 
 
 # LCD / Touch --------------------------------------------------------------------------------------
-_lcd_io = [
-    ("lcd_spi", 0,
-        Subsignal("clk",  Pins("E4")),
-        Subsignal("cs_n", Pins("H3")),
-        Subsignal("mosi", Pins("D4")),
-        Subsignal("miso", Pins("E3")),
-        IOStandard("LVCMOS33"),
-        Misc("SLEWRATE=FAST"),
-    ),
-    ("lcd_ctrl", 0,
+def _lcd_io(with_reset_pad):
+    """Build the LCD/touch platform extension.
+
+    lcd_ctrl.reset_n (IO10/L2) is optional: with_reset_pad=True keeps the
+    direct-pin reset (LCD_RST/CTP_RST tied to L2 on the board, the default for
+    icepi_zero_lcd.py / _all.py / _logger.py). with_reset_pad=False drops it --
+    used by the expander build (icepi_zero_mnist_lcd.py), where L2 becomes the
+    MCP23S17 RESET line and LCD/CTP reset move onto expander outputs GPB0/GPB1,
+    driven by firmware (see docs/reset_sidebands.md). LCDEngine treats the reset
+    pad as optional (hasattr check), so omitting it is safe.
+    """
+    lcd_ctrl_subsignals = [
         Subsignal("dc",        Pins("G1")),
         Subsignal("backlight", Pins("P1")),
-        # reset_n on IO10 (L2): the LCD and CTP RST lines are tied together on
-        # the board to this one pin (was the 74HC595 Qa/Qb, expander retired).
-        Subsignal("reset_n",   Pins("L2")),
-        IOStandard("LVCMOS33"),
-    ),
-    ("ctp_i2c", 0,
-        Subsignal("scl", Pins("N1"), Misc("PULLMODE=UP")),
-        Subsignal("sda", Pins("N4"), Misc("PULLMODE=UP")),
-        IOStandard("LVCMOS33"),
-    ),
-    ("ctp_int", 0, Pins("F2"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
-]
+    ]
+    if with_reset_pad:
+        lcd_ctrl_subsignals.append(Subsignal("reset_n", Pins("L2")))
+    return [
+        ("lcd_spi", 0,
+            Subsignal("clk",  Pins("E4")),
+            Subsignal("cs_n", Pins("H3")),
+            Subsignal("mosi", Pins("D4")),
+            Subsignal("miso", Pins("E3")),
+            IOStandard("LVCMOS33"),
+            Misc("SLEWRATE=FAST"),
+        ),
+        ("lcd_ctrl", 0, *lcd_ctrl_subsignals, IOStandard("LVCMOS33")),
+        ("ctp_i2c", 0,
+            Subsignal("scl", Pins("N1"), Misc("PULLMODE=UP")),
+            Subsignal("sda", Pins("N4"), Misc("PULLMODE=UP")),
+            IOStandard("LVCMOS33"),
+        ),
+        ("ctp_int", 0, Pins("F2"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
+    ]
 
 
-def add_lcd_touch(soc, lcd_spi_clk_freq):
+def add_lcd_touch(soc, lcd_spi_clk_freq, with_reset_pad=True):
     """ST7796S LCD engine + FT6336U capacitive touch (I2C + INT).
 
     Caller contract: the BaseSoC must have been constructed with
     spi_clk_freq=lcd_spi_clk_freq (the engine's SPI shifter lives in cd_spi,
     SCK = lcd_spi_clk_freq / 2) and force_lcd_backlight_off=False (the
     lcd_ctrl extension owns P1).
+
+    with_reset_pad=False drops the direct LCD reset pin (IO10/L2) so the
+    MCP23S17 expander can own it; LCD/CTP reset then move to expander outputs
+    driven by firmware. See _lcd_io() and docs/reset_sidebands.md.
     """
     assert hasattr(soc.crg, "cd_spi"), \
         "add_lcd_touch: BaseSoC must be built with spi_clk_freq=lcd_spi_clk_freq"
     platform = soc.platform
-    platform.add_extension(_lcd_io)
+    platform.add_extension(_lcd_io(with_reset_pad))
 
     soc.lcd = LCDEngine(
         pads      = platform.request("lcd_spi"),
@@ -81,11 +95,11 @@ def add_lcd_touch(soc, lcd_spi_clk_freq):
     soc.add_constant("LCD_HEIGHT", 480)
     soc.add_constant("LCD_SPI_FREQUENCY", int(lcd_spi_clk_freq // 2))
 
-    # LCD_RST and CTP_RST are tied together on the board to one FPGA pin
-    # (lcd_ctrl.reset_n on IO10/L2); LCDEngine drives it from the reset_n CSR
-    # field. So touch reset follows LCD reset with no extra wiring here. (The
-    # slow reset/enable sidebands will move onto a SPI GPIO expander on the aux
-    # bus in the final build -- see docs/reset_sidebands.md.)
+    # Reset: with_reset_pad=True keeps LCD_RST+CTP_RST tied to one direct pin
+    # (lcd_ctrl.reset_n on IO10/L2), driven from the reset_n CSR field -- touch
+    # reset follows LCD reset with no extra wiring. with_reset_pad=False (the
+    # expander build) omits that pad entirely: firmware drives LCD_RST/CTP_RST
+    # via MCP23S17 outputs instead (add_aux_imu with_iox, docs/reset_sidebands.md).
 
     # FT6336U capacitive touch (I2C + INT). RST follows LCD reset (above).
     # Hardware I2C master (wishbone-mapped, 2 word registers: xfer + config).
@@ -159,6 +173,7 @@ _winc_io = [
 AUX_CS_WINC = 0
 AUX_CS_IMU  = 1
 AUX_CS_MCP  = 2
+AUX_CS_IOX  = 3   # MCP23S17 GPIO expander (4th CS, added by add_aux_imu with_iox)
 
 
 def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
@@ -209,29 +224,63 @@ def add_winc_aux(soc, winc_spi_clk_freq, busy_led=None):
 # (AUX_CS_IMU = cs[1]) is byte-for-byte unchanged. The WINC (cs[0]) and MCP
 # (cs[2]) lines simply park high -- nothing is wired to them in a logger build.
 # Keep these pins in sync with _winc_io's aux_spi subsignal.
-_aux_imu_io = [
-    ("aux_spi", 0,
-        Subsignal("clk",  Pins("T2")),            # IO2  -- shared sclk
-        Subsignal("mosi", Pins("H2")),            # IO8  -- shared mosi
-        Subsignal("miso", Pins("J2")),            # IO25 -- shared miso
-        Subsignal("cs_n", Pins("M2 F3 R2")),      # cs[0]=WINC cs[1]=IMU(IO6) cs[2]=MCP
+#
+# with_iox appends the MCP23S17 GPIO expander CS (R3/IO17, AUX_CS_IOX).
+# for_c3 DROPS the dead WINC cs[0] (M2/IO23) so M2 is free for the C3 SPIBone
+# MISO (add_c3_spibone) -- required for any bitstream that embeds the C3 loader.
+# The two layouts:
+#   for_c3=False (legacy, logger): cs[0]=WINC(M2) cs[1]=IMU(F3) cs[2]=MCP(R2) [cs[3]=IOX(R3)]
+#   for_c3=True  (C3 builds):      cs[0]=IMU(F3)  cs[1]=MCP(R2) [cs[2]=IOX(R3)]  -- M2 freed
+def _aux_imu_io(with_iox, for_c3):
+    if for_c3:
+        cs_pins = "F3 R2 R3" if with_iox else "F3 R2"      # M2 dropped -> C3 MISO
+    else:
+        cs_pins = "M2 F3 R2 R3" if with_iox else "M2 F3 R2"
+    return [
+        ("aux_spi", 0,
+            Subsignal("clk",  Pins("T2")),            # IO2  -- shared sclk
+            Subsignal("mosi", Pins("H2")),            # IO8  -- shared mosi
+            Subsignal("miso", Pins("J2")),            # IO25 -- shared miso
+            Subsignal("cs_n", Pins(cs_pins)),
+            IOStandard("LVCMOS33"),
+        ),
+    ]
+
+
+# MCP23S17 expander sidebands (reset + INTA) on direct pins, added by with_iox.
+# RESET reuses IO10/L2 (freed by add_lcd_touch(with_reset_pad=False)); INTA on
+# IO22/P2. Matches the standalone bring-up (icepi_zero_mcp.py / add_mcp_expander).
+_iox_ctrl_io = [
+    ("iox_ctrl", 0,
+        Subsignal("reset_n", Pins("L2")),                       # IO10 -> MCP23S17 RESET (active low)
+        Subsignal("inta",    Pins("P2"), Misc("PULLMODE=UP")),  # IO22 <- MCP23S17 INTA (active low)
         IOStandard("LVCMOS33"),
     ),
 ]
 
 
-def add_aux_imu(soc, imu_spi_clk_freq=1e6, busy_led=None):
-    """Shared aux SPI bus without WINC sidebands (IMU cs[1] / MCP3008 cs[2]).
+def add_aux_imu(soc, imu_spi_clk_freq=1e6, busy_led=None, with_iox=False, for_c3=False):
+    """Shared aux SPI bus (IMU + MCP3008 [+ MCP23S17 expander]).
 
-    The WINC-free aux bus: bus pins and CS indices match add_winc_aux exactly,
-    so firmware reuses aux_spi.c's AUX_IMU device with no changes. cs[0] (the
-    old WINC line) simply parks high -- nothing is wired to it post-WINC. CS is
-    software-held; runtime divider via the aux_spi clk_divider CSR (LSM6DS3 tops
-    out at 10 MHz; bus at sys/2). busy_led, if given, lights an LED while an
-    aux-bus transfer is in flight.
+    Software-held CS; runtime divider via the aux_spi clk_divider CSR (LSM6DS3
+    tops out at 10 MHz; bus at sys/2). busy_led, if given, lights an LED while an
+    aux-bus transfer is in flight. Firmware reuses aux_spi.c's AUX_* devices via
+    the AUX_CS_* constants emitted here.
+
+    with_iox=True adds the MCP23S17 GPIO expander: an extra CS (AUX_CS_IOX,
+    R3/IO17) plus its sidebands iox_reset (GPIOOut, L2, defaults 0 = held in
+    reset) and iox_inta (GPIOIn with IRQ, P2). Firmware drives LCD/CTP reset via
+    the expander -- see docs/reset_sidebands.md. Requires the caller to free L2
+    (add_lcd_touch with_reset_pad=False).
+
+    for_c3=True DROPS the dead WINC cs[0] (M2) so M2 is free for the C3 SPIBone
+    MISO -- mandatory for any bitstream that also embeds the C3 loader
+    (add_c3_loader_baseline). This renumbers the CS indices (IMU=0/MCP=1/IOX=2)
+    and does NOT emit AUX_CS_WINC. Firmware picks the numbering up from the
+    generated constants, so aux_spi.c must guard AUX_WINC with #ifdef AUX_CS_WINC.
     """
     platform = soc.platform
-    platform.add_extension(_aux_imu_io)
+    platform.add_extension(_aux_imu_io(with_iox, for_c3))
 
     soc.aux_spi = AuxSPIMaster(
         pads                 = platform.request("aux_spi"),
@@ -241,9 +290,25 @@ def add_aux_imu(soc, imu_spi_clk_freq=1e6, busy_led=None):
     )
     soc.add_csr("aux_spi")
 
-    soc.add_constant("AUX_CS_WINC", AUX_CS_WINC)  # cs[0] parks unused post-WINC
-    soc.add_constant("AUX_CS_IMU",  AUX_CS_IMU)
-    soc.add_constant("AUX_CS_MCP",  AUX_CS_MCP)
+    # CS numbering follows the pin order in _aux_imu_io (for_c3 drops WINC cs[0]).
+    if for_c3:
+        cs_imu, cs_mcp, cs_iox = 0, 1, 2
+    else:
+        soc.add_constant("AUX_CS_WINC", AUX_CS_WINC)  # cs[0] parks unused post-WINC
+        cs_imu, cs_mcp, cs_iox = AUX_CS_IMU, AUX_CS_MCP, AUX_CS_IOX
+    soc.add_constant("AUX_CS_IMU", cs_imu)
+    soc.add_constant("AUX_CS_MCP", cs_mcp)
+
+    if with_iox:
+        soc.add_constant("AUX_CS_IOX", cs_iox)
+        platform.add_extension(_iox_ctrl_io)
+        ctrl = platform.request("iox_ctrl")
+        soc.iox_reset = GPIOOut(ctrl.reset_n)          # write 0 = assert reset, 1 = release
+        soc.iox_inta  = GPIOIn(ctrl.inta, with_irq=True)
+        soc.add_csr("iox_reset")
+        soc.add_csr("iox_inta")
+        soc.irq.add("iox_inta", use_loc_if_exists=True)
+        soc.add_constant("IOX_SPI_DEFAULT_FREQUENCY", int(imu_spi_clk_freq))
 
     if busy_led is not None:
         # Sanity LED: lit while an aux-bus SPI transfer is in flight.
@@ -734,6 +799,41 @@ def add_boot_flag(soc):
     soc.add_csr("boot_ctl")
 
 
+# C3 flash-loader baseline (the flashing shape every deployable should embed) ---------------------
+# Boot-mode strap: the C3 drives this line (its GPIO10, the old SPISlave READY
+# wire, unused by SPIBone) to tell the resident loader whether to stay for
+# flashing or chain-boot the app. PULLMODE=UP so the default (C3 not driving /
+# absent) reads high = boot the app; the C3 pulls it LOW (open-drain) to request
+# staying. The loader samples it once at boot (software/c3_flash stay_requested()).
+_loader_stay_io = [
+    ("loader_stay", 0, Pins("R1"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),  # IO4 <- C3 GPIO10
+]
+
+
+def add_c3_loader_baseline(soc):
+    """Embed the ESP32-C3 flash loader: SPIBone transport + mailbox + boot flag.
+
+    This is the post-WINC replacement for add_flashing_baseline's OTA role: any
+    bitstream that composes it becomes C3-reflashable and boots via the boot
+    manager (BIOS -> resident loader .fbi @0x200000 -> chain-boot app @0x280000,
+    docs/boot_chain.md). The resident firmware is software/c3_flash, rebuilt
+    against this SoC's CSR map. STANDING RULE: deployables should embed this so
+    they can be reflashed over the C3 without UART/JTAG.
+
+    Caller contract: BaseSoC with with_spi_flash=True + flash_master=True, and
+    flash_boot_offset at the loader slot (0x200000, = the --firmware-offset
+    default). If the build also uses the aux bus, call add_aux_imu(for_c3=True):
+    the C3 SPIBone MISO is on M2, which the legacy aux layout parks as cs[0].
+    """
+    add_c3_spibone(soc)     # ESP32-C3 as a Wishbone master over SPI
+    add_c3_mailbox(soc)     # command/data mailbox RAM @ 0x90000000
+    add_boot_flag(soc)      # boot_ctl flag: secondary (software) stay request
+    # Boot-mode strap on IO4/R1 (C3 GPIO10): the PRIMARY stay-vs-boot signal.
+    soc.platform.add_extension(_loader_stay_io)
+    soc.loader_stay = GPIOIn(soc.platform.request("loader_stay"))
+    soc.add_csr("loader_stay")
+
+
 # NMEA GPS UART ------------------------------------------------------------------------------------
 # A second hardware UART for an NMEA GPS module (the logger's position source;
 # fixes become IMU_REC_GPS records on the same timer0 timebase as the IMU). The
@@ -830,7 +930,11 @@ def add_logic_analyzer(soc, n_channels=LA_N_CHANNELS, guard_mask=LA_GUARD_MASK,
 # flash_master=True; this adds the aux bus + boot_ctl. busy_led mirrors aux-bus
 # traffic -- pass an LED index NOT used by another block (the SNN takes 0,1, so
 # pass 2 in builds that include the SNN).
-def add_flashing_baseline(soc, aux_spi_clk_freq=12.5e6, busy_led=0):
-    """Aux SPI bus (IMU cs[1] / MCP3008 cs[2]) + boot_ctl: baseline for deployables."""
-    add_aux_imu(soc, imu_spi_clk_freq=aux_spi_clk_freq, busy_led=busy_led)
+def add_flashing_baseline(soc, aux_spi_clk_freq=12.5e6, busy_led=0, with_iox=False):
+    """Aux SPI bus (IMU cs[1] / MCP3008 cs[2]) + boot_ctl: baseline for deployables.
+
+    with_iox=True also adds the MCP23S17 GPIO expander (cs[3]) + its sidebands,
+    for builds that drive LCD/CTP reset via the expander (icepi_zero_mnist_lcd).
+    """
+    add_aux_imu(soc, imu_spi_clk_freq=aux_spi_clk_freq, busy_led=busy_led, with_iox=with_iox)
     add_boot_ctl(soc)

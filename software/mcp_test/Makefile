@@ -22,9 +22,10 @@ BUILDINC_DIRECTORY := $(BUILD_DIR)/software/include
 
 include $(SOC_DIRECTORY)/software/common.mak
 
-# Shared uart logging (log.c) lives in software/common.
+# Shared uart logging (log.c) + the MCP23S17 driver live in software/common.
+# -I. so common/mcp23s17.c (built via VPATH) finds this app's local aux_spi.h.
 COMMON_DIR := ../common
-CFLAGS    += -I$(COMMON_DIR)
+CFLAGS    += -I$(COMMON_DIR) -I.
 
 OBJECTS = main.o aux_spi.o mcp23s17.o log.o crt0.o
 

@@ -3,6 +3,42 @@
 #include <system.h>
 #include <generated/csr.h>
 
+/* Reset routing: on a SoC with the MCP23S17 GPIO expander (icepi_zero_mnist_lcd:
+ * add_aux_imu with_iox -> CSR_IOX_RESET_BASE), LCD_RST and CTP_RST are driven by
+ * expander outputs GPB0/GPB1 over the aux SPI bus, NOT the direct lcd_ctrl.reset_n
+ * pin (which doesn't exist in that build). On all other tops the direct-CSR path
+ * below is used unchanged. See docs/reset_sidebands.md. */
+#ifdef CSR_IOX_RESET_BASE
+#include "mcp23s17.h"
+
+#define PANEL_LCD_RST_BIT (1u << 0)   /* expander GPB0 -> LCD_RST (active low) */
+#define PANEL_CTP_RST_BIT (1u << 1)   /* expander GPB1 -> CTP_RST (active low) */
+#define PANEL_RST_MASK    (PANEL_LCD_RST_BIT | PANEL_CTP_RST_BIT)
+
+/* Shadow of OLATB so single-line changes don't disturb the other GPB bits.
+ * Both reset lines start deasserted (high). */
+static uint8_t panel_olatb = PANEL_RST_MASK;
+
+/* Release the expander from HW reset and make GPB0/GPB1 outputs. Drive them
+ * high (resets deasserted) BEFORE enabling the drivers so the panels don't see
+ * a spurious reset glitch as the pins switch from input to output. */
+static void panel_iox_init(void)
+{
+	mcp23s17_reset();                           /* iox_reset low->high; regs at POR */
+	panel_olatb = PANEL_RST_MASK;
+	mcp23s17_write(MCP_OLATB, panel_olatb);     /* latch high first */
+	mcp23s17_write(MCP_IODIRB, (uint8_t)(0xFFu & ~PANEL_RST_MASK)); /* GPB0/1 = output */
+}
+
+/* Drive both reset lines together (deasserted=1 -> high, 0 -> low). */
+static void panel_reset_both(int deasserted)
+{
+	if(deasserted) panel_olatb |=  PANEL_RST_MASK;
+	else           panel_olatb &= ~PANEL_RST_MASK;
+	mcp23s17_write(MCP_OLATB, panel_olatb);
+}
+#endif /* CSR_IOX_RESET_BASE */
+
 /* The pads_ctrl register holds two firmware-driven bits (reset_n,
  * backlight). CS and DC are owned by the engine FSM and not exposed
  * here. We keep a shadow word so set-one-bit operations don't have to
@@ -21,7 +57,16 @@ void lcd_pads_set(uint32_t mask, int value)
 	lcd_pads_apply();
 }
 
-void lcd_reset_n(int v)   { lcd_pads_set(LCD_PADS_RESET_N,   v); }
+void lcd_reset_n(int v)
+{
+#ifdef CSR_IOX_RESET_BASE
+	if(v) panel_olatb |=  PANEL_LCD_RST_BIT;   /* LCD_RST only (GPB0) */
+	else  panel_olatb &= ~PANEL_LCD_RST_BIT;
+	mcp23s17_write(MCP_OLATB, panel_olatb);
+#else
+	lcd_pads_set(LCD_PADS_RESET_N, v);
+#endif
+}
 void lcd_backlight(int v) { lcd_pads_set(LCD_PADS_BACKLIGHT, v); }
 
 void lcd_wait_idle(void)
@@ -59,6 +104,17 @@ void lcd_cmd_data(uint8_t cmd, const uint8_t *data, unsigned int len)
 
 void lcd_hw_reset(void)
 {
+#ifdef CSR_IOX_RESET_BASE
+	/* Expander build: bring the MCP23S17 up, then pulse LCD_RST + CTP_RST
+	 * together (they used to share one tied pin, so reset both here -- touch
+	 * comes up right after in touch_init() and expects a fresh FT6336U). */
+	panel_iox_init();
+	busy_wait(20);
+	panel_reset_both(0);   /* assert both low  */
+	busy_wait(20);
+	panel_reset_both(1);   /* release both     */
+	busy_wait(120);
+#else
 	lcd_pads_state = LCD_PADS_RESET_N;
 	lcd_pads_apply();
 	busy_wait(20);
@@ -66,6 +122,7 @@ void lcd_hw_reset(void)
 	busy_wait(20);
 	lcd_reset_n(1);
 	busy_wait(120);
+#endif
 }
 
 void lcd_init(void)

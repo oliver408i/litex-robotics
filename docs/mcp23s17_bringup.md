@@ -77,10 +77,13 @@ the deployables:
 1. **CS IO11/G2 == NMEA GPS UART TX** (`add_gps_uart`). The logger uses GPS on
    IO11 → the expander and a GPS-on-IO11 logger are mutually exclusive until one
    is repinned.
-2. **RESET IO10/L2 == the direct LCD/CTP reset pin** (`add_lcd_touch`
-   `lcd_ctrl.reset_n`). In an expander build the LCD/CTP resets must move onto
-   expander OUTPUT pins (the original point of the expander), freeing L2 to reset
-   the expander.
+2. **RESET IO10/L2 == the direct LCD/CTP reset pin** — **RESOLVED (2026-07-04)**
+   for `icepi_zero_mnist_lcd.py`: `add_lcd_touch(with_reset_pad=False)` drops the
+   L2 pad, `add_aux_imu(with_iox=True)` puts the expander on cs[3] (R3) with
+   RESET on L2, and `software/common/lcd.c` drives LCD_RST/CTP_RST from expander
+   outputs **GPB0/GPB1** over SPI (see docs/reset_sidebands.md). Note the two
+   reset lines are now SEPARATE (no longer tied) — the board wiring must split
+   them onto GPB0 and GPB1.
 3. **INTA IO22/P2 == WINC CHIP_EN** and **AUX_CS_MCP** already names the MCP3008
    ADC — the expander deliberately uses `AUX_CS_IOX` / `iox_*` / "IOX" to avoid
    the name clash. The dead `add_winc_aux` / `winc_ctrl` code is still in

@@ -29,7 +29,8 @@ layout: docs/boot_chain.md.
 """
 from icepi_zero_base import BaseSoC, make_parser, run_build
 
-from gateware.soc_features import add_lcd_touch, add_snn_mlp, add_flashing_baseline
+from gateware.soc_features import (add_lcd_touch, add_snn_mlp, add_aux_imu,
+                                    add_c3_loader_baseline)
 
 
 class MnistLCDSoC(BaseSoC):
@@ -44,9 +45,21 @@ class MnistLCDSoC(BaseSoC):
             force_lcd_backlight_off  = False,  # this project owns P1 via lcd_ctrl
             **kwargs,
         )
-        add_lcd_touch(self, lcd_spi_clk_freq)
+        # LCD/CTP reset is driven via the MCP23S17 expander (GPB0/GPB1), not a
+        # direct pin: drop the LCD reset pad (frees IO10/L2 for the expander's
+        # own RESET) and add the expander to the aux bus (with_iox). Firmware
+        # (software/common/lcd.c) pulses reset over SPI. See docs/reset_sidebands.md.
+        add_lcd_touch(self, lcd_spi_clk_freq, with_reset_pad=False)
         add_snn_mlp(self, leds=(0, 1))
-        add_flashing_baseline(self, aux_spi_clk_freq, busy_led=2)  # SNN owns 0,1
+        # Aux bus for the MCP23S17 expander (LCD/CTP reset). for_c3=True drops the
+        # dead WINC cs[0] so M2 is free for the C3 SPIBone MISO below. SNN owns
+        # LEDs 0,1 so the aux busy-LED uses 2.
+        add_aux_imu(self, imu_spi_clk_freq=aux_spi_clk_freq, busy_led=2,
+                    with_iox=True, for_c3=True)
+        # Embed the C3 flash loader (standing rule): this bitstream is now
+        # C3-reflashable and boots via the boot manager (loader @0x200000 ->
+        # chain-boot app @0x280000). See docs/boot_chain.md, docs/c3_loader.md.
+        add_c3_loader_baseline(self)
 
 
 def main():
