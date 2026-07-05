@@ -10,22 +10,32 @@ FTDI / flash.py design.
 > USB-CDC serial port instead of UDP -- see the rewritten **Host tooling**
 > section below. The Stage 3 / WFL-protocol / FTDI-sidebands sections further
 > down describe the *original* WINC boot-manager design (BIOS -> loader ->
-> stay-for-flashing | chain-boot an app); that full triage isn't built for
-> the C3 path yet (it needs SDRAM for the app's `chain_stub` landing spot;
-> SDRAM itself is fixed as of 2026-07-03, [[halfrate-sdram]], but the
-> boot-manager/chain-boot logic isn't built yet). Today the
+> stay-for-flashing | chain-boot an app); the C3 path's own boot-manager is a
+> narrower reimplementation (below), not that full triage -- there's no WiFi
+> `loader_hook`/UDP path and no FTDI DTR/RTS stay-level, since neither exists
+> on the C3 link. Kept for design-intent reference; don't follow the WFL
+> protocol table or the FTDI DTR/RTS ladder for new host-tooling work. See
+> also `docs/c3_loader.md`.
+>
+> **Chain-boot (added once SDRAM was fixed, [[halfrate-sdram]]):** the
 > C3-flash loader (`software/c3_flash` + `software/c3_flash_esp`) is
-> **flash-resident and always resident** -- BIOS auto-boots straight into it
-> on every reset/power-cycle, no stay/chain-boot decision to make yet. Kept
-> for design-intent reference; don't follow the WFL protocol table or the
-> FTDI DTR/RTS ladder for new host-tooling work. See also `docs/c3_loader.md`.
+> resident by default -- opposite of the WINC boot-manager's
+> resident-unless-told-to-stay -- and chain-boots the app slot only on
+> request: `flash.py --boot-app` sets a sticky one-shot flag
+> (`gateware/soc_features.py`'s `add_boot_flag`, deliberately with none of
+> `BootCtl`'s FTDI DTR/RTS coupling, so GPIO7 stays the only reset path) that
+> the loader checks at boot, clears, and chain-boots on. The *next* reset
+> lands back in the resident loader automatically -- no separate "return to
+> loader" step, and no `'l'`/FTDI-level stay-request mechanism needed since
+> staying resident is already the default.
 
 ```
 power-on / C3 reset pulse / ctrl_reset
   └─ ECP5 self-config from flash @0x000000          (power-on only)
        └─ XIP BIOS @0x100000 (executes in place from flash)
-            └─ flashboot: c3_flash loader .fbi @0x200000 -> main_ram (BRAM)
-                 └─ always resident (no app chain-boot yet -- see note above)
+            └─ flashboot: c3_flash loader .fbi @0x200000 -> main_ram (SDRAM)
+                 └─ resident by default; chain-boots the app slot only on
+                    a --boot-app request (one-shot, see note above)
 ```
 
 ## Flash layout
@@ -34,8 +44,8 @@ power-on / C3 reset pulse / ctrl_reset
 | --- | --- | --- |
 | `0x000000` | bitstream (ECP5 self-config) | `./flash.py --bitstream --port /dev/ttyACM0` (+ power-cycle) |
 | `0x100000` | BIOS, XIP (`--bios-flash-offset`; reset vector → `0x20100000`) | `./flash.py --bios --port /dev/ttyACM0` |
-| `0x200000` | c3_flash loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots first on every reset, always stays resident) | `./flash.py --loader --port /dev/ttyACM0` |
-| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) — reserved, no boot-manager consumes it yet | `./flash.py --app FILE --port /dev/ttyACM0` |
+| `0x200000` | c3_flash loader `.fbi` (`FLASH_BOOT_ADDRESS` — boots first on every reset, resident by default) | `./flash.py --loader --port /dev/ttyACM0` |
+| `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) — chain-booted via `./flash.py --boot-app` | `./flash.py --app FILE --port /dev/ttyACM0` |
 
 `.fbi` = LiteX flashboot image: u32le length + u32le crc32 + payload. The
 slot offsets are single-sourced in `icepi_zero_base.py`
@@ -190,23 +200,25 @@ flash layout table above), so it's already running whenever the board is
 powered — `flash.py` just PINGs it through the mailbox as a pre-flight sanity
 check before flashing. (The old WiFi-era entry ladder — probing UDP :5557,
 the app's `loader_hook`, FTDI DTR/RTS reset+stay — is gone; there's no WiFi
-transport and no stay/chain-boot decision to make.) `--run` (WINC-era
-SDRAM-stage-and-execute) has no equivalent — the C3 loader has no SDRAM
-image buffer today.
+transport, and no stay-request mechanism is needed since staying resident is
+already the default.) `--boot-app` chain-boots the app slot (one-shot,
+mailbox `CMD_BOOT_APP` — see the chain-boot note above); it is not the old
+WINC-era `--run` (SDRAM-stage-and-execute with no flash write) — the app
+must already be flashed.
 
 Apply rules: BIOS/loader/app changes take effect via the automatic reset
 pulse at the end of a session (re-XIPs the BIOS, which re-flashboots
 straight into the loader); a flashed **bitstream suppresses the automatic
-reset** — resetting there would run the old fabric against new flash
-contents (CSR mismatch) — power-cycle once instead.
+reset/boot-app** — resetting there would run the old fabric against new
+flash contents (CSR mismatch) — power-cycle once instead.
 
 **Zero-JTAG full update**: from a running loader, flash bitstream + BIOS +
 loader in one session (`flash.py --bitstream --bios --loader --port
 /dev/ttyACM0`), then one power-cycle. Safe because the loader firmware runs
-entirely from `main_ram` (BRAM), never fetching through the flash mmap, so
-it can't crash itself by erasing/reprogramming the region it booted from;
-every image is CRC-verified through the mailbox before the tool moves on.
-Hardware-validated end to end this session.
+entirely from `main_ram`, never fetching through the flash mmap, so it can't
+crash itself by erasing/reprogramming the region it booted from; every image
+is CRC-verified through the mailbox before the tool moves on.
+Hardware-validated end to end (bitstream+BIOS+loader flash + cold power-cycle).
 
 ## Recovery matrix
 
@@ -215,4 +227,4 @@ Hardware-validated end to end this session.
 | loader image | BIOS flashboot fails → falls through to serialboot: `litex_term --kernel software/c3_flash/c3_flash.bin`, then reflash `--loader` once it's back up |
 | BIOS / bitstream | JTAG (`--flash-bios` / `--flash`); EBR-ROM build (`with_spi_flash=False`) as golden image |
 | wrong/mixed CSR maps | reflash bitstream+BIOS+loader together (one `flash.py` session) |
-| app image | n/a — no boot-manager consumes the app slot yet (deferred, needs SDRAM) |
+| app image | brick-safe by construction: an absent/invalid/corrupt app CRC fails `try_chain_boot()` and the loader just stays resident (`software/c3_flash/main.c`) — reflash `--app` and retry, no recovery ladder needed |

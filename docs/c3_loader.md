@@ -17,13 +17,22 @@ next.
 > no JTAG, a C3-driven reset line (`'R'` command, FPGA `ext_reset`/G3 <->
 > C3 GPIO7), and the loader itself is now flash-resident at the loader slot
 > (0x200000, `.fbi`-wrapped) — BIOS auto-boots straight into it on every
-> reset/power-cycle, no `litex_term --kernel` step needed. **Caveat:** this
-> makes the loader the default boot target on *every* reset — the
-> interactive BIOS console is unreachable during normal operation until a
-> real boot-manager (chain-boot to an app) exists, which needs SDRAM --
-> fixed as of 2026-07-03 ([[halfrate-sdram]]) -- and isn't built yet.
-> This doc's design section is kept for historical context; don't follow its
-> pin/protocol tables for new work.
+> reset/power-cycle, no `litex_term --kernel` step needed. This doc's design
+> section is kept for historical context; don't follow its pin/protocol
+> tables for new work.
+>
+> **Boot-manager / chain-boot (added once SDRAM was fixed, [[halfrate-sdram]]):**
+> the loader is resident by default (opposite of the old winc_loader, which
+> defaulted to chain-booting). A sticky one-shot flag (`gateware/soc_features.py`'s
+> `add_boot_flag`/`BootFlag` — the CSR half of `BootCtl`, deliberately with
+> none of its FTDI DTR/RTS coupling, so GPIO7 stays the *only* reset path)
+> gates `try_chain_boot()` in `software/c3_flash/main.c`: the host sets it via
+> a new mailbox opcode (`CMD_BOOT_APP`, `flash.py --boot-app`), the loader
+> copies the app slot (0x280000) to `main_ram` and jumps, clearing the flag
+> first — so the *next* reset (from the app, GPIO7, or a power-cycle) lands
+> back in the resident loader automatically, no separate "return to loader"
+> step. Hardware-verified: `--boot-app` chain-booted `software/diag` (the
+> generic SoC-agnostic test console) successfully.
 
 ## Architecture — hybrid (C3 brain, FPGA thin programmer)
 

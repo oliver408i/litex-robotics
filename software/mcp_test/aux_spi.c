@@ -22,7 +22,7 @@ const aux_spi_dev_t AUX_IOX = {
     .mode    = 0,
 };
 
-/* LSM6DS3 IMU on the same bus (cs[1]) -- bus-health reference: a passing
+/* LSM6DS3 IMU on the same bus (cs[0]) -- bus-health reference: a passing
  * WHO_AM_I proves sclk/mosi/miso + the AuxSPIMaster datapath, isolating an
  * expander failure to the expander side. 1 MHz is inside the LSM6DS3 limit. */
 const aux_spi_dev_t AUX_IMU = {

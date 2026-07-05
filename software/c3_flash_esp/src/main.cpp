@@ -58,6 +58,7 @@
 #define CMD_PROGRAM  0x03
 #define CMD_CRC      0x04
 #define CMD_REBOOT   0x05
+#define CMD_BOOT_APP 0x06
 #define ST_OK        0x00
 
 /* SAFE scratch sector for the self-test: 15 MB into the 16 MB W25Q128, far above
@@ -163,6 +164,15 @@ static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
     return (int)status;
 }
 
+/* Fire-and-forget doorbell: rings the mailbox with no arg writes and no
+ * completion poll. Used only for CMD_BOOT_APP -- the firmware resets itself
+ * to chain-boot the app right after seeing the doorbell, so it never gets to
+ * clear MBX_CMD; mbx_cmd()'s poll loop would just time out waiting for it. */
+static void mbx_fire(uint8_t op) {
+    SPISession _session;
+    wb_write(MBX_BASE + MBX_CMD, op);
+}
+
 void setup() {
     /* Native USB-Serial-JTAG RX has NO backpressure: HWCDC.cpp pulls bytes
      * from the hardware FIFO in an ISR and silently DROPS whatever doesn't
@@ -183,7 +193,8 @@ void setup() {
 
     Serial.println("\n[c3] SPIBone flash loader");
     Serial.printf("[c3] SPI @%lu Hz, mailbox @0x%08lX. cmds: 't'=self-test  'p'=ping"
-                  "  'R'=pulse FPGA reset  'W..'=host image stream (flash_c3.py)\n",
+                  "  'R'=pulse FPGA reset  'b'=boot app (chain-boot)"
+                  "  'W..'=host image stream (flash_c3.py)\n",
                   (unsigned long)SPI_HZ, (unsigned long)MBX_BASE);
 }
 
@@ -329,6 +340,10 @@ void loop() {
     case 'r': case 'R':
         reset_pulse();
         Serial.println("[c3] reset pulsed");
+        break;
+    case 'b': case 'B':
+        mbx_fire(CMD_BOOT_APP);
+        Serial.println("[c3] boot-app requested (FPGA resetting)");
         break;
     default:                                   /* ignore stray bytes / newlines */
         break;

@@ -9,8 +9,8 @@
  * software-held chip-selects. Each device on the bus is described by an
  * aux_spi_dev_t; aux_spi_select() programs that device's clock and asserts its
  * CS, held until aux_spi_deselect(). Same engine the WINC/IMU bring-ups used --
- * here it carries the MCP23S17 GPIO expander (AUX_IOX, cs[3]) and, for a
- * bus-health cross-check, the LSM6DS3 IMU (AUX_IMU, cs[1]). */
+ * here it carries the MCP23S17 GPIO expander (AUX_IOX, cs[2]) and, for a
+ * bus-health cross-check, the LSM6DS3 IMU (AUX_IMU, cs[0]). */
 
 typedef struct {
     uint8_t cs_mask;   /* bit i (= 1u<<AUX_CS_*) drives cs_n[i] low */
@@ -27,7 +27,7 @@ typedef struct {
 /* The MCP23S17 SPI GPIO expander on the shared bus (cs index AUX_CS_IOX). */
 extern const aux_spi_dev_t AUX_IOX;
 
-/* LSM6DS3 IMU on the same bus (cs[1]); bus-health reference for diagnostics --
+/* LSM6DS3 IMU on the same bus (cs[0]); bus-health reference for diagnostics --
  * a passing WHO_AM_I proves sclk/mosi/miso + the datapath independently of the
  * expander, isolating any expander failure to the expander side. */
 extern const aux_spi_dev_t AUX_IMU;

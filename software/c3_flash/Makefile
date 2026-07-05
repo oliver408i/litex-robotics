@@ -24,9 +24,10 @@ include $(SOC_DIRECTORY)/software/common.mak
 CFLAGS += -I. -ffunction-sections -fdata-sections
 
 # Lean: just the loader, crt0, and the reusable flash driver. No WINC host
-# driver, no SDRAM/networking -- crc32/uart come from libbase (gc-sections drops
-# everything unused).
-OBJECTS = main.o crt0.o flash_w25q.o
+# driver, no networking -- crc32/uart come from libbase (gc-sections drops
+# everything unused). chain_stub.o is the SRAM-resident chain-boot copy stub
+# (chain_stub.S, verbatim copy of winc_loader's).
+OBJECTS = main.o crt0.o flash_w25q.o chain_stub.o
 
 all: c3_flash.bin
 

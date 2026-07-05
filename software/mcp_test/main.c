@@ -1,20 +1,24 @@
 /* MCP23S17 SPI GPIO-expander bring-up firmware.
  *
- * The hardware half is icepi_zero_mcp.py (BaseSoC + add_mcp_expander): the
- * MCP23S17 sits on the shared aux SPI bus on a 4th chip-select (AUX_CS_IOX,
- * IO11/G2) with reset on IO10/L2 (iox_reset) and INTA on IO22/P2 (iox_inta).
- * This replaces the retired ATWINC1500. There is no WiFi OTA path yet, so load
- * it over UART:
- *   litex_term /dev/ttyUSB0 --speed 1000000 --kernel software/mcp_test/mcp_test.bin
+ * The hardware half is icepi_zero_mcp.py (C3FlashSoC's shape + add_mcp_expander):
+ * the MCP23S17 sits on the shared aux SPI bus on a 3rd chip-select (AUX_CS_IOX,
+ * IO17/R3) with reset on IO10/L2 (iox_reset) and INTA on IO22/P2 (iox_inta).
+ * This replaces the retired ATWINC1500. Runs as the chain-booted app behind
+ * the resident C3 loader (software/c3_flash) -- no JTAG/litex_term needed:
+ *   flash.py --app software/mcp_test/mcp_test.bin --port /dev/ttyACM0
+ *   flash.py --boot-app --port /dev/ttyACM0
  *
  * Sequence:
  *   1. IMU WHO_AM_I  -- proves sclk/mosi/miso + the AuxSPIMaster datapath
  *                       independently of the expander (cross-check).
  *   2. reset + probe -- release the expander, echo-test a scratch register.
- *   3. GPA7 loopback -- closed loop IO24/L1 <-> GPA7, both directions.
- *   4. output walk   -- GPA as outputs, walk a 1 across OLATA (meter/LED check).
- *   5. input watch   -- GPB as pulled-up inputs, interrupt-on-change enabled;
+ *   3. output walk   -- GPA as outputs, walk a 1 across OLATA (meter/LED check).
+ *   4. input watch   -- GPB as pulled-up inputs, interrupt-on-change enabled;
  *                       poll GPIOB + the INTA sideband and log on change.
+ *
+ * NOTE: the GPA7 loopback closed-loop test (IO24/L1 <-> GPA7) is dropped here
+ * -- IO24/L1 is now the C3 link's MOSI line, a real pin conflict with the
+ * loopback bench fixture. See icepi_zero_mcp.py's docstring.
  *
  * Logging is the project's uart-backed log.c (software/common) -- there is no
  * working printf in this firmware.
@@ -53,54 +57,6 @@ static void bus_health(void)
         log_puts("(unexpected; IMU absent or bus issue -- expander result below "
                  "still tells us about the IOX side)");
     log_nl();
-}
-
-/* ---- GPA7 loopback: IO24/L1 (FPGA tristate) <-> MCP23S17 GPA7 -----------
- * The strongest bring-up check: a closed loop through the expander's real GPIO
- * silicon, both directions. Requires the gpa7_loop fixture in gateware. The
- * drive order is chosen so the two ends never drive the wire at once. */
-#ifndef CSR_GPA7_LOOP_BASE
-#error "Build icepi_zero_mcp.py with add_gpa7_loopback() for the GPA7 loopback test."
-#endif
-#define GPA7 7u
-static void log_dir(const char *tag, int drove, int got)
-{
-    log_puts(tag); log_uint((uint32_t)drove);
-    log_puts(", read "); log_uint((uint32_t)got);
-    log_puts(got == drove ? "  OK" : "  MISMATCH"); log_nl();
-}
-
-static int gpa7_loopback(void)
-{
-    int ok = 1;
-
-    /* Direction A: expander drives GPA7 (output), FPGA reads IO24 (input). */
-    gpa7_loop_oe_write(0);                                  /* FPGA pin = Hi-Z input */
-    mcp23s17_write(MCP_IODIRA, (uint8_t)~(1u << GPA7));     /* GPA7 output, GPA0-6 input */
-    for (int v = 0; v <= 1; v++) {
-        mcp23s17_write(MCP_OLATA, (uint8_t)(v << GPA7));
-        busy_wait(1);
-        int got = (int)(gpa7_loop_in_read() & 1u);
-        log_dir("  A exp->fpga: drove ", v, got);
-        if (got != v) ok = 0;
-    }
-
-    /* Direction B: FPGA drives IO24, expander reads GPA7 over SPI.
-     * Make the expander an input BEFORE enabling the FPGA driver (no contention). */
-    mcp23s17_write(MCP_IODIRA, 0xFFu);                     /* GPA all inputs */
-    gpa7_loop_oe_write(1);                                 /* now FPGA drives the wire */
-    for (int v = 0; v <= 1; v++) {
-        gpa7_loop_out_write((uint32_t)v);
-        busy_wait(1);
-        int got = (int)((mcp23s17_read(MCP_GPIOA) >> GPA7) & 1u);
-        log_dir("  B fpga->exp: drove ", v, got);
-        if (got != v) ok = 0;
-    }
-
-    /* Safe idle: both ends inputs. */
-    gpa7_loop_oe_write(0);
-    mcp23s17_write(MCP_IODIRA, 0xFFu);
-    return ok;
 }
 
 /* ---- output walk: drive a single 1 across GPA, verify via GPIOA ---------- */
@@ -148,7 +104,7 @@ int main(void)
 
     mcp23s17_reset();
     if (!mcp23s17_probe()) {
-        log_puts("PROBE FAIL: register echo mismatch -- check CS(IO11), reset(IO10), "
+        log_puts("PROBE FAIL: register echo mismatch -- check CS(IO17), reset(IO10), "
                  "wiring, or A2:A0 strap (expected 000)."); log_nl();
         /* Don't spin silently; keep retrying the probe. */
         while (1) {
@@ -160,11 +116,6 @@ int main(void)
         }
     }
     log_puts("PROBE OK: register echo round-trips -- SPI link to MCP23S17 is good."); log_nl();
-
-    log_puts("GPA7 loopback (IO24/L1 <-> GPA7):"); log_nl();
-    log_puts(gpa7_loopback() ? "LOOPBACK PASS -- expander GPIO good both directions."
-                             : "LOOPBACK FAIL -- check the IO24<->GPA7 jumper.");
-    log_nl();
 
     output_walk();
     input_watch_setup();

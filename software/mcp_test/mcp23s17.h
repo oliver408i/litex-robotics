@@ -4,10 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* MCP23S17 16-bit SPI GPIO expander on the shared aux bus (AUX_IOX, cs[3]).
+/* MCP23S17 16-bit SPI GPIO expander on the shared aux bus (AUX_IOX, cs[2]).
  *
  * Wiring (board refactor 2026-06-25, replaces the retired ATWINC1500):
- *   CS    = IO11/G2  -> aux_spi cs[3] (AUX_CS_IOX)
+ *   CS    = IO17/R3  -> aux_spi cs[2] (AUX_CS_IOX)
  *   RESET = IO10/L2  -> iox_reset GPIOOut (active low; 0 = held in reset)
  *   INTA  = IO22/P2  -> iox_inta  GPIOIn  (active low by default; with IRQ)
  *

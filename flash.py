@@ -8,6 +8,8 @@
   ./flash.py --bitstream --bios --loader --port /dev/ttyACM0   # full system from build outputs
   ./flash.py file.bin --offset 0x300000 [--fbi] --port /dev/ttyACM0  # explicit offset
   ./flash.py --reset --port /dev/ttyACM0                  # just reboot the SoC
+  ./flash.py --app myapp.bin --boot-app --port /dev/ttyACM0  # flash + chain-boot the app
+  ./flash.py --boot-app --port /dev/ttyACM0                  # boot whatever's in the app slot now
 
 Slots are combinable in one session; bare --bitstream/--bios/--loader pick up
 the standard build artifacts. --port is the ESP32-C3's USB-CDC port (the
@@ -18,9 +20,11 @@ loader is flash-resident and comes up on its own after any reset/power-cycle
 to talk to it. The boot chain, wire protocol and C3 link design are
 documented in docs/boot_chain.md and docs/c3_loader.md.
 
-Note: the old WiFi/WINC-era --run (SDRAM-stage-and-execute) has no equivalent
-here -- the C3 loader has no SDRAM image buffer. Gone until SDRAM comes back
-(see the halfrate-sdram / SDRAM-debug follow-up).
+--boot-app chain-boots whatever's in the app slot: a one-shot request (sticky
+flag, self-clears), so the *next* reset lands back in the resident loader
+automatically -- no separate "return to loader" step needed. Not the old
+WiFi/WINC-era --run (SDRAM-stage-and-execute, no flash write): the app must
+already be flashed first.
 """
 import argparse
 import os
@@ -37,9 +41,8 @@ SLOTS = {   # name: (offset, wrap_fbi, default_file or None)
     "bitstream": (0x000000, False, "build/icepi_zero/gateware/icepi_zero.bit"),
     "bios":      (0x100000, False, "build/icepi_zero/software/bios/bios.bin"),
     "loader":    (0x200000, True,  "software/c3_flash/c3_flash.bin"),
-    "app":       (0x280000, True,  None),   # apps vary -- always explicit; no
-                                             # boot-manager consumes this slot
-                                             # yet (needs SDRAM, deferred).
+    "app":       (0x280000, True,  None),   # apps vary -- always explicit;
+                                             # chain-booted via --boot-app.
 }
 BUILD_HINTS = {
     "bitstream": ".venv/bin/python icepi_zero_c3flash.py --build",
@@ -87,6 +90,10 @@ def parse_args():
                     help="the ESP32-C3's USB-CDC serial port (e.g. /dev/ttyACM0) -- required")
     ap.add_argument("--reset", action="store_true",
                     help="no flashing: just pulse the C3->FPGA reset line (requires --port)")
+    ap.add_argument("--boot-app", action="store_true",
+                    help="chain-boot the app slot (one-shot; runs after any "
+                         "flashing in this session, or standalone with no "
+                         "other flags)")
     ap.add_argument("--reboot", action="store_true",
                     help="pulse the reset line when done even if only bitstream/BIOS were flashed")
     ap.add_argument("--no-reboot", action="store_true",
@@ -131,8 +138,8 @@ def build_jobs(args):
             data = struct.pack("<II", len(data), zlib.crc32(data)) + data
         by_offset[args.offset] = (args.file, args.offset, data)
     jobs = list(by_offset.values())
-    if not jobs:
-        sys.exit("nothing to do -- give a slot preset, --syspkg, or FILE --offset X")
+    if not jobs and not args.boot_app:
+        sys.exit("nothing to do -- give a slot preset, --syspkg, FILE --offset X, or --boot-app")
     return sorted(jobs, key=lambda j: j[1])
 
 
@@ -143,33 +150,71 @@ def open_c3(port):
         import serial
     except ImportError:
         sys.exit("pyserial not installed -- pip install pyserial")
+    print(f"opening {port}...", flush=True)
     ser = serial.Serial(port, 115200, timeout=15)
+    print("  waiting for C3 to reboot (opening the port resets native USB-CDC)...", flush=True)
     time.sleep(2.5)              # opening resets the C3 (native USB-CDC); let it reboot
     ser.reset_input_buffer()     # discard the C3 boot banner
+    print("  C3 ready", flush=True)
     return ser
 
 
-def c3_ping(ser):
-    """Pre-flight sanity check: PING the FPGA loader through the C3 mailbox --
-    catches a wrong --port or a loader that isn't up before we try to flash."""
-    ser.reset_input_buffer()
-    ser.write(b"p")
-    time.sleep(0.3)
-    reply = ser.read(500).decode(errors="replace")
-    if "st=0" not in reply:
-        sys.exit("C3 PING failed -- is the FPGA loader running (flash-resident, "
-                  f"or serial-booted)?\n  reply: {reply.strip()!r}")
-    print(f"  {reply.strip()}")
+def _read_line(ser, timeout=2.0):
+    """Read one \\n-terminated reply, capped at `timeout` s. NOT ser.read(N):
+    that blocks trying to fill all N bytes and only gives up at the port's
+    full 15 s timeout, even when a short reply already arrived (this made
+    c3_ping/c3_reset/c3_boot_app appear to hang for ~15s on every call)."""
+    old_timeout = ser.timeout
+    ser.timeout = timeout
+    try:
+        return ser.read_until(b"\n").decode(errors="replace")
+    finally:
+        ser.timeout = old_timeout
+
+
+def c3_ping_wait(ser, attempts=3, attempt_timeout=6.0):
+    """Pre-flight: PING the FPGA loader through the C3 mailbox, retrying --
+    catches a wrong --port or a loader that never comes up, while tolerating
+    the post-reset settle time (BIOS init + flashboot into the loader).
+    attempt_timeout is long on purpose: if the mailbox isn't live yet, the
+    C3's own mbx_cmd() poll blocks for its full 5s internal timeout before it
+    even replies with an error -- a short host-side read would just time out
+    first and make a live-but-slow loader look dead."""
+    print("waiting for FPGA loader mailbox (post-reset settle)...", flush=True)
+    last = ""
+    for _ in range(attempts):
+        ser.reset_input_buffer()
+        ser.write(b"p")
+        reply = _read_line(ser, timeout=attempt_timeout)
+        if "st=0" in reply:
+            print(f"  {reply.strip()}")
+            return
+        last = reply
+    sys.exit("C3 PING failed -- is the FPGA loader running (flash-resident, "
+              f"or serial-booted)?\n  last reply: {last.strip()!r}")
 
 
 def c3_reset(ser):
     """Pulse the C3->FPGA reset line ('R', software/c3_flash_esp). Resets the
     CPU/clock domains only -- does NOT reconfigure the fabric; a bitstream
     change still needs a real power-cycle."""
+    print("pulsing C3 -> FPGA reset line ('R')...", flush=True)
     ser.reset_input_buffer()
     ser.write(b"R")
-    time.sleep(0.3)
-    reply = ser.read(500).decode(errors="replace")
+    reply = _read_line(ser)
+    print(f"  {reply.strip() or '(no reply)'}")
+
+
+def c3_boot_app(ser):
+    """Chain-boot the app slot ('b', software/c3_flash_esp). One-shot: the
+    loader's sticky boot flag self-clears once consumed, so the next reset
+    (from the app, GPIO7, or a power-cycle) lands back in the resident
+    loader with no separate 'return to loader' step. No FPGA-side reply to
+    wait for -- it's already resetting by the time it could answer."""
+    print("requesting boot-app ('b')...", flush=True)
+    ser.reset_input_buffer()
+    ser.write(b"b")
+    reply = _read_line(ser)
     print(f"  {reply.strip() or '(no reply)'}")
 
 
@@ -183,13 +228,15 @@ def flash_slot(ser, label, offset, data):
         sys.exit(f"{label}: offset 0x{offset:X} not 4 KB-aligned")
 
     crc = zlib.crc32(data) & 0xFFFFFFFF   # standard CRC-32 == FPGA libbase crc32
-    print(f"{label}: {len(data)} B -> flash @0x{offset:06x}")
+    print(f"{label}: {len(data)} B -> flash @0x{offset:06x}", flush=True)
 
     t0 = time.monotonic()
     ser.write(b"W" + struct.pack("<III", offset, len(data), crc))
     ser.flush()
 
     # Ack after ERASE (may take seconds for large images).
+    print(f"  erasing (up to {(len(data) + 0xFFF) // 0x1000} sector(s), "
+          "can take several seconds for a large image)...", flush=True)
     ea = ser.read(1)
     if ea != b"\x01":
         code = ea[0] if ea else -1
@@ -197,7 +244,9 @@ def flash_slot(ser, label, offset, data):
 
     # Stream pages in WINDOW_PAGES-sized windows, paced by one ack per window.
     npages = (len(data) + 255) // 256
+    nwindows = (npages + WINDOW_PAGES - 1) // WINDOW_PAGES
     i = 0
+    w = 0
     while i < npages:
         window = min(WINDOW_PAGES, npages - i)
         for j in range(window):
@@ -207,10 +256,17 @@ def flash_slot(ser, label, offset, data):
         a = ser.read(1)
         if a != b"\x01":
             code = a[0] if a else -1
+            print()
             sys.exit(f"{label}: window at page {i}/{npages} ack failed: "
                       f"0x{code:02X} ({C3_STATUS.get(code, 'no reply')})")
         i += window
+        w += 1
+        elapsed = time.monotonic() - t0
+        print(f"  programming: window {w}/{nwindows}  ({i * 256} / {len(data)} B, "
+              f"{elapsed:.1f}s)      ", end="\r", flush=True)
+    print()
 
+    print("  verifying (read-back CRC)...", flush=True)
     reply = ser.read(5)             # final status + read-back crc
     dt = time.monotonic() - t0
     if len(reply) != 5:
@@ -237,21 +293,31 @@ def main():
     jobs = build_jobs(args)
 
     ser = open_c3(args.port)
-    c3_ping(ser)
+    # Force the FPGA back into the resident loader before touching the
+    # mailbox, regardless of what it's currently running (e.g. a chain-booted
+    # app has no mailbox protocol at all -- PING would just get no reply).
+    # GPIO7 always lands back in c3_flash (resident by default, see
+    # docs/c3_loader.md), so this makes every session start from a known state.
+    c3_reset(ser)
+    c3_ping_wait(ser)
 
     t0 = time.monotonic()
     for label, offset, data in jobs:
         flash_slot(ser, label, offset, data)
-    print(f"total: {time.monotonic()-t0:.1f} s")
+    if jobs:
+        print(f"total: {time.monotonic()-t0:.1f} s")
 
     flashed = {label.split(":")[0] for label, _, _ in jobs}
     if "bitstream" in flashed and not args.reboot:
         # A soft reset here would boot the OLD (still-configured) bitstream
         # against the NEW flash contents -- a CSR-map mismatch if the
-        # gateware changed. Skip it on purpose; the loader itself only needs
-        # one power-cycle to pick up everything.
+        # gateware changed. Skip it on purpose (including --boot-app -- it
+        # would chain-boot off the stale fabric); the loader itself only
+        # needs one power-cycle to pick up everything.
         print("NOTE: bitstream flashed -- POWER-CYCLE to apply everything "
-              "(reset skipped on purpose)")
+              "(reset/boot-app skipped on purpose)")
+    elif args.boot_app:
+        c3_boot_app(ser)
     elif (args.reboot or flashed & {"app", "loader", "bios"}) and not args.no_reboot:
         c3_reset(ser)
         print("reset pulsed -- BIOS/loader picked up the new flash contents")

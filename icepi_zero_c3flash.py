@@ -23,7 +23,7 @@ the flash JEDEC id back through the mailbox); erase/program/verify follow.
 """
 from icepi_zero_base import BaseSoC, make_parser, run_build
 
-from gateware.soc_features import add_c3_spibone, add_c3_mailbox
+from gateware.soc_features import add_c3_spibone, add_c3_mailbox, add_boot_flag
 
 
 class C3FlashSoC(BaseSoC):
@@ -37,6 +37,7 @@ class C3FlashSoC(BaseSoC):
         )
         add_c3_spibone(self)     # ESP32-C3 as a Wishbone master over SPI
         add_c3_mailbox(self)     # command/data mailbox RAM @ 0x90000000
+        add_boot_flag(self)      # sticky boot-to-app flag for chain-boot (docs/c3_loader.md)
 
 
 def main():

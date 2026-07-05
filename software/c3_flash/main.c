@@ -1,4 +1,4 @@
-/* IcePi Zero ESP32-C3 SPIBone flash loader -- FPGA side (SRAM-resident).
+/* IcePi Zero ESP32-C3 SPIBone flash loader -- FPGA side (SRAM/SDRAM-resident).
  *
  * The post-WINC loader rebuilt on the verified SPIBone transport. The ESP32-C3
  * (Wishbone master over SPI) writes a command + page data into an UNCACHED
@@ -6,11 +6,23 @@
  * firmware polls the mailbox and drives the LiteSPI MASTER (flash_w25q.c) to
  * erase/program/verify the SPI NOR. See icepi_zero_c3flash.py / docs/c3_loader.md.
  *
- * XIP-safety: this runs from main_ram (BRAM), never fetching through the flash
- * mmap, so it is safe to issue LiteSPI master commands (which knock the flash out
- * of continuous-read mode -- see flash_w25q.h / docs/boot_chain.md).
+ * XIP-safety: this runs from main_ram (SDRAM, not flash), never fetching
+ * through the flash mmap, so it is safe to issue LiteSPI master commands
+ * (which knock the flash out of continuous-read mode -- see flash_w25q.h /
+ * docs/boot_chain.md).
  *
- * Bring-up: serial-boot to main_ram (SDRAM is down):
+ * Boot-manager triage: resident-by-default (opposite of winc_loader's
+ * resident-unless-told-to-stay). On every boot, main() checks the sticky
+ * boot_ctl flag (gateware add_boot_flag, docs/c3_loader.md); if it reads
+ * BOOT_APP_MAGIC, it's cleared and try_chain_boot() copies the app slot
+ * (FLASH_APP_OFFSET) into main_ram and jumps -- a one-shot request, since the
+ * flag is already 0 by the time the app (or a subsequent reset) runs, so the
+ * *next* reset lands back in this resident loader with no extra bookkeeping.
+ * Otherwise (the common case -- default polarity, flag clear) this falls
+ * straight into the resident mailbox loop below. Triggered by the host via
+ * the CMD_BOOT_APP mailbox opcode (flash.py --boot-app).
+ *
+ * Bring-up: serial-boot to main_ram:
  *   litex_term /dev/ttyUSB0 --speed 1000000 --kernel software/c3_flash/c3_flash.bin
  *
  * Mailbox layout (shared with software/c3_flash_esp), all little-endian u32:
@@ -22,12 +34,16 @@
  *   +0x40 data[]  up to 256 payload bytes for PROGRAM
  * Handshake: C3 writes arg0/arg1(+data) then cmd; firmware runs it, writes
  * result+status, then writes cmd=0. C3 polls cmd==0, then reads status+result.
+ * CMD_BOOT_APP is the exception: no reply, since it resets before it could
+ * clear the doorbell -- the C3 side fires it and moves on (see main.cpp).
  */
 #include <stdint.h>
-#include <system.h>            /* flush_cpu_dcache() */
+#include <system.h>            /* flush_cpu_dcache(), flush_cpu_icache() */
 #include <libbase/crc.h>
+#include <libbase/uart.h>      /* uart_sync() */
 #include <generated/csr.h>
 #include <generated/mem.h>
+#include <generated/soc.h>     /* FLASH_APP_OFFSET, when the SoC provides it */
 
 #include "flash_w25q.h"
 
@@ -37,11 +53,23 @@
 #define CMD_PROGRAM  0x03
 #define CMD_CRC      0x04
 #define CMD_REBOOT   0x05
+#define CMD_BOOT_APP 0x06
 
 /* Status codes. */
 #define ST_OK        0x00
 #define ST_BAD_CMD   0x01
 #define ST_BAD_ARG   0x02
+
+/* Shared with the host's flash.py --boot-app (value has no meaning outside
+ * this pairing -- same constant winc_loader used, no reason to change it). */
+#define BOOT_APP_MAGIC 0xB007F1A5u
+
+#ifndef FLASH_APP_OFFSET   /* soc.h constant when the SoC provides it */
+#define FLASH_APP_OFFSET 0x280000
+#endif
+
+/* SRAM-resident copy stub (chain_stub.S) -- never returns. */
+extern void chain_stub(const void *src, void *dst, uint32_t len, uint32_t entry);
 
 /* Uncached mailbox (must match gateware add_c3_mailbox origin + the C3 side). */
 #define MBX_BASE     0x90000000u
@@ -70,6 +98,42 @@ static void log_hex(uint32_t v)
 		log_char("0123456789abcdef"[(v >> i) & 0xf]);
 }
 
+/* Validate + chain-boot the app .fbi at FLASH_APP_OFFSET; returns only if
+ * there is no valid image (stays resident). Ported from
+ * software/winc_loader/main.c's function of the same name -- the copy runs
+ * from the SRAM-resident chain_stub because the app lands exactly where this
+ * loader executes (main_ram). */
+static void try_chain_boot(void)
+{
+	const uint8_t *img = (const uint8_t *)(SPIFLASH_BASE + FLASH_APP_OFFSET);
+
+	flush_cpu_dcache();   /* the slot may have just been reflashed */
+	uint32_t len = ((const volatile uint32_t *)img)[0];
+	uint32_t crc = ((const volatile uint32_t *)img)[1];
+
+	if (len == 0 || len == 0xffffffff ||
+	    len > SPIFLASH_SIZE - FLASH_APP_OFFSET - 8) {
+		log_puts("no app image at flash "); log_hex(FLASH_APP_OFFSET);
+		log_puts(" -- staying resident\n");
+		return;
+	}
+	if (crc32(img + 8, len) != crc) {
+		log_puts("app image CRC mismatch -- staying resident\n");
+		return;
+	}
+
+	log_puts("chain-booting app (");
+	log_hex(len);
+	log_puts(" B @"); log_hex(FLASH_APP_OFFSET); log_puts(")\n");
+	/* visual separator (matches winc_loader/the BIOS "Liftoff!"): everything
+	 * below is app, not loader. */
+	log_puts("--============== \e[1mapp\e[0m ===============--\n");
+	flush_cpu_icache();
+	flush_cpu_dcache();
+	chain_stub(img + 8, (void *)MAIN_RAM_BASE, (len + 3) & ~3u, MAIN_RAM_BASE);
+	__builtin_unreachable();
+}
+
 int main(void)
 {
 	MBX(MBX_CMD) = 0;               /* idle before we advertise readiness */
@@ -78,6 +142,13 @@ int main(void)
 	uint32_t id = flash_jedec_id();
 	log_hex(id);
 	log_puts(id == 0x00EF4018 ? " (W25Q128)\n" : " (UNEXPECTED)\n");
+
+	if (boot_ctl_flag_read() == BOOT_APP_MAGIC) {
+		boot_ctl_flag_write(0);
+		log_puts("boot-app flag set -- ");
+		try_chain_boot();   /* returns only without a valid app image */
+	}
+
 	log_puts("waiting for C3 mailbox commands @0x90000000...\n");
 
 	for (;;) {
@@ -111,6 +182,12 @@ int main(void)
 			break;
 		case CMD_REBOOT:
 			log_puts("reboot\n");
+			ctrl_reset_write(1);
+			break;
+		case CMD_BOOT_APP:
+			log_puts("boot-app requested\n");
+			uart_sync();
+			boot_ctl_flag_write(BOOT_APP_MAGIC);
 			ctrl_reset_write(1);
 			break;
 		default:

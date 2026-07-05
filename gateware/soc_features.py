@@ -261,27 +261,62 @@ def add_aux_imu(soc, imu_spi_clk_freq=1e6, busy_led=None):
 # sclk/mosi/miso as the IMU + MCP3008 and adds a 4th chip-select plus a reset and
 # an interrupt sideband.
 #
-# Pins (physical wiring, 2026-06-25):
-#   CS    = IO11 / G2   -- 4th aux-bus chip-select (cs[3], AUX_CS_IOX)
+# Pins:
+#   CS    = IO17 / R3   -- 3rd aux-bus chip-select (cs[2], AUX_CS_IOX)
+#
+# THE CS SAGA, and how it actually ended (2026-07-04): the CS was chased across
+# FIVE pins (IO11/G2 -> IO9/J1 -> IO4/R1 -> IO17/R3 -> IO16/H3) on a "CS stuck at
+# 0V / dead pin" theory, including a scary "IO17 bare header pin reads 0V with
+# nothing attached" measurement that spawned a whole "the 74HC595-freed pin pool
+# (IO5/9/11/12/17) shares a dead I/O bank" hypothesis. That theory was WRONG.
+# The real bug was never the pin or the gateware -- it was INTERMITTENT PHYSICAL
+# WIRING on the MCP side (floating A2:A0 straps / loose jumpers). Proof, in order:
+#   - IMU WHO_AM_I passed the whole time  -> shared sclk/mosi/miso datapath good.
+#   - a CS-metering diag (drive cs_n straight from the CSR, hold 3s, meter the
+#     pin) showed the CS pin tracks the CSR perfectly              -> pin good.
+#   - the register probe INTERMITTENTLY passed (echoed 0x55/0xAA/... back
+#     correctly for seconds, then went silent)  -> chip ALIVE, link flaky.
+# A chip that echoes walking patterns even once is alive and connected; the "0V"
+# readings were a mix of stale-bitstream/measurement artifacts and a genuinely
+# silent bus floating to a pull-up during a dropout. See memory
+# [[mcp23s17-was-intermittent-wiring]]. Lesson for next time: when the IMU cross-
+# check passes, STOP touching gateware/pins -- the datapath is proven; read the
+# slave's own POR registers and watch for pass/fail flipping over seconds (=
+# wiring), and hard-tie A2:A0 to GND first. Same bisect-the-layer lesson as the
+# C3 bring-up ([[c3-link-gpio-diag]]).
+#
+# CS now lives on IO17/R3 (a dedicated free pin) rather than the borrowed
+# IO16/H3 (= LCD_CS), which frees H3 for future LCD coexistence. If IO17 ever
+# misbehaves again, re-verify with the CS-metering diag before assuming the pin
+# -- do not reopen the pin-pool rabbit hole.
 #   RESET = IO10 / L2   -- active low (this was the *direct* LCD/CTP reset pin;
 #                          in an expander build the LCD/CTP resets move onto
 #                          expander OUTPUT pins, freeing L2 to reset the expander)
 #   INTA  = IO22 / P2   -- interrupt in (this was the WINC CHIP_EN pin)
 #
 # TWO namespace/pin traps to remember:
-#  (1) "MCP" on this bus historically means the MCP3008 ADC (cs[2], AUX_CS_MCP).
+#  (1) "MCP" on this bus historically means the MCP3008 ADC (cs[1], AUX_CS_MCP).
 #      This expander is a DISTINCT chip -> it uses AUX_CS_IOX / iox_* / "IOX".
-#  (2) CS pin IO11/G2 is ALSO the NMEA GPS UART TX (add_gps_uart). The expander
-#      and a GPS-on-IO11 build are mutually exclusive until one is repinned.
+#  (2) IO11/G2 (the pin the CS was originally mis-documented as) is the NMEA
+#      GPS UART TX (add_gps_uart) -- genuinely already wired that way on this
+#      board, not just a future planning conflict.
 # Both reset (L2) and INTA (P2) collide with add_lcd_touch / add_winc_aux pins,
 # so this adder is for the standalone bring-up top (icepi_zero_mcp.py) until the
 # deployables are migrated off the WINC and the LCD reset is rerouted.
+#
+# cs_n is 3-wide here, NOT the WINC-era 4-wide layout (_winc_io/_aux_io above):
+# the dead WINC cs[0] slot (M2/IO23) is dropped entirely, because M2 is now the
+# ESP32-C3 link's MISO pin (add_c3_spibone) -- keeping a 4th unused cs_n driver
+# on M2 collides with that at the pin-binding level (two TRELLIS_IO cells on one
+# bel), found when combining this with the C3 loader for MCP bring-up. So the
+# AUX_CS_* indices below are LOCAL to this 3-wide bus, not the shared
+# AUX_CS_IMU/AUX_CS_MCP module constants used by the WINC-era 4-wide extensions.
 _mcp_io = [
     ("aux_spi", 0,
         Subsignal("clk",  Pins("T2")),               # IO2  -- shared sclk
         Subsignal("mosi", Pins("H2")),               # IO8  -- shared mosi
         Subsignal("miso", Pins("J2")),               # IO25 -- shared miso
-        Subsignal("cs_n", Pins("M2 F3 R2 G2")),      # cs0=unused(was WINC,IO23) cs1=IMU(IO6) cs2=MCP3008(IO3) cs3=IOX(IO11)
+        Subsignal("cs_n", Pins("F3 R2 R3")),         # cs0=IMU(IO6) cs1=MCP3008(IO3) cs2=IOX(IO17)
         IOStandard("LVCMOS33"),
     ),
     ("iox_ctrl", 0,
@@ -291,20 +326,22 @@ _mcp_io = [
     ),
 ]
 
-# Chip-select index for the MCP23S17 I/O expander on the shared aux bus (4th line).
-AUX_CS_IOX = 3
+# Chip-select indices for the MCP23S17 bring-up's 3-wide aux bus (_mcp_io above).
+_MCP_AUX_CS_IMU = 0
+_MCP_AUX_CS_MCP = 1   # MCP3008 ADC, NOT the expander
+AUX_CS_IOX      = 2   # MCP23S17 GPIO expander
 
 
 def add_mcp_expander(soc, iox_spi_clk_freq=1e6, busy_led=None):
     """Shared aux SPI bus + MCP23S17 SPI GPIO-expander sidebands (reset + INTA).
 
-    The expander rides the same AuxSPIMaster as the IMU/MCP3008 on a 4th CS
+    The expander rides the same AuxSPIMaster as the IMU/MCP3008 on a 3rd CS
     (AUX_CS_IOX). reset_n is a GPIOOut that defaults to 0, so the expander powers
     up held in reset until firmware releases it (mcp23s17_reset()). inta is a
     GPIOIn with IRQ (firmware picks the edge; MCP23S17 INTA defaults active-low).
     busy_led mirrors in-flight aux transfers. This is the post-WINC replacement
-    for add_winc_aux during expander bring-up; cs[0] (the old WINC line) parks
-    high -- nothing is wired to it.
+    for add_winc_aux during expander bring-up; the old WINC cs[0] slot is gone
+    entirely (see _mcp_io comment -- it now collides with the C3 link's MISO).
     """
     platform = soc.platform
     platform.add_extension(_mcp_io)
@@ -325,9 +362,9 @@ def add_mcp_expander(soc, iox_spi_clk_freq=1e6, busy_led=None):
     soc.irq.add("iox_inta", use_loc_if_exists=True)
 
     soc.add_constant("IOX_SPI_DEFAULT_FREQUENCY", int(iox_spi_clk_freq))
-    soc.add_constant("AUX_CS_IMU", AUX_CS_IMU)
-    soc.add_constant("AUX_CS_MCP", AUX_CS_MCP)   # MCP3008 ADC, NOT the expander
-    soc.add_constant("AUX_CS_IOX", AUX_CS_IOX)   # MCP23S17 GPIO expander
+    soc.add_constant("AUX_CS_IMU", _MCP_AUX_CS_IMU)
+    soc.add_constant("AUX_CS_MCP", _MCP_AUX_CS_MCP)   # MCP3008 ADC, NOT the expander
+    soc.add_constant("AUX_CS_IOX", AUX_CS_IOX)        # MCP23S17 GPIO expander
 
     if busy_led is not None:
         # Sanity LED: lit while an aux-bus SPI transfer is in flight.
@@ -677,6 +714,24 @@ def add_boot_ctl(soc):
     # bit0 = dtr_n, bit1 = rts_n: the loader's "stay in loader" level + wiring check.
     soc.ftdi_sense = GPIOIn(Cat(pads.dtr_n, pads.rts_n))
     soc.add_csr("ftdi_sense")
+
+
+class BootFlag(LiteXModule, AutoCSR):
+    """Sticky one-shot boot-to-app request flag -- the CSR half of BootCtl,
+    with none of its FTDI coupling. reset_less: survives a soft/ext reset
+    (e.g. the C3's GPIO7 pulse), 0 only at power-on/reconfigure. Deliberately
+    has no reset_request/ftdi_sense wiring -- unlike add_boot_ctl(), this does
+    NOT claim L15/L16 or feed crg.user_rst, so a link with its own dedicated
+    reset line (docs/c3_loader.md) doesn't grow a second, surprising reset
+    path off a stray FTDI DTR/RTS toggle."""
+    def __init__(self):
+        self.flag = CSRStorage(32, reset_less=True,
+            description="Boot-to-app request magic. Survives soft reset; 0 at power-on.")
+
+
+def add_boot_flag(soc):
+    soc.boot_ctl = BootFlag()
+    soc.add_csr("boot_ctl")
 
 
 # NMEA GPS UART ------------------------------------------------------------------------------------

@@ -1,11 +1,10 @@
-/* main_ram-resident link for the C3 loader.
- *
- * icepi_zero_c3loader.py builds the SoC with NO SDRAM (with_sdram=False); main_ram
- * is a 32 KB on-chip BRAM at 0x40000000. Everything -- text, rodata, data, bss,
- * stack -- lives there (it is real, working memory, unlike the dead SDRAM). The
- * BIOS loads us to MAIN_RAM_BASE on serialboot and keeps its own stack at the top
- * of main_ram during the load, exactly as in any normal LiteX boot:
- *   litex_term ... --kernel c3_flash.bin        (default load addr = main_ram)
+/* main_ram-resident link for the C3 loader (main_ram is SDRAM as of the
+ * half-rate SDRAM fix -- see icepi_zero_c3flash.py's docstring). .text/.rodata
+ * live in main_ram; .data/.bss/stack live in the on-chip `sram` region
+ * instead (mirrors software/winc_loader/linker.ld). This is required for
+ * chain-boot: try_chain_boot()'s chain_stub copies an app image on top of
+ * main_ram, overwriting the running loader -- chain_stub itself must execute
+ * from somewhere that copy never touches, i.e. sram, not main_ram.
  */
 INCLUDE generated/output_format.ld
 ENTRY(_start)
@@ -48,7 +47,7 @@ SECTIONS
 		*(.sdata .sdata.* .gnu.linkonce.s.*)
 		. = ALIGN(8);
 		_edata = .;
-	} > main_ram
+	} > sram AT > main_ram
 
 	.bss :
 	{
@@ -63,10 +62,10 @@ SECTIONS
 		. = ALIGN(8);
 		_ebss = .;
 		_end = .;
-	} > main_ram
+	} > sram
 }
 
-PROVIDE(_fstack = ORIGIN(main_ram) + LENGTH(main_ram) - 8);
+PROVIDE(_fstack = ORIGIN(sram) + LENGTH(sram));
 
 PROVIDE(_fdata_rom = LOADADDR(.data));
 PROVIDE(_edata_rom = LOADADDR(.data) + SIZEOF(.data));
