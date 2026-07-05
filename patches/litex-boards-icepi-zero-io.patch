@@ -1,0 +1,36 @@
+diff --git a/litex_boards/platforms/icepi_zero.py b/litex_boards/platforms/icepi_zero.py
+index cb1c5351..042244c4 100644
+--- a/litex_boards/platforms/icepi_zero.py
++++ b/litex_boards/platforms/icepi_zero.py
+@@ -52,9 +52,24 @@ _io_common = [
+         Misc("SLEWRATE=FAST"),
+     ),
+ 
+-    # GPIOs
++    # External reset button (active-low, pulled up). This is old gpio[0]
++    ("ext_reset", 0, Pins("G3"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
++
++    # GPIOs (gpio[0] removed; now starts at old gpio[1])
+     ("gpio", 0, 
+-        Pins("G3 K3 T2 R2 R1 E1 F3 G1 H2 J1 L2 G2 J3 E3 P1 N1 H3 R3 N4 E4 F1 F2 P2 M2 L1 J2 D4 P3"), 
++        Pins("K3 T2 R2 R1 E1 F3 G1 H2 J1 L2 G2 J3 E3 P1 N1 H3 R3 N4 E4 F1 F2 P2 M2 L1 J2 D4 P3"), 
++        IOStandard("LVCMOS33")
++    ),
++
++    # WS2812/NeoPixel data out (IO1 = old gpio[1] = new gpio[0])
++    ("rgb_led", 0, Pins("K3"), IOStandard("LVCMOS33")),
++
++    # MCP3008 ADC (mapped to GPIOs)
++    ("mcp3008", 0,
++        Subsignal("sclk", Pins("T2")),  # gpio[2]
++        Subsignal("cs_n", Pins("R2")),  # gpio[3]
++        Subsignal("mosi", Pins("H2")),  # gpio[8]  (DIN)
++        Subsignal("miso", Pins("J2")),  # gpio[25] (DOUT)
+         IOStandard("LVCMOS33")
+     ),
+ 
+@@ -140,4 +155,3 @@ class Platform(LatticeECP5Platform):
+     def do_finalize(self, fragment):
+         LatticeECP5Platform.do_finalize(self, fragment)
+         self.add_period_constraint(self.lookup_request("clk50", loose=True), 1e9/50e6)
+-

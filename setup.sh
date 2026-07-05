@@ -165,6 +165,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Apply the icepi_zero platform patch (ext_reset pin + gpio/rgb_led/mcp3008)
+# ---------------------------------------------------------------------------
+IZ_PATCH="patches/litex-boards-icepi-zero-io.patch"
+IZ_PLATFORM="litex-setup/litex-boards/litex_boards/platforms/icepi_zero.py"
+if grep -q "ext_reset" "$IZ_PLATFORM" 2>/dev/null; then
+  log "icepi_zero platform patch already applied"
+elif [ -f "$IZ_PATCH" ]; then
+  log "Applying icepi_zero platform patch (ext_reset pin required by icepi_zero_base.py)"
+  ( cd litex-setup/litex-boards && git apply "$REPO_ROOT/$IZ_PATCH" ) \
+    || die "icepi_zero platform patch failed to apply"
+else
+  warn "Patch $IZ_PATCH not found; builds will fail with 'resource not found ext_reset:None'."
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Python venv + editable installs
 # ---------------------------------------------------------------------------
 if [ ! -d ".venv" ]; then
