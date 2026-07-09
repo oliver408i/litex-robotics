@@ -147,6 +147,10 @@ while IFS='|' read -r name url commit; do
     git -C "$dest" fetch --quiet origin "$commit" 2>/dev/null || true
   fi
   git -C "$dest" checkout --quiet "$commit" || die "could not checkout $commit in $name"
+  # Pull any nested submodules (e.g. pythondata-software-picolibc's actual
+  # picolibc sources live in a submodule; without this the libc build fails
+  # with "picolibc_src ... does not contain meson.build").
+  git -C "$dest" submodule update --init --recursive --quiet || true
 done <<< "$LITEX_REPOS"
 
 # ---------------------------------------------------------------------------

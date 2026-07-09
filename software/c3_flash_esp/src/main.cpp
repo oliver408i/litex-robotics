@@ -67,6 +67,7 @@
 #define CMD_CRC      0x04
 #define CMD_REBOOT   0x05
 #define CMD_BOOT_APP 0x06
+#define CMD_STAY     0x07   /* set stay flag + ctrl_reset -> stay resident (must match software/c3_flash) */
 #define ST_OK        0x00
 
 /* SAFE scratch sector for the self-test: 15 MB into the 16 MB W25Q128, far above
@@ -146,7 +147,8 @@ static bool wb_write(uint32_t addr, uint32_t val) {
  * doorbell (cmd), waits for the firmware to clear it, returns status (or <0 on
  * link/timeout error) and *result. `data`/`n` used by PROGRAM (n<=256). */
 static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
-                   const uint8_t *data, uint32_t n, uint32_t *result) {
+                   const uint8_t *data, uint32_t n, uint32_t *result,
+                   uint32_t timeout_ms = 5000) {
     SPISession _session;   /* one SPI transaction spans the whole command */
     if (!wb_write(MBX_BASE + MBX_ARG0, arg0)) return -10;
     if (!wb_write(MBX_BASE + MBX_ARG1, arg1)) return -10;
@@ -163,7 +165,7 @@ static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
     uint32_t tm0 = millis(), c = 0xffffffff;
     do {
         if (!wb_read(MBX_BASE + MBX_CMD, &c)) return -11;
-        if (millis() - tm0 > 5000) return -12;            /* firmware never cleared cmd */
+        if (millis() - tm0 > timeout_ms) return -12;      /* firmware never cleared cmd */
     } while (c != 0);
 
     uint32_t status = 0xff;
@@ -174,13 +176,16 @@ static int mbx_cmd(uint8_t op, uint32_t arg0, uint32_t arg1,
 
 /* Fire-and-forget doorbell: rings the mailbox with no arg writes and no
  * completion poll -- for opcodes where the firmware resets itself right after
- * seeing the doorbell (CMD_BOOT_APP / CMD_STAY) and so never clears MBX_CMD;
- * mbx_cmd()'s poll loop would just time out. Kept (unused by the strap-based
- * 'l'/'b' commands) as the flag-path fallback -- see the loader's boot_ctl flag. */
-static void mbx_fire(uint8_t op) __attribute__((unused));
-static void mbx_fire(uint8_t op) {
+ * seeing the doorbell (CMD_BOOT_APP / CMD_STAY / CMD_REBOOT) and so never clears
+ * MBX_CMD; mbx_cmd()'s poll loop would just time out. This is the PRIMARY boot-
+ * control reset for 'l'/'b'/'R': the loader reboots via its ctrl_reset CSR (a
+ * SoCController soft reset) plus the durable boot_ctl flag, which does NOT depend
+ * on the external C3->FPGA reset line (PIN_RESET/G3). That line is kept only as a
+ * fallback pulse below -- see docs/c3_loader.md and [[c3-reset-line-gpio21-gotcha]].
+ * Returns true if the doorbell write reached the FPGA (loader present). */
+static bool mbx_fire(uint8_t op) {
     SPISession _session;
-    wb_write(MBX_BASE + MBX_CMD, op);
+    return wb_write(MBX_BASE + MBX_CMD, op);
 }
 
 void setup() {
@@ -317,7 +322,13 @@ static void handle_host_flash() {
     if (read_exact(hdr, 12, 2000) != 12) { Serial.write((uint8_t)0xE0); return; }
     uint32_t off = le32(hdr), len = le32(hdr + 4), exp = le32(hdr + 8);
 
-    if (mbx_cmd(CMD_ERASE, off, len, nullptr, 0, nullptr) != ST_OK) { Serial.write((uint8_t)0xE1); return; }
+    /* Erase time scales with image size (per-sector Tse); a flat 5 s timeout is
+     * only right for tiny images and falsely flags a large erase as a hang.
+     * Budget ~0.5 s per 4 KB sector (worst-case Tse) plus slack so a legitimate
+     * multi-second/-minute erase completes. The poll still returns the instant
+     * the loader clears MBX_CMD, so a normal erase isn't slowed. */
+    uint32_t erase_to = 5000 + (len / 4096 + 1) * 500;
+    if (mbx_cmd(CMD_ERASE, off, len, nullptr, 0, nullptr, erase_to) != ST_OK) { Serial.write((uint8_t)0xE1); return; }
     Serial.write((uint8_t)0x01);                 /* erase done -- start sending pages */
 
     uint8_t page[256];
@@ -356,20 +367,54 @@ void loop() {
         Serial.printf("[c3] PING st=%d JEDEC 0x%06lX\n", st, (unsigned long)(j & 0xFFFFFF));
         break;
     }
-    case 'r': case 'R':
-        reset_pulse();
-        Serial.println("[c3] reset pulsed");
+    case 'r': case 'R': {                      /* plain reset (honors current strap) */
+        bool via_mbx = mbx_fire(CMD_REBOOT);   /* primary: loader ctrl_reset */
+        reset_pulse();                         /* fallback: external line (may be dead) */
+        Serial.printf("[c3] reset (%s)\n", via_mbx ? "mailbox ctrl_reset + line" : "line only");
         break;
-    case 'l': case 'L':                        /* enter loader: assert stay + reset */
+    }
+    case 'l': case 'L': {                      /* enter loader: stay via durable flag */
+        /* Primary path: CMD_STAY makes the loader set the boot_ctl flag and
+         * ctrl_reset itself -- reliable and independent of the external reset
+         * line. The strap + external pulse stay as a belt-and-suspenders
+         * fallback (and cover a mid-flash glitch). Needs the loader to already
+         * be running to take the mailbox command; from a booted app only the
+         * external line/power-cycle can re-enter the loader. */
         stay_assert();
+        bool via_mbx = mbx_fire(CMD_STAY);
         reset_pulse();
-        Serial.println("[c3] enter loader: stay asserted, FPGA reset (stays resident)");
+        Serial.printf("[c3] enter loader: stay asserted, %s (stays resident)\n",
+                      via_mbx ? "mailbox CMD_STAY + line" : "line only -- loader not reachable?");
         break;
-    case 'b': case 'B':                        /* boot app: release stay + reset */
+    }
+    case 'b': case 'B': {                      /* boot app: clear stay flag + reset */
         stay_release();
-        reset_pulse();
-        Serial.println("[c3] boot app: stay released, FPGA reset (chain-boots app)");
+        bool via_mbx = mbx_fire(CMD_BOOT_APP); /* primary: loader clears flag + ctrl_reset */
+        /* Let the loader finish CMD_BOOT_APP (clear flag -> ctrl_reset) before
+         * the fallback pulse, so a working external line can't preempt the
+         * flag-clear and leave a stale stay flag set. Harmless when the line is
+         * dead (the current reality) -- reset_pulse() is then a no-op. */
+        delay(50);
+        reset_pulse();                         /* fallback: external line */
+        Serial.printf("[c3] boot app: stay released, %s (chain-boots app)\n",
+                      via_mbx ? "mailbox CMD_BOOT_APP + line" : "line only");
         break;
+    }
+    case 's': case 'S': {                      /* one-shot stay in loader */
+        /* End-of-session "stay". Unlike 'l' this RELEASES the strap and relies
+         * ONLY on the loader's one-shot boot_ctl flag (CMD_STAY): the loader
+         * stays this boot, consumes the flag (stay_requested()), and a later
+         * reset chain-boots the app. Holding the strap here (as 'l' does) would
+         * make the stay sticky on every reset -- not what --stay wants. */
+        stay_release();
+        bool via_mbx = mbx_fire(CMD_STAY);
+        delay(50);
+        reset_pulse();                         /* fallback: external line */
+        Serial.printf("[c3] stay (one-shot): strap released, %s "
+                      "(loader this boot, app on next reset)\n",
+                      via_mbx ? "mailbox CMD_STAY + line" : "line only");
+        break;
+    }
     default:                                   /* ignore stray bytes / newlines */
         break;
     }

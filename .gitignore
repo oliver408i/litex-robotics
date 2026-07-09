@@ -23,3 +23,7 @@ software/winc_test/wifi_secrets.h
 dist
 .pio
 *.log
+
+# DOOM WAD data files (flashed to XIP separately, not part of the build)
+*.wad
+software/doom/wad/

@@ -10,6 +10,7 @@
   ./flash.py --reset --port /dev/ttyACM0                  # just reboot the SoC
   ./flash.py --app myapp.bin --boot-app --port /dev/ttyACM0  # flash + chain-boot the app
   ./flash.py --boot-app --port /dev/ttyACM0                  # boot whatever's in the app slot now
+  ./flash.py --loader --stay --port /dev/ttyACM0             # flash loader + END in the loader
 
 Slots are combinable in one session; bare --bitstream/--bios/--loader pick up
 the standard build artifacts. --port is the ESP32-C3's USB-CDC port (the
@@ -25,6 +26,21 @@ flag, self-clears), so the *next* reset lands back in the resident loader
 automatically -- no separate "return to loader" step needed. Not the old
 WiFi/WINC-era --run (SDRAM-stage-and-execute, no flash write): the app must
 already be flashed first.
+
+--stay ends the session in the resident loader instead of chain-booting the
+app (the default). Use it when iterating on the loader/flash itself, or to
+verify a fresh flash before running it. It is ONE-SHOT: the loader stays this
+boot via the boot_ctl flag (which stay_requested() consumes), and the next
+reset chain-boots the app -- --stay releases the boot-mode strap so the stay
+can't get stuck asserted across resets.
+
+Both the boot-app and the stay/reset paths reboot the FPGA via the loader's
+*mailbox* soft reset (SoCController ctrl_reset + the sticky boot_ctl flag), NOT
+the external C3->FPGA reset line (G3) -- that line has proven unreliable, so a
+plain --reboot that "does not reset the FPGA" is exactly the symptom this
+avoids. The mailbox path needs the loader already running (it is, during any
+flashing session); from a *booted app* only the hardware reset line or a
+power-cycle can re-enter the loader.
 """
 import argparse
 import os
@@ -98,7 +114,14 @@ def parse_args():
                     help="pulse the reset line when done even if only bitstream/BIOS were flashed")
     ap.add_argument("--no-reboot", action="store_true",
                     help="never pulse the reset line (leave the board as-is when done)")
-    return ap.parse_args()
+    ap.add_argument("--stay", action="store_true",
+                    help="end in the resident loader instead of chain-booting the app. "
+                         "One-shot: the loader stays this boot (boot_ctl flag), then a "
+                         "later reset boots the app")
+    args = ap.parse_args()
+    if args.stay and args.boot_app:
+        sys.exit("--stay and --boot-app are mutually exclusive")
+    return args
 
 
 def build_jobs(args):
@@ -191,15 +214,22 @@ def c3_ping_wait(ser, attempts=3, attempt_timeout=6.0):
             return
         last = reply
     sys.exit("C3 PING failed -- is the FPGA loader running (flash-resident, "
-              f"or serial-booted)?\n  last reply: {last.strip()!r}")
+             "or serial-booted)?\n"
+             "  If a booted app is stuck (mailbox gone) and the C3->FPGA reset "
+             "line is dead, 'l' can't re-enter the loader:\n"
+             "  power-cycle the board (or fix the G3 reset wire) to get the "
+             "resident loader back.\n"
+             f"  last reply: {last.strip()!r}")
 
 
 def c3_reset(ser):
-    """Pulse the C3->FPGA reset line ('R', software/c3_flash_esp). Resets the
-    CPU/clock domains only -- does NOT reconfigure the fabric; a bitstream
-    change still needs a real power-cycle. Honors the current boot-mode strap:
-    with it released (the default) this boots the app."""
-    print("pulsing C3 -> FPGA reset line ('R')...", flush=True)
+    """Reboot the FPGA ('R', software/c3_flash_esp). The C3 fires the loader's
+    mailbox CMD_REBOOT (SoCController ctrl_reset -- a reliable soft reset) and
+    ALSO pulses the external reset line as a fallback. Resets the CPU/clock
+    domains only -- does NOT reconfigure the fabric; a bitstream change still
+    needs a real power-cycle. Honors the current boot-mode strap/flag: with the
+    stay flag cleared (the default) this boots the app."""
+    print("rebooting FPGA ('R': mailbox ctrl_reset + line)...", flush=True)
     ser.reset_input_buffer()
     ser.write(b"R")
     reply = _read_line(ser)
@@ -208,25 +238,44 @@ def c3_reset(ser):
 
 def c3_enter_loader(ser):
     """Force the FPGA into the resident loader ('l', software/c3_flash_esp): the
-    C3 asserts the boot-mode strap (IO4/R1) low and pulses reset, so the board
-    comes up in c3_flash regardless of what it was running. Needed because the
-    loader is NOT resident by default anymore -- a plain reset auto-boots the app
-    (docs/c3_loader.md). The C3 HOLDS the strap for the whole session, so a
-    mid-flash glitch-reset still lands in the loader; c3_boot_app() releases it."""
-    print("entering loader ('l': assert stay strap + reset)...", flush=True)
+    C3 asserts the boot-mode strap (IO4/R1) low AND fires the loader's mailbox
+    CMD_STAY (durable boot_ctl flag + ctrl_reset soft reset), so the board comes
+    up in c3_flash. The mailbox path is the reliable one -- it does not depend on
+    the external reset line. Needed because the loader is NOT resident by default
+    (a plain reset auto-boots the app, docs/c3_loader.md). Requires the loader to
+    already be running to take the mailbox command; from a booted app only the
+    external line/power-cycle can re-enter it (see c3_ping_wait's failure hint)."""
+    print("entering loader ('l': assert stay strap + mailbox CMD_STAY)...", flush=True)
     ser.reset_input_buffer()
     ser.write(b"l")
     reply = _read_line(ser)
     print(f"  {reply.strip() or '(no reply)'}")
 
 
+def c3_stay(ser):
+    """End the session in the resident loader as a ONE-SHOT ('s',
+    software/c3_flash_esp): the C3 RELEASES the boot-mode strap and fires the
+    loader's mailbox CMD_STAY, which sets the sticky-but-one-shot boot_ctl flag.
+    The loader stays this boot and consumes the flag (stay_requested()); the
+    NEXT reset chain-boots the app. This is deliberately NOT c3_enter_loader
+    ('l'): that holds the strap low for the whole session, which the C3 keeps
+    asserting after we exit, so every reset would re-stay -- the stay would
+    never clear. Releasing the strap here makes the flag the sole, one-shot
+    signal."""
+    print("staying in resident loader ('s': release strap + one-shot CMD_STAY)...", flush=True)
+    ser.reset_input_buffer()
+    ser.write(b"s")
+    reply = _read_line(ser)
+    print(f"  {reply.strip() or '(no reply)'}")
+
+
 def c3_boot_app(ser):
     """Boot the app ('b', software/c3_flash_esp): the C3 releases the boot-mode
-    strap (-> FPGA reads high) and pulses reset, so the loader chain-boots the
-    app slot. Also the normal end-of-session action -- once the strap is
-    released it idles high, so the board auto-boots the app on every later
-    reset/power-cycle. No FPGA-side reply to wait for (it's already resetting)."""
-    print("booting app ('b': release stay strap + reset)...", flush=True)
+    strap (-> FPGA reads high) and fires the loader's mailbox CMD_BOOT_APP (clear
+    boot_ctl flag + ctrl_reset soft reset), so the loader chain-boots the app
+    slot. The mailbox soft reset is the reliable reboot -- the external reset
+    line is only a fallback pulse. Normal end-of-session action."""
+    print("booting app ('b': release stay strap + mailbox CMD_BOOT_APP)...", flush=True)
     ser.reset_input_buffer()
     ser.write(b"b")
     reply = _read_line(ser)
@@ -249,10 +298,16 @@ def flash_slot(ser, label, offset, data):
     ser.write(b"W" + struct.pack("<III", offset, len(data), crc))
     ser.flush()
 
-    # Ack after ERASE (may take seconds for large images).
+    # Ack after ERASE (may take many seconds/minutes for a large image). Wait
+    # proportionally to the erase size -- the C3 now budgets its mailbox poll
+    # the same way (~0.5 s/sector) rather than a flat timeout, so neither side
+    # mistakes a legitimate long erase for a hung loader.
     print(f"  erasing (up to {(len(data) + 0xFFF) // 0x1000} sector(s), "
           "can take several seconds for a large image)...", flush=True)
+    old_to = ser.timeout
+    ser.timeout = 10.0 + (len(data) / 4096) * 0.5
     ea = ser.read(1)
+    ser.timeout = old_to
     if ea != b"\x01":
         code = ea[0] if ea else -1
         sys.exit(f"{label}: erase ack failed: 0x{code:02X} ({C3_STATUS.get(code, 'no reply')})")
@@ -323,7 +378,16 @@ def main():
         print(f"total: {time.monotonic()-t0:.1f} s")
 
     flashed = {label.split(":")[0] for label, _, _ in jobs}
-    if "bitstream" in flashed and not args.reboot:
+    if args.stay:
+        # Explicit "end in the loader" -- CMD_STAY (durable flag + soft reset).
+        # Reliable regardless of the external reset line; --stay conflicts with
+        # --boot-app (rejected in parse_args). Takes precedence over the
+        # bitstream note below: a bitstream flash still needs a power-cycle to
+        # apply the new fabric, but the board is left in the loader meanwhile.
+        c3_stay(ser)
+        if "bitstream" in flashed:
+            print("NOTE: bitstream flashed -- POWER-CYCLE to apply the new fabric")
+    elif "bitstream" in flashed and not args.reboot:
         # A soft reset here would boot the OLD (still-configured) bitstream
         # against the NEW flash contents -- a CSR-map mismatch if the gateware
         # changed. Skip it on purpose; POWER-CYCLE picks up the new fabric, and
@@ -332,13 +396,14 @@ def main():
         print("NOTE: bitstream flashed -- POWER-CYCLE to apply everything "
               "(reset skipped on purpose; the board auto-boots the app after)")
     elif args.no_reboot and not args.boot_app:
-        # Leave the board in the loader (strap still asserted by the C3). It
-        # will auto-boot the app on the next power-cycle (C3 reboot releases it).
+        # Leave the board exactly as-is (still in the loader from c3_enter_loader
+        # at the start of the session). Unlike --stay this issues no reset at
+        # all. Power-cycle to auto-boot the app.
         print("left in resident loader (--no-reboot); power-cycle to auto-boot the app")
     else:
-        # Normal end state: release the strap + reset -> chain-boot the app.
-        # (--boot-app, --reboot, or any app/bios/loader flash all land here;
-        # post-inversion "reboot to pick up new flash" means "boot the app".)
+        # Normal end state: release the strap + mailbox CMD_BOOT_APP soft reset
+        # -> chain-boot the app. (--boot-app, --reboot, or any app/bios/loader
+        # flash all land here; "reboot to pick up new flash" means "boot the app".)
         c3_boot_app(ser)
 
 

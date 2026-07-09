@@ -55,7 +55,10 @@ void lcd_cmd_data(uint8_t cmd, const uint8_t *data, unsigned int len);
 void lcd_hw_reset(void);
 
 /* Full ST7796S bring-up: hw reset, soft reset, init sequence, sleep
- * out, display on, backlight on. Run once at boot before any drawing. */
+ * out, clear panel RAM to black, display on, backlight on. Clearing
+ * before the backlight lights avoids showing power-up noise (fresh
+ * boot) or the stale previous frame (reboot). Run once at boot before
+ * any drawing. */
 void lcd_init(void);
 
 /* ---- High-level rect ops ---------------------------------------------- */

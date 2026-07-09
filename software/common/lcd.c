@@ -171,6 +171,15 @@ void lcd_init(void)
 	lcd_cmd_data(0xf0, lock2,     sizeof(lock2));
 
 	lcd_write_cmd(0x11); busy_wait(120);   /* sleep out */
+
+	/* Wipe panel RAM to black BEFORE the display and backlight come on.
+	 * On a fresh boot the RAM powers up with noise; on a warm reboot it
+	 * still holds the previous image. Clearing here -- display still off,
+	 * backlight still dark -- guarantees the first thing the user sees is
+	 * black rather than garbage or a stale frame. Callers draw over it. */
+	lcd_fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, 0x0000);
+	lcd_wait_idle();
+
 	lcd_write_cmd(0x29);                   /* display on */
 	lcd_wait_idle();                       /* let 0x29 reach panel */
 	busy_wait(20);

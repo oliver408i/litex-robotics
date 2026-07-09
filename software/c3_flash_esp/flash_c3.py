@@ -71,8 +71,13 @@ def main():
     ser.write(b"W" + struct.pack("<III", off, len(data), crc))
     ser.flush()
 
-    # Ack after ERASE (may take seconds for large images).
+    # Ack after ERASE (may take many seconds/minutes for a large image). Wait
+    # proportionally to the erase size, matching the C3's size-scaled mailbox
+    # poll (~0.5 s/sector), so a legitimate long erase isn't taken for a hang.
+    old_to = ser.timeout
+    ser.timeout = 10.0 + (len(data) / 4096) * 0.5
     ea = ser.read(1)
+    ser.timeout = old_to
     if ea != b"\x01":
         code = ea[0] if ea else -1
         sys.exit(f"erase ack failed: 0x{code:02X} ({STATUS.get(code, 'no reply')})")

@@ -34,18 +34,32 @@ from litex.soc.integration.soc import SoCRegion
 from litex.soc.integration.builder import Builder
 
 from litedram import modules as litedram_modules
-from litedram.phy import HalfRateGENSDRPHY
+from litedram.phy import GENSDRPHY, HalfRateGENSDRPHY
 
 
 # CRG ----------------------------------------------------------------------------------------------
 class _CRG(LiteXModule):
-    """Clock/reset generator. `spi_clk_freq` adds an extra cd_spi domain (LCD project uses it)."""
-    def __init__(self, platform, sys_clk_freq, spi_clk_freq=None, ext_reset_n=None):
+    """Clock/reset generator. `spi_clk_freq` adds an extra cd_spi domain (LCD project uses it).
+
+    `sdram_rate` selects the SDRAM PHY clocking:
+      "1:2" (default) -- half-rate: PHY runs in cd_sys2x (2*sys), SDRAM clock is
+             2*sys. Doubles SDRAM bandwidth but couples the memory clock to 2*sys,
+             so raising sys quickly hits the chip's 166 MHz ceiling.
+      "1:1" -- full-rate: PHY runs in cd_sys, SDRAM clock == sys. Decouples the
+             memory clock from any doubling so sys can be pushed higher (up to the
+             chip ceiling) without overclocking the SDRAM.
+    """
+    def __init__(self, platform, sys_clk_freq, spi_clk_freq=None, ext_reset_n=None,
+                 sdram_rate="1:2"):
+        assert sdram_rate in ("1:1", "1:2")
         self.rst      = Signal()
         self.user_rst = Signal()  # extra reset source (e.g. BootCtl's FTDI RTS reset)
         self.cd_sys      = ClockDomain()
-        self.cd_sys2x    = ClockDomain()             # 2x sys: SDRAM PHY (HalfRateGENSDRPHY) lives here
-        self.cd_sys2x_ps = ClockDomain(reset_less=True)  # 2x sys, phase-shifted: drives the SDRAM clock pin
+        if sdram_rate == "1:2":
+            self.cd_sys2x    = ClockDomain()             # 2x sys: SDRAM PHY (HalfRateGENSDRPHY) lives here
+            self.cd_sys2x_ps = ClockDomain(reset_less=True)  # 2x sys, phase-shifted: drives the SDRAM clock pin
+        else:
+            self.cd_sys_ps = ClockDomain(reset_less=True)  # sys, phase-shifted: drives the SDRAM clock pin
         if spi_clk_freq is not None:
             self.cd_spi = ClockDomain()
 
@@ -56,18 +70,25 @@ class _CRG(LiteXModule):
         if ext_reset_n is not None:
             rst_comb = rst_comb | ~ext_reset_n
 
-        # PLL #1 -- core clocks. sys and sys2x MUST share one VCO so the half-rate
-        # PHY's sys<->sys2x serdes sees an edge-aligned 2x clock. sys2x_ps is the
-        # same 2x clock, phase-shifted, used to drive the SDRAM clock pin. 90deg
-        # is the "ideal" shift but litex-boards' own icepi_zero target found 180deg
-        # is what this board's half-rate SDRAM actually needs (their _CRG, same
-        # PHY/module) -- match it rather than the untested ideal.
+        # PLL #1 -- core clocks.
         self.pll = pll = ECP5PLL()
         self.comb += pll.reset.eq(rst_comb)
         pll.register_clkin(clk50, 50e6)
-        pll.create_clkout(self.cd_sys,      sys_clk_freq)
-        pll.create_clkout(self.cd_sys2x,    2*sys_clk_freq)
-        pll.create_clkout(self.cd_sys2x_ps, 2*sys_clk_freq, phase=180)
+        pll.create_clkout(self.cd_sys, sys_clk_freq)
+        if sdram_rate == "1:2":
+            # sys and sys2x MUST share one VCO so the half-rate PHY's sys<->sys2x
+            # serdes sees an edge-aligned 2x clock. sys2x_ps is the same 2x clock,
+            # phase-shifted, used to drive the SDRAM clock pin. 90deg is the
+            # "ideal" shift but litex-boards' own icepi_zero target found 180deg is
+            # what this board's half-rate SDRAM actually needs (their _CRG, same
+            # PHY/module) -- match it rather than the untested ideal.
+            pll.create_clkout(self.cd_sys2x,    2*sys_clk_freq)
+            pll.create_clkout(self.cd_sys2x_ps, 2*sys_clk_freq, phase=180)
+        else:
+            # Full-rate: the SDRAM clock pin is sys phase-shifted. 90deg is the
+            # standard GENSDRPHY convention (litex-boards' generic SDR targets);
+            # untested on this exact board's SDRAM, so validate with a BIOS memtest.
+            pll.create_clkout(self.cd_sys_ps, sys_clk_freq, phase=90)
 
         # PLL #2 -- LCD SPI clock. It's async-crossed (AsyncFIFO in lcd_engine), so
         # it needs no phase relationship to sys, and 185MHz can't share a VCO with
@@ -104,6 +125,8 @@ class BaseSoC(SoCCore):
                  platform=None,
                  force_lcd_backlight_off=True,
                  with_sdram=True,
+                 sdram_rate="1:2",
+                 bios_in_bram=False,
                  **kwargs):
         if platform is None:
             platform = icepi_zero.Platform()
@@ -119,17 +142,23 @@ class BaseSoC(SoCCore):
                 ("lcd_backlight", 0, Pins("P1"), IOStandard("LVCMOS33")),
             ])
 
+        self._sdram_rate = sdram_rate
         ext_reset_n = platform.request("ext_reset")
         self.crg = _CRG(platform, sys_clk_freq,
                         spi_clk_freq=spi_clk_freq,
-                        ext_reset_n=ext_reset_n)
+                        ext_reset_n=ext_reset_n,
+                        sdram_rate=sdram_rate)
 
-        if with_spi_flash:
+        if with_spi_flash and not bios_in_bram:
             # XIP: no EBR ROM, reset vector into flash. Force (not setdefault) --
             # the parser always supplies these via soc_argdict. See docs/boot_chain.md.
             kwargs["integrated_rom_size"] = 0
             kwargs["cpu_reset_address"]   = self.mem_map["spiflash"] + bios_flash_offset
         else:
+            # BIOS lives in on-chip EBR ROM (default reset vector). Either there's no
+            # SPI flash at all, or bios_in_bram keeps the flash peripheral (master +
+            # app slot) but boots the BIOS from BRAM instead of XIP -- trades EBR for
+            # not depending on the flash fetch path at reset. See docs/boot_chain.md.
             kwargs.setdefault("integrated_rom_size", 0x8000)  # integrated EBR ROM
         if with_sdram:
             kwargs.setdefault("integrated_main_ram_size", 0)  # main RAM is SDRAM
@@ -159,11 +188,24 @@ class BaseSoC(SoCCore):
         # unused. See icepi_zero_c3loader.py.
         if with_sdram:
             sdram_pads = platform.request("sdram")
-            # Half-rate PHY: the SDRAM runs in cd_sys2x (2x sys) while the controller
-            # and the rest of the SoC stay in cd_sys. This doubles raw SDRAM bandwidth
-            # without raising the CPU clock. The chip (W9825G6KH6 -6) is rated 166MHz,
-            # so 2*sys=100MHz is comfortable.
-            self.sdrphy = HalfRateGENSDRPHY(sdram_pads, sys_clk_freq)
+            if sdram_rate == "1:2":
+                # Half-rate PHY: the SDRAM runs in cd_sys2x (2x sys) while the
+                # controller and the rest of the SoC stay in cd_sys. This doubles
+                # raw SDRAM bandwidth without raising the CPU clock. The chip
+                # (W9825G6KH6 -6) is rated 166MHz, so 2*sys=100MHz is comfortable.
+                # The trade-off is that mem = 2*sys, so raising sys hits the chip's
+                # 166 MHz ceiling at sys=83 MHz.
+                self.sdrphy = HalfRateGENSDRPHY(sdram_pads, sys_clk_freq)
+                sdram_clk_ps = self.crg.cd_sys2x_ps.clk
+            else:
+                # Full-rate PHY: the SDRAM runs in cd_sys, so the SDRAM clock == sys
+                # (no doubling). This decouples the memory clock from sys, so sys can
+                # be pushed high without overclocking the chip -- the SDRAM stays
+                # within spec until sys itself reaches 166 MHz. Bandwidth per clock
+                # is halved vs half-rate, but the higher sys ceiling can make up for
+                # it. Not the deployment default; validate with a BIOS memtest.
+                self.sdrphy = GENSDRPHY(sdram_pads, sys_clk_freq)
+                sdram_clk_ps = self.crg.cd_sys_ps.clk
             # Drive the SDRAM clock pin through a DDR output register (IO-cell
             # primitive), not a bare comb assignment. A plain `.comb +=` routes
             # the clock through general fabric to the pin with placement-dependent
@@ -171,10 +213,10 @@ class BaseSoC(SoCCore):
             # reports clean while the real clock-to-DQ phase at the chip drifts
             # build-to-build. This matches litex-boards' own icepi_zero target.
             self.specials += DDROutput(1, 0, platform.request("sdram_clock"),
-                                       self.crg.cd_sys2x_ps.clk)
+                                       sdram_clk_ps)
             self.add_sdram("sdram",
                 phy           = self.sdrphy,
-                module        = litedram_modules.W9825G6KH6(sys_clk_freq, "1:2"),
+                module        = litedram_modules.W9825G6KH6(sys_clk_freq, sdram_rate),
                 l2_cache_size = 8192,
             )
 
@@ -205,11 +247,15 @@ class BaseSoC(SoCCore):
                 self.add_constant("SPIFLASH_SKIP_MASTER_INIT")
 
             # BIOS XIP linker region (linker=True: no bus slave, flash MMAP covers it).
-            self.bus.add_region("rom", SoCRegion(
-                origin = self.mem_map["spiflash"] + bios_flash_offset,
-                size   = 0x10000,  # >= BIOS size; headroom for growth
-                linker = True,
-            ))
+            # Skipped when bios_in_bram -- the BIOS then runs from the integrated EBR
+            # ROM, whose "rom" region SoCCore already added; the flash still holds
+            # only the app slot in that case.
+            if not bios_in_bram:
+                self.bus.add_region("rom", SoCRegion(
+                    origin = self.mem_map["spiflash"] + bios_flash_offset,
+                    size   = 0x10000,  # >= BIOS size; headroom for growth
+                    linker = True,
+                ))
 
             if flash_boot_offset is not None and "spiflash" in self.bus.regions:
                 flash_origin = self.bus.regions["spiflash"].origin
