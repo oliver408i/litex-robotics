@@ -1,0 +1,6 @@
+# stm32duino DFU bootloader on the MuseLab probe -- lets dfu-util run without
+# sudo. Install with:
+#   sudo cp tools/60-stm32duino-dfu.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="usb", ATTR{idVendor}=="1eaf", ATTR{idProduct}=="0003", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1eaf", ATTR{idProduct}=="0004", MODE="0666", TAG+="uaccess"
