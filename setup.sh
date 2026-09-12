@@ -203,8 +203,12 @@ while IFS='|' read -r name url commit; do
 done <<< "$LITEX_REPOS"
 
 log "Installing core Python deps (sim + tools)"
+# meson+ninja are not imported by anything here: they are the build system for
+# litex's picolibc (build/<soc>/software/libc), so the BIOS build fails without
+# them. Keeping them in the venv avoids a distro package dependency.
 python -m pip install --quiet \
-  "cocotb==2.0.1" "pyserial==3.5" "numpy" "pillow" "requests==2.32.5" "pyyaml"
+  "cocotb==2.0.1" "pyserial==3.5" "numpy" "pillow" "requests==2.32.5" "pyyaml" \
+  "meson" "ninja"
 
 if [ "$WITH_ML" -eq 1 ]; then
   log "Installing ML/training deps (CPU torch wheels — for tools/train_snn*.py)"

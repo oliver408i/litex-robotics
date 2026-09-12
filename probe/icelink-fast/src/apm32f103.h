@@ -44,6 +44,7 @@ typedef struct {
 #define RCC_APB2ENR_AFIOEN  (1u << 0)
 #define RCC_APB2ENR_TIM1EN  (1u << 11)
 #define RCC_APB1ENR_USBEN   (1u << 23)
+#define RCC_APB1ENR_USART2EN (1u << 17)
 
 /* ---- embedded flash controller ---- */
 #define FLASH_ACR   (*(__IO uint32_t *)0x40022000u)
@@ -64,6 +65,26 @@ typedef struct {
 #define FLASH_ACR_LATENCY_1 (1u << 0)
 #define FLASH_ACR_LATENCY_2 (2u << 0)
 #define FLASH_ACR_PRFTBE    (1u << 4)
+
+/* ---- USART2 (PA2 = TX, PA3 = RX) ----
+ * The DAPLink VCP pinout on this probe. APB1 is sysclk/2 on every path
+ * clock_init() can take, so the divisor is derived from g_sysclk_hz. */
+typedef struct {
+  __IO uint32_t SR, DR, BRR, CR1, CR2, CR3, GTPR;
+} USART_TypeDef;
+#define USART2 ((USART_TypeDef *)0x40004400u)
+
+#define USART_SR_RXNE   (1u << 5)
+#define USART_SR_TXE    (1u << 7)
+#define USART_SR_ORE    (1u << 3)
+
+#define USART_CR1_RE     (1u << 2)
+#define USART_CR1_TE     (1u << 3)
+#define USART_CR1_RXNEIE (1u << 5)
+#define USART_CR1_TXEIE  (1u << 7)
+#define USART_CR1_UE     (1u << 13)
+
+#define USART2_IRQn 38u
 
 /* ---- GPIO ---- */
 typedef struct {

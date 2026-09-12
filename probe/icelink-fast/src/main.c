@@ -7,6 +7,8 @@
  */
 #include "apm32f103.h"
 #include "tusb.h"
+#include "uart.h"
+#include "ecp5.h"
 
 #define LED_A    0u    /* PB0 -- LED (covered by the module, kept for parity) */
 #define LED_B    6u
@@ -31,13 +33,62 @@ extern uint32_t g_bus_released;
 void enter_bootloader(void);
 void request_bootloader(void);
 
-extern uint32_t g_idcode, g_idcode_tries;
+extern uint32_t g_idcode, g_idcode_tries, g_expect_idcode;
 extern uint32_t g_sysclk_hz;
 
 /* If USB never comes up, put ourselves back in the bootloader rather than
  * stranding the board: with no grabbers and no visible LED, an image that
  * cannot be talked to would otherwise be unrecoverable. */
 #define DEADMAN_MS 20000u
+
+/* CDC 0 = this console, CDC 1 = transparent bridge to the target's USART2.
+ * Default baud matches the LiteX SoC's uart_baudrate, so litex_term works even
+ * if the host never sends a SET_LINE_CODING. */
+#define CDC_CONSOLE       0
+#define CDC_UART          1
+#define UART_DEFAULT_BAUD 1000000u
+
+/* The host owns the baud rate: whatever litex_term (or any terminal) asks for
+ * is what we put on the wire. */
+void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const *coding)
+{
+    if (itf == CDC_UART) uart_set_baud(coding->bit_rate);
+}
+
+/* Move bytes both ways between CDC 1 and USART2. Never blocks: each direction
+ * only moves what both the ring and the USB FIFO can take right now, and
+ * whatever is left waits for the next pass. Anything that spun here would
+ * stall tud_task() and stutter the console. */
+static void uart_bridge_task(void)
+{
+    uint8_t buf[64];
+
+    /* USB -> UART. Clamp to the TX ring's free space: anything we pull out of
+     * the CDC FIFO must fit, because there is nowhere else to put it. Spinning
+     * until it fits instead would block for however long the wire needs --
+     * 64 bytes is ~640us at 1 Mbaud but ~67ms at 9600, and tud_task() does not
+     * run for the duration. Whatever does not fit stays in the CDC FIFO and
+     * comes back on the next pass, which also back-pressures the host. */
+    uint32_t space = uart_tx_space();
+    if (space > sizeof buf) space = sizeof buf;
+    uint32_t n = tud_cdc_n_available(CDC_UART);
+    if (n > space) n = space;
+    if (n) {
+        n = tud_cdc_n_read(CDC_UART, buf, n);
+        uart_write(buf, n);          /* fits by construction */
+    }
+
+    /* UART -> USB. */
+    uint32_t room = tud_cdc_n_write_available(CDC_UART);
+    if (room) {
+        if (room > sizeof buf) room = sizeof buf;
+        uint32_t got = uart_read(buf, room);
+        if (got) {
+            tud_cdc_n_write(CDC_UART, buf, got);
+            tud_cdc_n_write_flush(CDC_UART);
+        }
+    }
+}
 
 static uint32_t millis_elapsed(void)
 {
@@ -150,6 +201,21 @@ static void speed_sweep(void)
     uint32_t saved = g_jtag_delay;
     uint32_t best = 0xFFFFFFFFu;
 
+    /* Establish what a correct read looks like on THIS part, at the current
+     * (known-working) speed, before trusting any faster one. */
+    g_expect_idcode = jtag_read_idcode();
+    if (g_expect_idcode == 0u || g_expect_idcode == 0xFFFFFFFFu) {
+        olen = 0;
+        emit("no valid IDCODE at the current speed (0x"); emit_hex32(g_expect_idcode);
+        emit(") -- is the FPGA seated?\r\n");
+        flush_out();
+        return;
+    }
+    olen = 0;
+    emit("verifying against 0x"); emit_hex32(g_expect_idcode);
+    emit("  "); emit(part_name(g_expect_idcode)); emit("\r\n");
+    flush_out();
+
     for (int32_t d = 8; d >= 0; d--) {
         g_jtag_delay = (uint32_t)d;
         uint32_t cpb = jtag_bench_cycles_per_bit_x256();
@@ -162,6 +228,95 @@ static void speed_sweep(void)
     g_jtag_delay = (best == 0xFFFFFFFFu) ? saved : best;
     olen = 0;
     emit("selected delay = "); emit_dec(g_jtag_delay); emit("\r\n");
+    flush_out();
+}
+
+/* Read exactly n bytes from the console CDC, pumping the USB stack while we
+ * wait. Returns 0 if the host goes quiet for timeout_ms. */
+static int con_read_exact(uint8_t *dst, uint32_t n, uint32_t timeout_ms)
+{
+    uint32_t got = 0, t0 = millis_elapsed();
+    while (got < n) {
+        tud_task();
+        uint32_t avail = tud_cdc_available();
+        if (avail) {
+            uint32_t want = n - got;
+            if (want > avail) want = avail;
+            got += tud_cdc_read(dst + got, want);
+            t0 = millis_elapsed();
+        } else if (millis_elapsed() - t0 > timeout_ms) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* 'p': stream a bitstream into the ECP5's SRAM.
+ *
+ * Wire format is deliberately trivial -- u32le length, then that many bytes --
+ * because the bitstream cannot be buffered here (1.4 MB of payload against
+ * 20 KB of RAM). Bytes go from the USB FIFO to TDI as they arrive. */
+static void bitstream_load(void)
+{
+    uint8_t hdr[4];
+    olen = 0; emit("\r\nsend u32le length, then the bitstream\r\n"); flush_out();
+
+    if (!con_read_exact(hdr, 4, 10000u)) {
+        olen = 0; emit("timeout waiting for length\r\n"); flush_out(); return;
+    }
+    uint32_t len = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+                   ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    if (len == 0u || len > 8u * 1024u * 1024u) {
+        olen = 0; emit("implausible length 0x"); emit_hex32(len);
+        emit("\r\n"); flush_out(); return;
+    }
+
+    uint32_t idcode = 0, st_erase = 0;
+    ecp5_err_t e = ecp5_config_begin(&idcode, &st_erase);
+    olen = 0;
+    emit("IDCODE 0x"); emit_hex32(idcode); emit("  "); emit(part_name(idcode));
+    emit("\r\nstatus after erase = 0x"); emit_hex32(st_erase);
+    emit((st_erase & ECP5_STATUS_DONE) ? "  (DONE still set?!)" : "  DONE cleared");
+    emit("\r\n"); flush_out();
+    if (e != ECP5_OK) {
+        olen = 0; emit("config_begin failed -- is the FPGA seated?\r\n");
+        flush_out(); return;
+    }
+
+    olen = 0; emit("shifting "); emit_dec(len); emit(" bytes...\r\n"); flush_out();
+
+    uint8_t buf[256];
+    uint32_t remaining = len, t_start = millis_elapsed(), t0 = t_start;
+    while (remaining) {
+        tud_task();
+        uint32_t avail = tud_cdc_available();
+        if (!avail) {
+            if (millis_elapsed() - t0 > 5000u) {
+                olen = 0; emit("host stalled with "); emit_dec(remaining);
+                emit(" bytes to go -- aborting\r\n"); flush_out();
+                (void)ecp5_config_end(0);
+                return;
+            }
+            continue;
+        }
+        uint32_t want = (remaining < sizeof buf) ? remaining : (uint32_t)sizeof buf;
+        if (want > avail) want = avail;
+        uint32_t got = tud_cdc_read(buf, want);
+        ecp5_config_data(buf, got);
+        remaining -= got;
+        t0 = millis_elapsed();
+    }
+
+    uint32_t st = 0;
+    e = ecp5_config_end(&st);
+    uint32_t ms = millis_elapsed() - t_start;
+
+    olen = 0;
+    emit("final status = 0x"); emit_hex32(st);
+    emit(e == ECP5_OK ? "  DONE -- configured\r\n" : "  DONE NOT SET -- failed\r\n");
+    emit("took "); emit_dec(ms); emit(" ms");
+    if (ms) { emit(", "); emit_dec(len / ms); emit(" kB/s"); }
+    emit("\r\n");
     flush_out();
 }
 
@@ -203,7 +358,12 @@ static void print_report(void)
     emit("."); emit_dec(((cpb256 % 256u) * 100u) / 256u); emit("\r\n");
     emit("TCK rate             = "); emit_dec(tck_khz); emit(" kHz\r\n");
     emit("shift throughput     = "); emit_dec(tck_khz / 8u); emit(" kB/s\r\n");
-    emit("cmds: b=bootloader r=re-read s=speed sweep z=hi-Z a=acquire m=monitor c=capture\r\n");
+    emit("target UART          = "); emit_dec(uart_get_baud());
+    emit(" baud on if02");
+    if (uart_rx_dropped()) { emit("  DROPPED "); emit_dec(uart_rx_dropped()); }
+    emit("\r\n");
+    emit("cmds: b=bootloader r=re-read s=speed sweep z=hi-Z a=acquire m=monitor\r\n");
+    emit("      c=capture p=program bitstream (u32le len + data)\r\n");
     flush_out();
 }
 
@@ -214,6 +374,7 @@ int main(void)
     gpio_cfg(GPIOB, LED_B, GPIO_MODE_OUT_PP_50);
 
     clock_init();
+    uart_init(UART_DEFAULT_BAUD);
 
     jtag_init();
     g_idcode = jtag_read_idcode();
@@ -226,6 +387,7 @@ int main(void)
 
     for (;;) {
         tud_task();
+        uart_bridge_task();
 
         uint32_t ms = millis_elapsed();
 
@@ -303,6 +465,10 @@ int main(void)
                         flush_out();
                     }
                     reported = 1; last_print = ms;
+                } else if (c == 'p' || c == 'P') {
+                    if (g_bus_released) jtag_bus_acquire();
+                    bitstream_load();
+                    reported = 0;
                 } else if (c == 'a' || c == 'A') {
                     jtag_bus_acquire();
                     olen = 0;

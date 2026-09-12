@@ -15,8 +15,10 @@
 #define CFG_TUD_MAX_SPEED         OPT_MODE_FULL_SPEED
 
 /* The F103's USB peripheral copies to/from a 512-byte packet memory area, so
- * endpoint budget is tight -- CDC and nothing else. */
-#define CFG_TUD_CDC               1
+ * endpoint budget is tight -- CDC and nothing else. Two of them: 0 = probe
+ * console, 1 = USART2 bridge to the target. Measured PMA use is 440/512, so
+ * there is no room for a third function. */
+#define CFG_TUD_CDC               2
 #define CFG_TUD_MSC               0
 #define CFG_TUD_HID               0
 #define CFG_TUD_MIDI              0

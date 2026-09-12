@@ -1,0 +1,3 @@
+tinyusb 0.18.0 (tag 0.18.0, commit 86ad6e56c1700e85f1c5678607a762cfe3aa2f47)
+Upstream: https://github.com/hathach/tinyusb
+Vendored subset: src/ with portable/ pruned to st/stm32_fsdev (OPT_MCU_STM32F1).

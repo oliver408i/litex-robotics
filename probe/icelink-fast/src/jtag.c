@@ -33,8 +33,23 @@
 #define W_TMS1_TDI0 (SET(PIN_TMS) | CLR(PIN_TDI))
 #define W_TMS1_TDI1 (SET(PIN_TMS) | SET(PIN_TDI))
 
+/* Same, with the TCK-clear folded in. A write-only shift does not need to read
+ * TDO, and clearing TCK is exactly what the NEXT bit's setup store has to do
+ * anyway -- so merging them takes the inner loop from 3 APB stores + 1 load per
+ * bit down to 2 stores. That is most of a bitstream burst, which is ~1.4 MB of
+ * write-only shifting on a 45F. */
+#define WK_TMS0_TDI0 (CLR(PIN_TCK) | CLR(PIN_TMS) | CLR(PIN_TDI))
+#define WK_TMS0_TDI1 (CLR(PIN_TCK) | CLR(PIN_TMS) | SET(PIN_TDI))
+
 uint32_t g_idcode;
 uint32_t g_idcode_tries;
+
+/* What jtag_verify() compares against. Captured from the live part rather than
+ * hardcoded: the 45F constant that used to live here made the speed sweep
+ * report FAIL at every delay on any other ECP5 (the 25F on the icepi zero,
+ * say), which reads as a broken sweep rather than "different part". 0 and
+ * 0xffffffff mean TDO is stuck, so there is nothing to verify against. */
+uint32_t g_expect_idcode;
 
 /* Extra half-period padding, in loop iterations. 0 = as fast as the CPU goes.
  * Raise it if longer wiring or a different module needs more setup time. */
@@ -123,6 +138,10 @@ static uint32_t shift_bits_fast(uint32_t tdi_word, uint32_t nbits)
     const uint32_t lut0 = W_TMS0_TDI0, lut1 = W_TMS0_TDI1;
     const uint32_t delay = g_jtag_delay;
     uint32_t out = 0;
+
+    /* No caller does this today, but nbits-1 would wrap to 4 billion bit times
+     * and the final shift would be undefined -- cheap to make impossible. */
+    if (nbits == 0u) return 0;
     uint32_t n = nbits - 1u;          /* last bit handled separately */
 
     if (delay == 0u) {
@@ -160,6 +179,87 @@ static uint32_t shift_bits_fast(uint32_t tdi_word, uint32_t nbits)
 
     /* Bits arrived at the top of `out`; right-align them. */
     return out >> (32u - nbits);
+}
+
+/* Shift whole bytes out MSB-first with TMS held low, i.e. stay in Shift-xR.
+ * Write-only: TDO is not sampled, which is what lets the loop run at 2 stores
+ * per bit. MSB-first because that is the order an ECP5 bitstream must arrive
+ * in -- testing bit 7 and shifting left avoids the per-byte bit-reversal that
+ * an LSB-first shifter would need.
+ *
+ * Does NOT exit Shift-xR: the caller sends the final bit with TMS=1 (see
+ * jtag_shift_last_bit) so a stream can be fed in as many chunks as the host
+ * likes without leaving the state.
+ */
+__attribute__((section(".ramfunc"), noinline, used))
+void jtag_shift_bytes_out(const uint8_t *buf, uint32_t nbytes)
+{
+    GPIO_TypeDef *const gpio = GPIOB;
+    const uint32_t tck_set = SET(PIN_TCK);
+    const uint32_t lut0 = WK_TMS0_TDI0, lut1 = WK_TMS0_TDI1;
+    const uint32_t delay = g_jtag_delay;
+
+    if (delay == 0u) {
+        while (nbytes--) {
+            uint32_t b = *buf++;
+            #define BIT()                                            \
+                gpio->BSRR = (b & 0x80u) ? lut1 : lut0;              \
+                gpio->BSRR = tck_set;                                \
+                b <<= 1;
+            BIT(); BIT(); BIT(); BIT(); BIT(); BIT(); BIT(); BIT();
+            #undef BIT
+        }
+    } else {
+        while (nbytes--) {
+            uint32_t b = *buf++;
+            for (int i = 0; i < 8; i++) {
+                gpio->BSRR = (b & 0x80u) ? lut1 : lut0;
+                for (uint32_t d = delay; d; d--) __asm volatile("nop");
+                gpio->BSRR = tck_set;
+                for (uint32_t d = delay; d; d--) __asm volatile("nop");
+                b <<= 1;
+            }
+        }
+    }
+    gpio->BSRR = CLR(PIN_TCK);   /* leave the bus idle-low as everyone expects */
+}
+
+/* The final bit of a scan: TMS=1 clocks us out through Exit1-xR. */
+void jtag_shift_last_bit(uint32_t tdi)
+{
+    jtag_clock(1, tdi);
+}
+
+/* n clocks in Run-Test/Idle (TMS=0). The ECP5 sequence needs these as settling
+ * time after ISC_ENABLE/ERASE and after the burst. */
+void jtag_run_test(uint32_t n)
+{
+    while (n--) jtag_clock(0, 0);
+}
+
+/* Enter Shift-DR from Run-Test/Idle, leaving the TAP ready for bulk shifting. */
+void jtag_enter_shift_dr(void)
+{
+    jtag_clock(1, 0);        /* Select-DR-Scan */
+    jtag_clock(0, 0);        /* Capture-DR     */
+    jtag_clock(0, 0);        /* Shift-DR       */
+}
+
+/* Exit1-DR -> Update-DR -> Run-Test/Idle. Call after the last bit went out
+ * with TMS=1. */
+void jtag_leave_shift_dr(void)
+{
+    jtag_clock(1, 0);        /* Update-DR     */
+    jtag_clock(0, 0);        /* Run-Test/Idle */
+}
+
+/* Write an arbitrary DR value (the read-side counterpart is jtag_shift_dr).
+ * Enters and leaves at Run-Test/Idle. */
+void jtag_write_dr(uint32_t value, unsigned nbits)
+{
+    jtag_enter_shift_dr();
+    shift_bits_fast(value, nbits);   /* leaves via Exit1-DR */
+    jtag_leave_shift_dr();
 }
 
 /* Test-Logic-Reset from any state, then Run-Test/Idle. */
@@ -295,10 +395,14 @@ uint32_t jtag_capture(uint8_t *buf, uint32_t n, uint32_t timeout)
 }
 
 /* Is the link still correct at the current delay? Reading IDCODE many times
- * catches marginal timing that a single sample would miss. */
+ * catches marginal timing that a single sample would miss. Verifies against
+ * g_expect_idcode, which the caller captures from the part at a known-good
+ * speed first. */
 int jtag_verify(unsigned rounds)
 {
+    if (g_expect_idcode == 0u || g_expect_idcode == 0xFFFFFFFFu)
+        return 0;                      /* nothing valid to compare against */
     for (unsigned i = 0; i < rounds; i++)
-        if (jtag_read_idcode() != 0x41112043u) return 0;
+        if (jtag_read_idcode() != g_expect_idcode) return 0;
     return 1;
 }

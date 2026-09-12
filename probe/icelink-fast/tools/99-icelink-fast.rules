@@ -1,0 +1,50 @@
+# icelink-fast probe (cafe:4001) -- udev rules.
+#
+# Install:
+#   sudo rm -f /etc/udev/rules.d/60-icelink-fast.rules      # older name, if present
+#   sudo cp tools/99-icelink-fast.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#
+# Three things, all of which bit us during bring-up:
+#
+# 1. uaccess -- the probe re-enumerates on every reset and the tty renumbers
+#    (ttyACM0/1/2 shuffle as the CH347 comes and goes), so a manual chmod is
+#    undone constantly. uaccess grants an ACL to whoever is logged in at the
+#    seat, which survives renumbering and needs no group membership.
+#
+# 2. Stable symlinks -- /dev/icelink-console and /dev/icelink-uart always point
+#    at the right interface, so tooling never has to guess which ttyACM is
+#    which. if00 = the probe's own console, if02 = the bridge to the target's
+#    UART.
+#
+# Numbered 99 on purpose, and matching ENV rather than ATTRS. Both matter:
+#
+#   * ID_USB_INTERFACE_NUM is set by 60-serial.rules, so a 60-* file of our own
+#     runs BEFORE that property exists and every match fails silently.
+#   * ATTRS{bInterfaceNumber} is NOT a workaround for that: udev requires all
+#     ATTRS{} in one rule to match on the SAME parent, and bInterfaceNumber
+#     lives on the USB interface (3-12:1.0) while idVendor/idProduct live on
+#     the USB device (3-12). Mixing them can never match.
+#
+# So: sort after 60-serial.rules and use the ENV it sets, exactly as that file
+# does itself.
+#
+# 3. ID_MM_DEVICE_IGNORE -- ModemManager treats any CDC-ACM device as a modem
+#    candidate, opens it, sets 9600 baud and sends AT commands. On if02 those
+#    AT bytes go straight down the wire into the target's serial console, and
+#    the re-baud silently overrides whatever litex_term asked for. (Masking
+#    ModemManager works too, but this keeps the fix with the hardware that
+#    needs it.)
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="cafe", ATTRS{idProduct}=="4001", \
+    ENV{ID_USB_INTERFACE_NUM}=="00", \
+    SYMLINK+="icelink-console", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="cafe", ATTRS{idProduct}=="4001", \
+    ENV{ID_USB_INTERFACE_NUM}=="02", \
+    SYMLINK+="icelink-uart", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+
+# The CH347 SWD/JTAG adapter, so host/ch347_nrst.py works without sudo too.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55dd", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55de", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55db", TAG+="uaccess"

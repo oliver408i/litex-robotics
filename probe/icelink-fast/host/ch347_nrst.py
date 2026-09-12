@@ -134,7 +134,14 @@ def main():
                     help=f"GPIO index (default {TRST_GPIO} = TRST)")
     args = ap.parse_args()
 
-    ch = CH347Gpio()
+    # A missing adapter is the normal case when nothing is clipped on; report it
+    # as a message rather than a traceback, which reads like a crash.
+    try:
+        ch = CH347Gpio()
+    except CH347Error as e:
+        print(f"{e}", file=sys.stderr)
+        print("  is the CH347 plugged in? (lsusb | grep 1a86)", file=sys.stderr)
+        return 2
     print(f"CH347 {VID:04x}:{ch.pid:04x}  iface {ch.iface} "
           f"EP out 0x{ch.ep_out:02x} in 0x{ch.ep_in:02x}")
     try:

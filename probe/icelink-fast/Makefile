@@ -9,10 +9,13 @@ SIZE     = $(CROSS)size
 BUILD   ?= build
 TARGET   = icelink-fast
 
-TUSB ?= /home/yin/pico-sdk/lib/tinyusb
+# TinyUSB 0.18.0, vendored under vendor/tinyusb (see its VERSION file) so the
+# probe builds standalone -- same treatment as vendor/cmsis. Override TUSB=
+# to build against an external checkout instead.
+TUSB ?= vendor/tinyusb
 
 SRCS  = src/startup.c src/system.c src/main.c src/boot.c src/jtag.c \
-        src/usb_descriptors.c
+        src/uart.c src/ecp5.c src/usb_descriptors.c
 TUSB_SRCS = $(TUSB)/src/tusb.c \
             $(TUSB)/src/common/tusb_fifo.c \
             $(TUSB)/src/device/usbd.c \
@@ -21,8 +24,15 @@ TUSB_SRCS = $(TUSB)/src/tusb.c \
             $(TUSB)/src/portable/st/stm32_fsdev/dcd_stm32_fsdev.c
 
 OBJS  = $(SRCS:%.c=$(BUILD)/%.o) $(TUSB_SRCS:$(TUSB)/%.c=$(BUILD)/tusb/%.o)
+DEPS  = $(OBJS:.o=.d)
 
 CFLAGS  = -mcpu=cortex-m3 -mthumb -Os -g3 -std=c11
+# Header dependencies. Without these, editing a header rebuilds nothing:
+# tusb_config.h once changed CFG_TUD_CDC 1->2, main.o was rebuilt and
+# cdc_device.o was not, and the resulting image indexed _cdcd_itf[1] in a
+# one-element array -- a garbage FIFO pointer, a precise bus fault on the
+# first main-loop pass, and a probe that would not enumerate.
+CFLAGS += -MMD -MP
 CFLAGS += -ffunction-sections -fdata-sections -fno-common
 CFLAGS += -Wall -Wextra -Wundef -Werror=implicit-function-declaration
 CFLAGS += -Isrc -Ivendor/cmsis/Include -I$(TUSB)/src
@@ -59,7 +69,9 @@ check: $(BUILD)/$(TARGET).bin
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all clean check
+-include $(DEPS)
+
+.PHONY: all clean check status erase-app usb-flash
 
 # Flash the interface slot over SWD. Bootloader is never erased.
 flash: $(BUILD)/$(TARGET).bin check
@@ -68,6 +80,16 @@ flash: $(BUILD)/$(TARGET).bin check
 # Re-verify the bootloader half against the teardown dump.
 verify-bootloader:
 	openocd -f tools/openocd-verify-bl.cfg
+
+# Read-only triage over SWD: bootloader intact? app slot erased/partial/valid?
+# readout protection on? Run this BEFORE erasing or flashing anything.
+status:
+	./host/swd.sh tools/openocd-status.cfg
+
+# Erase the app slot so the bootloader falls back to MAINTENANCE and the
+# grabber-free USB loop works again. Never touches the bootloader.
+erase-app:
+	./host/swd.sh tools/openocd-erase-app.cfg
 
 # Flash over USB via the stm32duino DFU bootloader -- no SWD, no grabbers.
 # Reset the probe (or replug USB) first, then run this inside the DFU window.
@@ -79,9 +101,9 @@ dfu-list:
 
 # Flash over USB via the DAPLink bootloader's MAINTENANCE drive (no grabbers).
 # Requires the probe to be sitting in the bootloader; reset after copying.
+# tools/usb_flash.sh, not a bare cp: the bootloader validates AFTER accepting the
+# file and signals rejection by remounting with a FAIL.TXT, so a plain copy
+# reports success on a write that was thrown away. See the script's header.
 MAINT ?= /run/media/$(USER)/MAINTENANCE
 usb-flash: $(BUILD)/$(TARGET).bin check
-	@test -d "$(MAINT)" || { echo "MAINTENANCE not mounted at $(MAINT)"; \
-	  echo "the probe is running an app -- reset into the bootloader first"; exit 1; }
-	cp $(BUILD)/$(TARGET).bin "$(MAINT)/" && sync
-	@echo "copied -- now reset the probe (host/ch347_nrst.py --low/--high, or replug USB)"
+	./tools/usb_flash.sh $(BUILD)/$(TARGET).bin "$(MAINT)"

@@ -13,6 +13,7 @@ void Default_Handler(void);
 
 void USB_LP_CAN1_RX0_IRQHandler(void) { tud_int_handler(0); }
 void USB_HP_CAN1_TX_IRQHandler(void)  { tud_int_handler(0); }
+void USART2_IRQHandler(void);
 
 void Reset_Handler(void)
 {
@@ -62,5 +63,6 @@ VEC void (* const g_vectors[])(void) = {
     /* IRQ0.. : only the two USB lines are named; rest default. */
     [16 + 19] = USB_HP_CAN1_TX_IRQHandler,
     [16 + 20] = USB_LP_CAN1_RX0_IRQHandler,
+    [16 + 38] = USART2_IRQHandler,     /* target UART bridge */
     [16 + 42] = Default_Handler,   /* pad table to full F103 length */
 };

@@ -56,8 +56,28 @@ not running a valid app. Copy the image onto it:
 
     make usb-flash      # cp build/icelink-fast.bin to the MAINTENANCE drive
 
-Then reset the probe. The bootloader writes the image but stays in MAINTENANCE
-until it is reset -- do not read that as a rejection.
+**The mount must not have `flush`.** udisks/GNOME automounts vfat with it, and
+DAPLink then rejects every image ("update sent was incomplete") because the
+eager metadata writes interleave FAT/directory sectors among the file's data
+sectors, and DAPLink tracks a transfer by contiguous data-sector writes. Five
+attempts failed this way on 2026-09-11 before the cause was found. Mount it
+yourself:
+
+    sudo umount /dev/sdX                      # drop the udisks automount
+    sudo mkdir -p /mnt/daplink
+    sudo mount -t vfat -o rw,uid=$(id -u),gid=$(id -g) /dev/sdX /mnt/daplink
+    make usb-flash MAINT=/mnt/daplink
+    sudo umount /mnt/daplink                  # <-- this is what commits it
+
+**Commit is asynchronous and not fast.** With a no-flush mount nothing is
+programmed until the filesystem is unmounted, and DAPLink then takes several
+seconds to program and reset itself. An early sample still showing the
+bootloader means nothing -- this cost a needless FPGA reseat once. Wait, or
+watch for the probe to re-enumerate as `cafe:4001`.
+
+`tools/usb_flash.sh` (what `make usb-flash` runs) refuses outright on a flush
+mount, reads FAIL.TXT instead of reporting a rejected write as success, and
+waits for the re-enumeration.
 
 SWD stays available as the backstop: `make flash`.
 
@@ -90,10 +110,8 @@ OpenOCD cannot drive it in SWD mode, so it is set out-of-band:
 reads as an input pulled high and SWD returns `DPIDR 0xfe0c001b`; driven high as
 an output it returns the correct `0x2ba01477`. OpenOCD also needs
 `DBGMCU_CR = 0x307` right after halt, or DAPLink's unfed watchdog resets the
-core and the link looks flaky. Both are baked into the configs.
-grabbers on, try `--high` then `make verify-bootloader`; if OpenOCD cannot
-attach, try `--low`. Whichever lets OpenOCD halt the core is the answer --
-record it here once known.
+core and the link looks flaky. Both are baked into the configs. Confirmed again 2026-09-11: `--high`, then
+`make status` attached first try at 200 kHz with `DPIDR 0x2ba01477`.
 
 Note that `program` runs a flash algorithm *on the core*, so the core must not
 be held in reset during `make flash`. If the working state turns out to be
@@ -148,12 +166,13 @@ NRST low, it has to be released between attach and program.
       end-to-end (app -> MAINTENANCE -> usb-flash -> app running)
 - [ ] Move the trigger from "write magic over SWD" to a USB vendor command,
       which is what finally makes the grabbers optional
-- [ ] DEAD-MAN TIMER (do this in the same build as USB): if USB has not
-      enumerated ~20 s after boot, call enter_bootloader() on ourselves. Without
-      it, any image that fails to enumerate strands the probe with SWD as the
-      only way back -- which is exactly the hole today's build left open.
 - [x] JTAG engine (src/jtag.c): TAP reset + IDCODE, unrolled BSRR bitbang,
       pins as four #defines. Verified against real silicon.
+- [x] Target UART bridge: second CDC (if02) <-> USART2 on PA2/PA3, IRQ-driven
+      both ways, host-owned baud via SET_LINE_CODING. Verified on hardware:
+      enumerates as two ports, 8 KB burst at 1 Mbaud clocks out at wire rate,
+      zero drops. NOT yet proven end-to-end -- whether PA2/PA3 actually reach
+      the FPGA's UART on the i9 baseboard is still unknown.
 
 ## Debugger gotcha
 
@@ -161,6 +180,52 @@ Halting the core kills USB: the host sees a disconnect and the device drops off
 the bus, and `resume` does not bring it back -- it needs a reset. Several
 "USB is broken" scares this session were just a config with no `resume` in it.
 Always resume, or expect to reset afterwards.
+
+## State as of 2026-09-11 (OFF THE BUS -- needs grabbers)
+
+The probe does not enumerate at all: no `cafe:4001`, no `0d28:0204`. Recovery
+needs SWD.
+
+What happened, in order: `b` put it in the bootloader as designed (MAINTENANCE
+mounted, verified). Then **four consecutive MSD writes were rejected**, every
+one with the same `FAIL.TXT`:
+
+    error: In application programming failed because the update sent was incomplete.
+
+All four methods failed identically -- `cp`+`sync`, `dd conv=fsync`,
+`cp`+immediate unmount, and a `-o sync` remount -- while `Remount count` went
+0 -> 4, so the bootloader was receiving the writes and ending up short.
+
+**RESOLVED later the same night: the mount's `flush` option.** Every attempt
+above went through the udisks automount, which sets `flush` on vfat; that
+writes metadata eagerly and interleaves FAT/directory sectors among the file's
+data sectors, and DAPLink finalises the transfer when the contiguous data run
+breaks. `udisksctl mount -o sync` does not help -- udisks appends `flush`
+regardless. A plain `mount -t vfat` with no `flush`, written and then
+unmounted, programs correctly. See "Flashing over USB" above for the recipe.
+
+Two traps that made this take far longer than it should have: with a no-flush
+mount DAPLink does not reject, it simply does nothing until the filesystem is
+unmounted (no FAIL.TXT, no remount -- looks identical to "never saw it"), and
+the commit after unmount takes several seconds. Both were read as failure at
+the time, and the second cost an unnecessary FPGA reseat.
+
+Best theory for why it then went dark: DAPLink programs as it receives, so the
+first page -- the vector table -- likely landed even though the update was
+declared incomplete. A valid-looking SP/PC there means the bootloader launches
+a half-written image, which hangs before `usb_hw_init()`. That also explains
+why the dead-man timer did not save it: the timer lives in the main loop, which
+is never reached. `make status` confirms or kills this theory in one read.
+
+Recovery, FPGA unseated (SODIMM/SWD constraint):
+
+    make status      # read-only triage: bootloader intact? app slot? RDP?
+    make flash       # SWD write + verify_image -- trustworthy, unlike MSD
+    # or: make erase-app, to just restore MAINTENANCE and flash over USB later
+
+Lesson already folded back in: `make usb-flash` now goes through
+`tools/usb_flash.sh`, which reads `FAIL.TXT` and fails loudly instead of
+reporting success on a write the bootloader threw away.
 
 ## State as of 2026-09-01 (grabbers removed)
 
@@ -256,10 +321,12 @@ Next, in order of value:
      i.e. ~3.6 MHz / ~5.5 MHz -> roughly 3 s per bitstream.
   3. Make hi-Z the power-on default with `a` to acquire, so replugging the
      probe while something else is clipped on cannot cause contention.
-  4. `probe/` is still untracked on branch experiment/vexiiriscv-turbo. Give it
-     its own branch and commit.
+  4. ECP5 bitstream loading (src/ecp5.c, console command `p`) is written and
+     builds, but has not yet configured a real device. That is the next test.
 
-Do not lose: the factory DAPLink dump on mpc2
-(/run/media/mp2/workspace/vscode-linux/daplink-apm32-dump). Its bootloader is
+Do not lose: the factory DAPLink dump, now at
+/run/media/qz/workspace/vscode-linux/daplink-apm32-dump (it moved with the
+workspace; the old mpc2 path is gone). All 6 files verify against its own
+SHA256SUMS as of 2026-09-11. There is still no off-disk copy -- make one. Its bootloader is
 restored on the probe and is the only thing making USB flashing possible; there
 is no second copy.
