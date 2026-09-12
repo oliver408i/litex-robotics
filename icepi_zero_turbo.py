@@ -4,7 +4,10 @@
 This variant exists to be overclocked. It is the leanest *programmable* SoC that
 can run a framebuffer game (DOOM port):
 
-  - CPU + SDRAM (BaseSoC)
+  - CPU + SDRAM (BaseSoC). CPU is selectable via --cpu: vexriscv (default,
+    highest Fmax), vexii (VexiiRiscv standard), or vexii-superscalar (2-way
+    VexiiRiscv, trades clock for IPC). VexiiRiscv is generated on demand and
+    needs sbt + a JDK on PATH. See docs/cpu_vexiiriscv.md.
   - ST7796S LCD engine + FT6336U capacitive touch (add_lcd_touch, reset via IOX)
   - MCP23S17 IO expander (add_aux_imu with_iox) -- ALWAYS required: it drives
     LCD/CTP reset over the aux bus. Mostly a software feature; tiny gateware.
@@ -28,10 +31,38 @@ SDRAM couples mem = 2*sys, so raising sys raises the memory clock too (sys=83 ->
 Reliability across temperature / voltage / part-to-part is explicitly a
 non-goal. This is a bench stunt. Do not ship it.
 """
+import sys
+
 from icepi_zero_base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import (add_lcd_touch, add_aux_imu,
                                     add_c3_loader_baseline)
+
+
+# VexiiRiscv 2-way superscalar preset: two decode/execute lanes + full branch
+# prediction (BTB/RAS/gshare) + late-ALU. Appended AFTER the `standard` variant
+# base (mul/div, 2-way L1 I$/D$, relaxed-branch), so this is standard + IPC.
+# Trades Fmax and area for instructions-per-clock -- the one shape where
+# VexiiRiscv can beat VexRiscv on a CPU-bound workload (e.g. DOOM) despite a
+# lower clock ceiling. See docs/cpu_vexiiriscv.md for the measured comparison.
+VEXII_SUPERSCALAR_ARGS = (
+    "--decoders=2 --lanes=2 --with-btb --with-ras --with-gshare --with-late-alu"
+)
+
+
+def _argv_value(flag, default=None):
+    """Exact-match scan of sys.argv for `--flag value` or `--flag=value`.
+
+    Used to peek at --cpu *before* parse_args() so we can preset the LiteX CPU
+    args it registers. We can't use the parser's get_value_from_key() here: it
+    matches by substring, so "--cpu" would falsely match "--cpu-type" etc.
+    """
+    for i, tok in enumerate(sys.argv):
+        if tok == flag:
+            return sys.argv[i + 1] if i + 1 < len(sys.argv) else default
+        if tok.startswith(flag + "="):
+            return tok.split("=", 1)[1]
+    return default
 
 
 class TurboSoC(BaseSoC):
@@ -62,6 +93,16 @@ class TurboSoC(BaseSoC):
 
 def main():
     parser = make_parser(description="IcePi Zero SoC TURBO (overclock/gaming, not for field use).")
+    parser.add_target_argument("--cpu", default="vexriscv",
+                               choices=["vexriscv", "vexii", "vexii-superscalar"],
+                               help="Soft CPU core. 'vexriscv' (default): production "
+                                    "VexRiscv -- highest Fmax (~71 MHz), smallest (~33%% LUT). "
+                                    "'vexii': VexiiRiscv 'standard' (single-issue, 2-way L1 "
+                                    "I$/D$); build-on-demand, needs sbt+JDK21 on PATH. "
+                                    "'vexii-superscalar': VexiiRiscv 2-way superscalar + branch "
+                                    "prediction + late-ALU -- trades Fmax/area for IPC. Raw "
+                                    "--cpu-type/--cpu-variant/--vexii-args still work and override "
+                                    "this preset.")
     parser.add_target_argument("--lcd-spi-clk-freq", default=185e6, type=float,
                                help="LCD engine SPI core clock (Hz). SCK = this / 2. "
                                     "Default 185 MHz -> 92.5 MHz SCK (production-proven).")
@@ -83,6 +124,17 @@ def main():
                                     "the flash fetch path from the reset critical path (useful "
                                     "when overclocking makes XIP flaky) at the cost of EBR and "
                                     "a rebuilt bitstream per BIOS change.")
+    # Preset the LiteX CPU args from --cpu *before* parse_args(), so the parser
+    # registers/reads the VexiiRiscv-specific args (--vexii-args etc.) and selects
+    # the core. Peek at argv directly (parse hasn't run yet). Raw --cpu-type /
+    # --cpu-variant / --vexii-args passed on the CLI still win (argparse CLI value
+    # overrides these set_defaults).
+    cpu_choice = _argv_value("--cpu", "vexriscv")
+    if cpu_choice in ("vexii", "vexii-superscalar"):
+        parser.set_defaults(cpu_type="vexiiriscv", cpu_variant="standard")
+        if cpu_choice == "vexii-superscalar":
+            parser.set_defaults(vexii_args=VEXII_SUPERSCALAR_ARGS)
+
     args = parser.parse_args()
 
     # Standalone boot by default: BIOS flash-boots the loader at the firmware

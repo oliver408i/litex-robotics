@@ -50,8 +50,12 @@ class _CRG(LiteXModule):
              chip ceiling) without overclocking the SDRAM.
     """
     def __init__(self, platform, sys_clk_freq, spi_clk_freq=None, ext_reset_n=None,
-                 sdram_rate="1:2"):
+                 sdram_rate="1:2", with_usb=False):
         assert sdram_rate in ("1:1", "1:2")
+        # The 25F has only 2 PLLs: PLL1 = core (sys/mem), PLL2 = ONE of {LCD SPI,
+        # USB}. LCD and USB can't coexist on this board -- they'd need a 3rd PLL.
+        assert not (with_usb and spi_clk_freq is not None), \
+            "with_usb and spi_clk_freq both use PLL2; the 25F can't clock both (only 2 PLLs)"
         self.rst      = Signal()
         self.user_rst = Signal()  # extra reset source (e.g. BootCtl's FTDI RTS reset)
         self.cd_sys      = ClockDomain()
@@ -60,6 +64,12 @@ class _CRG(LiteXModule):
             self.cd_sys2x_ps = ClockDomain(reset_less=True)  # 2x sys, phase-shifted: drives the SDRAM clock pin
         else:
             self.cd_sys_ps = ClockDomain(reset_less=True)  # sys, phase-shifted: drives the SDRAM clock pin
+        if with_usb:
+            # ValentyUSB's CDCUsb needs BOTH a 48 MHz (4x FS oversample) and a
+            # 12 MHz (bit-rate) domain; it does its own sys<->usb CDC internally,
+            # so sys can be any frequency (here 100 MHz). Both come off PLL2.
+            self.cd_usb_48 = ClockDomain()
+            self.cd_usb_12 = ClockDomain()
         if spi_clk_freq is not None:
             self.cd_spi = ClockDomain()
 
@@ -99,6 +109,21 @@ class _CRG(LiteXModule):
             pll2.register_clkin(clk50, 50e6)
             pll2.create_clkout(self.cd_spi, spi_clk_freq)
 
+        # PLL #2 (alternative use) -- USB clocks. Mutually exclusive with the LCD
+        # SPI clock above (only 2 PLLs on the 25F). One VCO (e.g. 480 MHz) divides
+        # cleanly to both 48 (/10) and 12 (/40) MHz; async-crossed to sys inside
+        # CDCUsb, so no phase relationship to sys is required.
+        if with_usb:
+            self.pll2 = pll2 = ECP5PLL()
+            self.comb += pll2.reset.eq(rst_comb)
+            pll2.register_clkin(clk50, 50e6)
+            # margin=0 forces EXACT divisors: the default 1% margin lets the
+            # solver pick VCO=525 -> 47.73 MHz (0.57% off), outside USB FS's
+            # +-0.25% tolerance -> flaky enumeration. Exact solution exists:
+            # VCO=480 -> 48=/10, 12=/40 (both 0 ppm error).
+            pll2.create_clkout(self.cd_usb_48, 48e6, margin=0)
+            pll2.create_clkout(self.cd_usb_12, 12e6, margin=0)
+
 
 # BaseSoC ------------------------------------------------------------------------------------------
 class BaseSoC(SoCCore):
@@ -127,6 +152,7 @@ class BaseSoC(SoCCore):
                  with_sdram=True,
                  sdram_rate="1:2",
                  bios_in_bram=False,
+                 with_usb=False,
                  **kwargs):
         if platform is None:
             platform = icepi_zero.Platform()
@@ -147,7 +173,8 @@ class BaseSoC(SoCCore):
         self.crg = _CRG(platform, sys_clk_freq,
                         spi_clk_freq=spi_clk_freq,
                         ext_reset_n=ext_reset_n,
-                        sdram_rate=sdram_rate)
+                        sdram_rate=sdram_rate,
+                        with_usb=with_usb)
 
         if with_spi_flash and not bios_in_bram:
             # XIP: no EBR ROM, reset vector into flash. Force (not setdefault) --
