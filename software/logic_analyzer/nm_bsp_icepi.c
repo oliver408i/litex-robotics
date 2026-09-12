@@ -1,6 +1,6 @@
 /* ATWINC1500 BSP for the IcePi Zero (LiteX/VexRiscv).
  *
- * Sidebands wired in icepi_zero_winc.py:
+ * Sidebands wired in targets/icepi_zero/winc.py:
  *   winc_reset : GPIOOut -> RESET_N (active low)  winc_reset_out_write(1 = release)
  *   winc_en    : GPIOOut -> CHIP_EN               winc_en_out_write(1 = enable)
  *   winc_irq   : GPIOIn  <- IRQN  (active low)    winc_irq_in_read() (0 = asserted)

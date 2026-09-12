@@ -61,7 +61,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=REPO / "build" / "snn_mnist.pt")
     parser.add_argument("--n-mac", type=int, default=2,
-                        help="Must match SNNMLP's N_MAC in icepi_zero_mnist_lcd.py (default 2).")
+                        help="Must match SNNMLP's N_MAC in targets/icepi_zero/mnist_lcd.py (default 2).")
     parser.add_argument("--out", type=Path,
                         default=REPO / "software" / "mnist_lcd_demo" / "snn_assets.h")
     args = parser.parse_args()

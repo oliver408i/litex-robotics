@@ -1,6 +1,6 @@
 # AllSoC layout
 
-Block diagram of `AllSoC` (`icepi_zero_all.py`) — the deployed "everything"
+Block diagram of `AllSoC` (`targets/icepi_zero/all.py`) — the deployed "everything"
 shape, composed from `gateware/soc_features.py` feature adders on `BaseSoC`.
 Generated from the LiteX source and the build's `csr.csv` / `soc.h`; if you
 change the bus topology or address map, re-derive it from
@@ -13,7 +13,7 @@ SDRAM, and the design spans **three clock domains** (50 MHz `sys`, a 2× 100 MHz
 `spi`). Everything else — the aux SPI bus (WINC/IMU/MCP), the flash master,
 boot control — is CSR-driven with no bus mastering of its own.
 
-> **MnistLCDSoC (`icepi_zero_mnist_lcd.py`)** is this layout minus the
+> **MnistLCDSoC (`targets/icepi_zero/mnist_lcd.py`)** is this layout minus the
 > WiFi/aux block, flash mmap and boot control: an integrated 128 KB EBR ROM
 > at `0x0` replaces the XIP BIOS, 5 IRQs, and the CSR map packs accordingly.
 > The other per-feature tops (`icepi_zero_lcd/mnist/winc.py`) subset further.

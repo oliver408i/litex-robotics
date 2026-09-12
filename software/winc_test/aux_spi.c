@@ -6,7 +6,7 @@
 #include "aux_spi.h"
 
 #ifndef CSR_AUX_SPI_BASE
-#error "Build the SoC from icepi_zero_winc.py (provides aux_spi) before compiling software/winc_test."
+#error "Build the SoC from targets/icepi_zero/winc.py (provides aux_spi) before compiling software/winc_test."
 #endif
 
 /* WINC1500 on the shared aux bus, chip-select index AUX_CS_WINC.

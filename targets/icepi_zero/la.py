@@ -16,7 +16,7 @@ refuses to arm if they're still present. See docs/logic_analyzer.md.
 
 Pair with software/logic_analyzer (firmware + la_host.py).
 """
-from icepi_zero_base import BaseSoC, make_parser, resolve_spi_flash, run_build
+from base import BaseSoC, make_parser, resolve_spi_flash, run_build
 
 from gateware.soc_features import add_flashing_baseline, add_logic_analyzer
 

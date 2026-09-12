@@ -2,9 +2,9 @@
 """IcePi Zero SoC for PSC16S (PISC v2) prototype bring-up.
 
 PROTOTYPE against a DRAFT ISA -- docs/psc16s_isa_draft.md. The v1 bring-up top
-is icepi_zero_pisc.py and is untouched; this is its sibling.
+is targets/icepi_zero/pisc.py and is untouched; this is its sibling.
 
-Deliberately lighter than icepi_zero_pisc.py: no WINC aux bus, no boot-manager,
+Deliberately lighter than targets/icepi_zero/pisc.py: no WINC aux bus, no boot-manager,
 no LCD. The subject under test is the core, and the v1 top's OTA hardware is
 there for a flashing path this does not need -- load over JTAG (`--load`) and
 iterate. Add `--with-spi-flash` if you want the XIP/OTA shape back.
@@ -34,7 +34,7 @@ Flow, from firmware or over litex_server/wishbone:
     ... write them at addr >= ro_words via imem_addr/imem_data/imem_ctl_we
     start_pc = ro_words ; control_run = 1 ; poll status.halted ; read result
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.psc16s import add_psc16s
 

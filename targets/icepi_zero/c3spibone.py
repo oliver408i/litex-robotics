@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IcePi Zero SoC -- ESP32-C3 link via the verified SPIBone Wishbone bridge.
 
-PHASE 1 (transport proof). The raw-GPIO diagnostic (icepi_zero_c3diag.py) proved
+PHASE 1 (transport proof). The raw-GPIO diagnostic (targets/icepi_zero/c3diag.py) proved
 every C3<->FPGA wire is electrically perfect in both directions, so the old
 "never worked" link bug lived in the custom SPISlave stack. This SoC replaces
 that entire stack -- custom slave + PING/ERASE/PROGRAM protocol + READY pin --
@@ -20,7 +20,7 @@ No firmware serial-boot is required for the transport test -- the CPU boots its
 integrated-ROM BIOS and sits at the prompt; SPIBone works independently. SDRAM is
 omitted (it's dead) so main_ram is a 32 KB BRAM and the BIOS runs from real memory.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import add_c3_spibone
 

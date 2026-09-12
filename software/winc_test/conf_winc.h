@@ -7,7 +7,7 @@
  * conf_winc.h) so the driver headers see CONF_WINC_USE_SPI before they gate on
  * it (e.g. bus_wrapper/include/nm_bus_wrapper.h). */
 
-/* The WINC rides the shared sensor/aux SPI bus (see icepi_zero_winc.py). */
+/* The WINC rides the shared sensor/aux SPI bus (see targets/icepi_zero/winc.py). */
 #define CONF_WINC_USE_SPI       (1)
 
 /* HIF interrupt model (exactly one). We service the WINC IRQ by polling its

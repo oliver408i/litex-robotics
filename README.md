@@ -17,7 +17,7 @@ That reconstructs everything that is **not** in git (see below). Then:
 
 ```bash
 cd sim/cocotb && ./run.sh                       # run the cocotb SNN tests
-.venv/bin/python icepi_zero_all.py --build      # build a bitstream
+.venv/bin/python targets/icepi_zero/mnist_lcd.py --build  # build a bitstream
 make -C software/snn_mnist_demo                  # build firmware (needs riscv gcc)
 .venv/bin/python flash.py                         # flash the board (needs hardware)
 ```
@@ -29,7 +29,7 @@ reconstructed by `setup.sh`:
 
 | Path | In git? | What it is | Size |
 |------|:------:|------------|-----:|
-| `gateware/`, `verilog/`, `software/`, `tools/`, `sim/`, `docs/`, `patches/` | ✅ | The actual project | small |
+| `targets/`, `gateware/`, `verilog/`, `software/`, `tools/`, `sim/`, `docs/`, `patches/`, `probe/` | ✅ | The actual project | small |
 | `software/lvgl/` | ✅ submodule | LVGL GUI lib (pinned) | — |
 | `.venv/` | ❌ | Python 3.12 venv (LiteX + tools) | 6.9 GB |
 | `oss-cad-suite/` | ❌ | yosys + nextpnr-ecp5 + iverilog + openFPGALoader | 2.4 GB |
@@ -77,16 +77,23 @@ Details in [`docs/boot_chain.md`](docs/boot_chain.md).
 
 ## Build entry points
 
-Top-level `icepi_zero_*.py` are the SoC configurations (they prepend
-`litex-setup/*` to `sys.path`, so the directory layout matters):
+SoC configurations live under `targets/<board>/`, one thin file per variant
+composed from the feature adders in `gateware/soc_features.py`:
 
-| Script | SoC |
-|--------|-----|
-| `icepi_zero_base.py` | base SoC (SDRAM + optional SPI-flash XIP BIOS), library-only base |
-| `icepi_zero_all.py`  | everything: LCD + SNN + WiFi |
-| `icepi_zero_lcd.py` / `_mnist_lcd.py` | LCD / MNIST-on-LCD |
-| `icepi_zero_mnist.py` | SNN-MLP MNIST demo |
-| `icepi_zero_winc.py` | ATWINC1500 WiFi loader |
+```bash
+.venv/bin/python targets/icepi_zero/mnist_lcd.py --build
+```
+
+| Path | What |
+|------|------|
+| `targets/icepi_zero/` | the IcePi Zero (ECP5 25F) variants — **see its README for a per-top status table**, since some target hardware that no longer exists |
+| `targets/icepi_zero/base.py` | library-only: `BaseSoC`, the CRG, and the shared parser/build helpers. Puts the repo root and `litex-setup/*` on `sys.path`, so the directory layout is load-bearing |
+
+The deployable is `targets/icepi_zero/mnist_lcd.py`; the board is programmed
+through `targets/icepi_zero/c3flash.py` + `./flash.py`.
+
+Every variant builds into the same `build/icepi_zero/`, so building one
+clobbers the last one's matched artifacts — snapshot with `./syspkg.py pack`.
 
 ## What still requires the physical hardware
 

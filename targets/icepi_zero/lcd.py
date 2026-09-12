@@ -5,7 +5,7 @@ BaseSoC + the LCD/touch feature (gateware/soc_features.py: add_lcd_touch).
 The engine's SPI shifter runs in the dedicated cd_spi domain, so this top
 constructs BaseSoC with spi_clk_freq and owns P1 (backlight) via lcd_ctrl.
 """
-from icepi_zero_base import BaseSoC, make_parser, resolve_spi_flash, run_build
+from base import BaseSoC, make_parser, resolve_spi_flash, run_build
 
 from gateware.soc_features import add_lcd_touch
 

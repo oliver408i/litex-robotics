@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IcePi Zero SoC -- ESP32-C3 link via the verified UARTBone Wishbone bridge.
 
-The async twin of icepi_zero_c3spibone.py. After both SPI transports failed
+The async twin of targets/icepi_zero/c3spibone.py. After both SPI transports failed
 identically ("MISO returns 00"), this makes the ESP32-C3 a Wishbone MASTER over
 plain UART using LiteX's UARTBone -- the most battle-tested bridge in the tree
 (litex_server/wishbone-tool speak it). No CS, no clock phase, no tristate, no
@@ -15,7 +15,7 @@ WORD address 0x3C000201, reset 0x12345678) and round-trip a write. Just build +
 load; the CPU idles in its BIOS while UARTBone masters the bus. SDRAM omitted
 (dead) -> main_ram is BRAM.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import add_c3_uartbone
 

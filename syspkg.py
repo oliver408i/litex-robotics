@@ -49,7 +49,7 @@ MANIFEST_NAME = "manifest.json"
 # CAVEAT (2026-07-03, post-WINC->C3 pivot): unlike the old winc_loader, which
 # was rebuilt as part of EACH deployable variant's own gateware (so its CSR
 # addresses always matched that variant's fabric), c3_flash.bin is built
-# against the separate, fixed `icepi_zero_c3flash.py` SoC (SPIBone + mailbox
+# against the separate, fixed `targets/icepi_zero/c3flash.py` SoC (SPIBone + mailbox
 # only, no deployable features) -- it is NOT rebuilt per variant and does NOT
 # share baseline's/mnist_lcd's/logger's CSR map. Packing a syspkg for one of
 # those variants with today's c3_flash.bin would ship a CSR-mismatched loader

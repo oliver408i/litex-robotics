@@ -27,7 +27,7 @@
 #include "wifi_secrets.h"
 
 #ifndef CSR_LA_BASE
-#error "Build the SoC from icepi_zero_la.py (provides the `la` CSRs) before compiling software/logic_analyzer."
+#error "Build the SoC from targets/icepi_zero/la.py (provides the `la` CSRs) before compiling software/logic_analyzer."
 #endif
 
 extern void winc_service_irq(void);   /* nm_bsp_icepi.c */

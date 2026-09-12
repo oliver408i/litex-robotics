@@ -6,7 +6,7 @@ sclk/mosi/miso as the LSM6DS3 IMU + MCP3008, see docs/icepi_zero_pin_mapping.md)
 driven by gateware/aux_spi.py's AuxSPIMaster. The expander adds a 4th aux
 chip-select (AUX_CS_IOX, IO17/R3) plus a reset (IO10/L2) and an interrupt
 (IO22/P2) sideband. Pins + CSRs live in gateware/soc_features.py
-(add_mcp_expander); this top is C3FlashSoC's shape (icepi_zero_c3flash.py) +
+(add_mcp_expander); this top is C3FlashSoC's shape (targets/icepi_zero/c3flash.py) +
 that feature, so the resident C3 loader (software/c3_flash) can flash this
 bitstream/BIOS/loader and chain-boot software/mcp_test as the app -- see
 docs/c3_loader.md. No JTAG/litex_term needed once the loader is resident:
@@ -20,7 +20,7 @@ just a build one. Verify the expander via the register echo probe, output
 walk, and GPB/INTA input watch instead; re-add loopback on a free pin later
 if still wanted.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import add_mcp_expander, add_c3_spibone, add_c3_mailbox, add_boot_flag
 

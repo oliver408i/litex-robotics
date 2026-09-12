@@ -5,7 +5,7 @@ for future use — the obvious payoffs being a USB-CDC serial console and, longe
 term, a USB-DFU / bulk firmware loader that beats the 1 Mbaud UART and complements
 the ESP32-C3 flash path.
 
-This is a *plan + scaffold* doc. The `icepi_zero_usb.py` variant it describes is
+This is a *plan + scaffold* doc. The `targets/icepi_zero/usb_device.py` variant it describes is
 **UNTESTED on hardware** — it exists so the shape can be built (routing / Fmax /
 capacity checked) the moment the physical USB port is confirmed.
 
@@ -44,7 +44,7 @@ Consequence: **`sys` is unconstrained by USB.** It can stay at the proven
 **100 MHz / half-rate SDRAM 200 MHz** on PLL1. USB just needs its own 48 + 12 MHz
 domains, which come off **PLL2**. (LiteX's stock `usb_acm` renames `sys`→`sys_usb`
 and still requires the board CRG to supply `usb_48`/`usb_12`; we skip that wrapper
-and instantiate `CDCUsb` directly — see `icepi_zero_usb.py:add_usb_acm`.)
+and instantiate `CDCUsb` directly — see `targets/icepi_zero/usb_device.py:add_usb_acm`.)
 
 Both USB clocks use **`margin=0`** in `create_clkout`. The default 1% PLL margin
 lets the solver pick VCO=525 → 47.73 MHz (0.57% off), *outside* USB FS's ±0.25%
@@ -87,7 +87,7 @@ would need a 3rd PLL the 25F doesn't have.
 - **Phase 2 — Enumeration proof-of-life.** `CDCUsb` is wired as a **secondary**
   USB-CDC serial port (keeps the primary UART for the C3 loader/console). Goal:
   a `/dev/ttyACM*` appears on the host and echoes. This is what
-  `icepi_zero_usb.py` scaffolds — but it is **not yet HW-tested**.
+  `targets/icepi_zero/usb_device.py` scaffolds — but it is **not yet HW-tested**.
 - **Phase 3 — Real use case.** Move to the `eptri` register interface and port
   firmware for the target class. High-value target: **USB-DFU / bulk loader** to
   replace the 1 Mbaud UART.
@@ -97,13 +97,13 @@ would need a 3rd PLL the 25F doesn't have.
 
 ## Scaffold
 
-`icepi_zero_usb.py` — BaseSoC at **sys = 100 MHz / half-rate SDRAM 200 MHz**
+`targets/icepi_zero/usb_device.py` — BaseSoC at **sys = 100 MHz / half-rate SDRAM 200 MHz**
 (PLL1, unchanged) + `with_usb=True` (PLL2 → 48/12 MHz) + the C3 flash loader (so
 the board stays programmable) + a **secondary** USB-CDC ACM UART via `CDCUsb`. No
 LCD, no IOX. Build:
 
 ```
-.venv/bin/python icepi_zero_usb.py --build          # elaborate + place & route
+.venv/bin/python targets/icepi_zero/usb_device.py --build          # elaborate + place & route
 # read "Max frequency for clock 'sys'" and LUT/EBR utilization from the log
 ```
 

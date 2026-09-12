@@ -4,16 +4,16 @@
 VexRiscv + UART + the PISC peripheral (gateware/pisc.py), built in the same
 WiFi-updatable shape as the deployed all-SoC: XIP BIOS from flash, LiteSPI
 master, the ATWINC1500 aux bus, and the boot-manager flag/reset. No LCD and no
-SNN, so it stays far lighter than icepi_zero_all.py (no 185 MHz LCD domain ->
+SNN, so it stays far lighter than targets/icepi_zero/all.py (no 185 MHz LCD domain ->
 fast builds, trivial timing) while keeping PISC isolated as the only new logic.
 
-Like icepi_zero_all.py, this forces the deployment shape (with_spi_flash +
+Like targets/icepi_zero/all.py, this forces the deployment shape (with_spi_flash +
 flash_master always on), so a plain `--build` produces a full XIP-BIOS +
 LiteSPI-master bitstream and bios.bin -- ready to load over the fast WiFi OTA
 path (./flash.py) exactly like an all-SoC build. The loader hardware is here
 not because this is a deployment image but because OTA beats the bit-banged
 JTAG load (kept as the slow recovery backup). The aux-bus config mirrors
-icepi_zero_winc.py, so the hardware-verified winc_loader runs here unchanged
+targets/icepi_zero/winc.py, so the hardware-verified winc_loader runs here unchanged
 (it is CSR-coupled -- flash a winc_loader built against THIS SoC). PISC's
 gpio_in/gpio_out stay CSR-only (not pinned), so they don't touch the aux pins.
 See docs/boot_chain.md and docs/pisc_isa.md.
@@ -21,7 +21,7 @@ See docs/boot_chain.md and docs/pisc_isa.md.
 Pair with software/pisc_test: it loads programs into the core, runs them, and
 prints the results (sum 1..10 -> 55, etc.).
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.pisc import PISC
 from gateware.soc_features import add_winc_aux, add_boot_ctl
@@ -37,7 +37,7 @@ class PiscSoC(BaseSoC):
             flash_boot_offset = flash_boot_offset,
             **kwargs,
         )
-        # WiFi OTA loader hardware (same as icepi_zero_winc.py): shared aux SPI
+        # WiFi OTA loader hardware (same as targets/icepi_zero/winc.py): shared aux SPI
         # bus + WINC sidebands, plus the boot flag / FTDI reset the chain uses.
         add_winc_aux(self, winc_spi_clk_freq, busy_led=0)
         add_boot_ctl(self)
@@ -64,7 +64,7 @@ def main():
 
     # Standalone boot by default: BIOS flash-boots the firmware (loader) at the
     # firmware offset; serial boot stays available as the fallback. Mirrors
-    # icepi_zero_all.py.
+    # targets/icepi_zero/all.py.
     if args.flash_boot_offset is None:
         args.flash_boot_offset = args.firmware_offset
 

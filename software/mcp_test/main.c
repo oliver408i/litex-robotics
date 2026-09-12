@@ -1,6 +1,6 @@
 /* MCP23S17 SPI GPIO-expander bring-up firmware.
  *
- * The hardware half is icepi_zero_mcp.py (C3FlashSoC's shape + add_mcp_expander):
+ * The hardware half is targets/icepi_zero/mcp.py (C3FlashSoC's shape + add_mcp_expander):
  * the MCP23S17 sits on the shared aux SPI bus on a 3rd chip-select (AUX_CS_IOX,
  * IO17/R3) with reset on IO10/L2 (iox_reset) and INTA on IO22/P2 (iox_inta).
  * This replaces the retired ATWINC1500. Runs as the chain-booted app behind
@@ -18,7 +18,7 @@
  *
  * NOTE: the GPA7 loopback closed-loop test (IO24/L1 <-> GPA7) is dropped here
  * -- IO24/L1 is now the C3 link's MOSI line, a real pin conflict with the
- * loopback bench fixture. See icepi_zero_mcp.py's docstring.
+ * loopback bench fixture. See targets/icepi_zero/mcp.py's docstring.
  *
  * Logging is the project's uart-backed log.c (software/common) -- there is no
  * working printf in this firmware.

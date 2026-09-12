@@ -55,7 +55,7 @@ def main():
         sys.exit("empty file")
     if fbi:
         # .fbi = LiteX flashboot image: u32le length + u32le crc32 + payload
-        # (icepi_zero_base.py's run_build --flash-firmware path wraps the same way).
+        # (targets/icepi_zero/base.py's run_build --flash-firmware path wraps the same way).
         payload_crc = zlib.crc32(data) & 0xFFFFFFFF
         data = len(data).to_bytes(4, "little") + payload_crc.to_bytes(4, "little") + data
     if off % 0x1000:

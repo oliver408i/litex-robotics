@@ -1,6 +1,6 @@
 # VexiiRiscv on the TURBO SoC
 
-The `icepi_zero_turbo.py` variant can be built with an alternate CPU via `--cpu`:
+The `targets/icepi_zero/turbo.py` variant can be built with an alternate CPU via `--cpu`:
 
 | `--cpu` value      | Core                                    | Use it for                          |
 |--------------------|-----------------------------------------|-------------------------------------|
@@ -26,7 +26,7 @@ The build wrapper must source the FPGA toolchain too:
 source oss-cad-suite/oss-cad-suite/environment          # yosys/nextpnr/ecppack
 export PATH="$HOME/.local/share/coursier/bin:$HOME/.local/bin:$PATH"
 export JAVA_HOME="$(cs java-home --jvm temurin:21)"
-.venv/bin/python icepi_zero_turbo.py --cpu vexii-superscalar --sys-clk-freq 85e6 --build
+.venv/bin/python targets/icepi_zero/turbo.py --cpu vexii-superscalar --sys-clk-freq 85e6 --build
 ```
 
 First build per unique `--vexii-args` runs SBT (~1–2 min); the netlist is then

@@ -1,5 +1,5 @@
 /* main_ram-resident link for the C3 loader (main_ram is SDRAM as of the
- * half-rate SDRAM fix -- see icepi_zero_c3flash.py's docstring). .text/.rodata
+ * half-rate SDRAM fix -- see targets/icepi_zero/c3flash.py's docstring). .text/.rodata
  * live in main_ram; .data/.bss/stack live in the on-chip `sram` region
  * instead (mirrors software/winc_loader/linker.ld). This is required for
  * chain-boot: try_chain_boot()'s chain_stub copies an app image on top of

@@ -176,7 +176,7 @@ IZ_PLATFORM="litex-setup/litex-boards/litex_boards/platforms/icepi_zero.py"
 if grep -q "ext_reset" "$IZ_PLATFORM" 2>/dev/null; then
   log "icepi_zero platform patch already applied"
 elif [ -f "$IZ_PATCH" ]; then
-  log "Applying icepi_zero platform patch (ext_reset pin required by icepi_zero_base.py)"
+  log "Applying icepi_zero platform patch (ext_reset pin required by targets/icepi_zero/base.py)"
   ( cd litex-setup/litex-boards && git apply "$REPO_ROOT/$IZ_PATCH" ) \
     || die "icepi_zero platform patch failed to apply"
 else
@@ -227,7 +227,7 @@ cat <<DONE
 $(log "Setup complete.")
 Next steps:
   • Run the cocotb sims:     cd sim/cocotb && ./run.sh
-  • Build a bitstream:        .venv/bin/python icepi_zero_all.py --build
+  • Build a bitstream:        .venv/bin/python targets/icepi_zero/all.py --build
   • Build firmware:           make -C software/snn_mnist_demo  (needs riscv64-linux-gnu-gcc)
   • Flash the board:          .venv/bin/python flash.py        (needs the IcePi Zero + FTDI cable)
 

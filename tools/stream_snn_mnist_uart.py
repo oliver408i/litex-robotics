@@ -29,7 +29,7 @@ if str(REPO) not in sys.path:
 
 from sim.snn_mlp import _to_fixed, hardware_inference, load_checkpoint
 
-# Memory map must match icepi_zero_base.py / generated mem.h.
+# Memory map must match targets/icepi_zero/base.py / generated mem.h.
 MAIN_RAM_BASE       = 0x40000000
 WEIGHT_BLOB_OFFSET  = 0x00100000  # 1 MiB into SDRAM; matches firmware
 DEFAULT_WEIGHT_BASE = MAIN_RAM_BASE + WEIGHT_BLOB_OFFSET

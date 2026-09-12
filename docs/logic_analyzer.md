@@ -3,7 +3,7 @@
 A 3.3 V logic analyzer variant: an SDRAM-streaming capture core
 (`gateware/logic_analyzer.py`) on the GPIO-bank pins that free up when the
 LCD/touch module is unplugged, alongside the mandatory WiFi-OTA baseline so the
-board still flashes over WiFi. Top: `icepi_zero_la.py`.
+board still flashes over WiFi. Top: `targets/icepi_zero/la.py`.
 
 This is a **first cut** — the gateware constructs/finalizes but has not been
 simulated or hardware-verified. See "Status & next steps" at the end.
@@ -206,7 +206,7 @@ GTKWave / PulseView; `--csv` for quick inspection.
 
 ```bash
 # build (note the half-rate SDRAM build flags from the SDRAM memory)
-.venv/bin/python icepi_zero_la.py --build --flash-master \
+.venv/bin/python targets/icepi_zero/la.py --build --flash-master \
     --yosys-abc9 --nextpnr-seed 2
 grep -i Fmax build/icepi_zero/gateware/*.rpt    # nextpnr --timing-allow-fail: always check
 

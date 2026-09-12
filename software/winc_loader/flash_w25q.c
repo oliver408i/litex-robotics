@@ -9,7 +9,7 @@
 #include "flash_w25q.h"
 
 #ifndef CSR_SPIFLASH_MASTER_CS_ADDR
-#error "SoC has no LiteSPI master -- build icepi_zero_winc.py with --flash-master."
+#error "SoC has no LiteSPI master -- build targets/icepi_zero/winc.py with --flash-master."
 #endif
 
 /* W25Q128JV command set */

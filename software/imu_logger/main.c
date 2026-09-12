@@ -1,6 +1,6 @@
 /* IcePi Zero field data logger -- on-FPGA LVGL app (lv_tabview).
  *
- * Pairs with icepi_zero_logger.py (WINC + LCD/touch + SD + IMU + GPS, no SNN).
+ * Pairs with targets/icepi_zero/logger.py (WINC + LCD/touch + SD + IMU + GPS, no SNN).
  *
  * Tabs:
  *   - Logger : IMU -> SD logging status (state, file, samples/bytes/overruns)

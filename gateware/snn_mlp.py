@@ -45,7 +45,7 @@ class SNNMLP(LiteXModule, AutoCSR):
         hidden: int = 64,
         out_size: int = 10,
         timesteps: int = 25,
-        n_mac: int = 2,   # 2 Q4.12 weights per 32-bit Wishbone word; see icepi_zero_mnist.py
+        n_mac: int = 2,   # 2 Q4.12 weights per 32-bit Wishbone word; see targets/icepi_zero/mnist.py
         data_width: int = 16,
         frac_bits: int = 12,
         beta_shift: int = 3,

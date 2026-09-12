@@ -19,7 +19,7 @@ It omits the SNN: on the 25F, SD's two block-DMA masters fit alongside LCD only
 once the SNN (the ~78%-BRAM heavy block) is dropped. Verified to route
 2026-06-16: post-route Fmax sys 54.56 / sys2x 131.91 / LCD-SPI 221.88 MHz, util
 BRAM 58% / COMB 43%. (The LCD+SNN MNIST demo is its own bitstream,
-icepi_zero_mnist_lcd.py; SD is mutually exclusive with the LCD+SNN pair.)
+targets/icepi_zero/mnist_lcd.py; SD is mutually exclusive with the LCD+SNN pair.)
 
 Post-WINC (2026-06-28): the ATWINC1500 is gone (smoked), so flash.py's WiFi OTA
 path is dark until the ESP32-C3 loader lands -- field units must be loaded over
@@ -37,7 +37,7 @@ Validate SD first with zero firmware via the BIOS `sdcard` command. Build with
 --yosys-abc9 --nextpnr-seed 2 and confirm "Max frequency for clock" >= 50 MHz.
 Boot chain / flash layout: docs/boot_chain.md.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import add_lcd_touch, add_flashing_baseline, add_gps_uart
 

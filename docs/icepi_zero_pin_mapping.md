@@ -147,9 +147,9 @@ physical card pins.
 
 Everything below sits on the GPIO bank from Part 1. The peripherals are added
 as platform extensions in `gateware/soc_features.py` (shared by the per-feature
-tops and the combined `icepi_zero_all.py`); `rgb_led` comes from the platform
+tops and the combined `targets/icepi_zero/all.py`); `rgb_led` comes from the platform
 file but is listed here because this is where its real usage lives. All
-allocations are disjoint, so every peripheral coexists in `icepi_zero_all.py`.
+allocations are disjoint, so every peripheral coexists in `targets/icepi_zero/all.py`.
 
 ## GPIO Bank Usage (IO1–IO27)
 
@@ -214,7 +214,7 @@ One SPI bus (runtime-divider `AuxSPIMaster`, software-held chip-selects --
 `gateware/aux_spi.py`, wired by `add_winc_aux` in `gateware/soc_features.py`)
 serves three devices at their own clocks. Distinct from the LCD's dedicated
 SPI bus. Firmware reaches the IMU via the `AUX_IMU` device in
-`software/winc_test/aux_spi.h`. Historical note: a standalone `icepi_zero_imu.py`
+`software/winc_test/aux_spi.h`. Historical note: a standalone `targets/icepi_zero/imu.py`
 once drove the same physical pins with a stock LiteX SPIMaster (`imu_spi`, IMU on
 cs[0]); that bring-up top + its `software/imu_test` firmware were removed once
 this bus was trusted, preserved at git tag `imu-standalone-bringup`.

@@ -2,8 +2,8 @@
 
 Each function appends one self-contained peripheral block (platform pins +
 gateware + CSRs/IRQs + firmware constants) to an already-constructed BaseSoC.
-The project tops (icepi_zero_lcd.py, icepi_zero_mnist.py, icepi_zero_winc.py,
-icepi_zero_mnist_lcd.py) are thin wrappers over these, and icepi_zero_all.py
+The project tops (targets/icepi_zero/lcd.py, targets/icepi_zero/mnist.py, targets/icepi_zero/winc.py,
+targets/icepi_zero/mnist_lcd.py) are thin wrappers over these, and targets/icepi_zero/all.py
 composes all of them. The blocks moved here verbatim from those tops; the pin
 choices match the physical wiring in docs/icepi_zero_pin_mapping.md.
 
@@ -35,8 +35,8 @@ def _lcd_io(with_reset_pad):
 
     lcd_ctrl.reset_n (IO10/L2) is optional: with_reset_pad=True keeps the
     direct-pin reset (LCD_RST/CTP_RST tied to L2 on the board, the default for
-    icepi_zero_lcd.py / _all.py / _logger.py). with_reset_pad=False drops it --
-    used by the expander build (icepi_zero_mnist_lcd.py), where L2 becomes the
+    targets/icepi_zero/lcd.py / _all.py / _logger.py). with_reset_pad=False drops it --
+    used by the expander build (targets/icepi_zero/mnist_lcd.py), where L2 becomes the
     MCP23S17 RESET line and LCD/CTP reset move onto expander outputs GPB0/GPB1,
     driven by firmware (see docs/reset_sidebands.md). LCDEngine treats the reset
     pad as optional (hasattr check), so omitting it is safe.
@@ -249,7 +249,7 @@ def _aux_imu_io(with_iox, for_c3):
 
 # MCP23S17 expander sidebands (reset + INTA) on direct pins, added by with_iox.
 # RESET reuses IO10/L2 (freed by add_lcd_touch(with_reset_pad=False)); INTA on
-# IO22/P2. Matches the standalone bring-up (icepi_zero_mcp.py / add_mcp_expander).
+# IO22/P2. Matches the standalone bring-up (targets/icepi_zero/mcp.py / add_mcp_expander).
 _iox_ctrl_io = [
     ("iox_ctrl", 0,
         Subsignal("reset_n", Pins("L2")),                       # IO10 -> MCP23S17 RESET (active low)
@@ -366,7 +366,7 @@ def add_aux_imu(soc, imu_spi_clk_freq=1e6, busy_led=None, with_iox=False, for_c3
 #      GPS UART TX (add_gps_uart) -- genuinely already wired that way on this
 #      board, not just a future planning conflict.
 # Both reset (L2) and INTA (P2) collide with add_lcd_touch / add_winc_aux pins,
-# so this adder is for the standalone bring-up top (icepi_zero_mcp.py) until the
+# so this adder is for the standalone bring-up top (targets/icepi_zero/mcp.py) until the
 # deployables are migrated off the WINC and the LCD reset is rerouted.
 #
 # cs_n is 3-wide here, NOT the WINC-era 4-wide layout (_winc_io/_aux_io above):

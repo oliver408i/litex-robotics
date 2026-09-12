@@ -41,7 +41,7 @@ firmware writes its config and output registers, exactly like the `AUX_IMU`
 device. As predicted this needed **no new gateware datapath**: just one more
 aux-bus CS line + the expander sidebands, and a firmware driver.
 
-**Wired into `icepi_zero_mnist_lcd.py` (2026-07-04):**
+**Wired into `targets/icepi_zero/mnist_lcd.py` (2026-07-04):**
 
 | Line | Where | Driven by |
 |------|-------|-----------|
@@ -56,7 +56,7 @@ reset pad, and `add_aux_imu(soc, ..., with_iox=True)` (via
 `add_flashing_baseline(..., with_iox=True)`) adds cs[3] + `iox_reset`/`iox_inta`.
 Firmware: `common/lcd.c` routes reset through the shared `common/mcp23s17.c`
 driver when `CSR_IOX_RESET_BASE` is defined; the direct-CSR path is unchanged on
-`icepi_zero_lcd.py` / `_all.py` / `_logger.py`.
+`targets/icepi_zero/lcd.py` / `_all.py` / `_logger.py`.
 
 **LCD_RST and CTP_RST are now separate lines** (GPB0/GPB1), no longer tied — the
 board wiring must split them. During the brief power-on window before firmware

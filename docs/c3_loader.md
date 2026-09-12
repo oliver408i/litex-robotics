@@ -11,7 +11,7 @@ next.
 > pivoted to LiteX's **SPIBone** (C3 as a Wishbone master) + a plain mailbox
 > RAM instead of the custom `SPISlave`/command-protocol design documented
 > here — see `gateware/soc_features.py`'s `add_c3_spibone`/`add_c3_mailbox`,
-> `icepi_zero_c3flash.py`, `software/c3_flash` (FPGA side) and
+> `targets/icepi_zero/c3flash.py`, `software/c3_flash` (FPGA side) and
 > `software/c3_flash_esp` (C3 side, incl. `flash_c3.py`). It's hardware-
 > verified end to end: real bitstream/BIOS slots flashed and cold-booted with
 > no JTAG, a C3-driven reset line (`'R'` command, FPGA `ext_reset`/G3 <->
@@ -148,7 +148,7 @@ dormant until SDRAM returns — flashing does not need it.
 
 ## Build order / status
 1. ✅ FPGA SPI-slave gateware + sim (`gateware/spi_slave.py`, `sim/test_spi_slave.py`)
-2. ✅ `add_c3_loader()` in `gateware/soc_features.py` + bring-up top `icepi_zero_c3loader.py`; PnR clean (sys 61 MHz, fits)
+2. ✅ `add_c3_loader()` in `gateware/soc_features.py` + bring-up top `targets/icepi_zero/c3loader.py`; PnR clean (sys 61 MHz, fits)
 3. ✅ FPGA firmware `software/c3_loader/` (SRAM-resident, reuses `flash_w25q.c`); 32 KB `integrated_sram`; builds, 8.5 KB used
 4. ◐ C3 firmware `software/c3_bridge/` (PlatformIO/Arduino) — SPI master + READY handshake + protocol mirror + boot PING self-test; **compiles**. Blocked on the C3-side GPIO pin numbers (SCLK/MOSI/MISO/CS); READY=GPIO10 confirmed. Host↔C3 transfer protocol still TODO.
 5. ☐ Host tool (adapt `flash.py` to the USB-serial transport)
@@ -159,7 +159,7 @@ dormant until SDRAM returns — flashing does not need it.
 - `/dev/ttyUSB0` — the FPGA's FTDI (`0403:6015`): JTAG load + `litex_term` serial-boot.
 
 ## Bring-up sequence (MVP: prove the link with PING)
-1. JTAG-load the `icepi_zero_c3loader.py` bitstream **and a matching BIOS** (the CSR
+1. JTAG-load the `targets/icepi_zero/c3loader.py` bitstream **and a matching BIOS** (the CSR
    map changed, so a stale flashed BIOS mismatches — flash both). This bitstream has
    **no SDRAM** (`with_sdram=False`): `main_ram` is a 32 KB on-chip BRAM, so the BIOS
    runs from working memory even with the SDRAM chip dead. (A *with-SDRAM* loader

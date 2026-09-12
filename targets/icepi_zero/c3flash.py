@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IcePi Zero SoC -- ESP32-C3 SPIBone flash loader (hybrid: C3 brain, FPGA programmer).
 
-The post-WINC loader, rebuilt on the verified SPIBone transport (icepi_zero_c3spibone.py
+The post-WINC loader, rebuilt on the verified SPIBone transport (targets/icepi_zero/c3spibone.py
 proved the C3 is a solid Wishbone master over SPI at up to 10 MHz). Architecture:
 the C3 stages the image over USB-CDC, writes a command + page data into a mailbox
 RAM over SPIBone, and rings a doorbell; a tiny SRAM-resident FPGA firmware
@@ -21,7 +21,7 @@ Bring-up: serial-boot the loader over UART:
 Then the C3 (software/c3_flash_esp) drives it over SPIBone. Stage 1 = PING (read
 the flash JEDEC id back through the mailbox); erase/program/verify follow.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import add_c3_spibone, add_c3_mailbox, add_boot_flag
 

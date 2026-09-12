@@ -26,7 +26,7 @@ Hardware address pins A2:A0 are strapped **000** → SPI opcodes `0x40` (write) 
 - **Gateware:** `gateware/soc_features.py` → `add_mcp_expander(soc, iox_spi_clk_freq, busy_led)`
   + `_mcp_io` extension + `AUX_CS_IOX`. Reuses `gateware/aux_spi.py`'s
   `AuxSPIMaster` (4th CS line).
-- **Top:** `icepi_zero_mcp.py` — UART-only serial-bootable bring-up SoC
+- **Top:** `targets/icepi_zero/mcp.py` — UART-only serial-bootable bring-up SoC
   (BaseSoC + `add_mcp_expander` + `add_boot_ctl`).
 - **Firmware:** `software/mcp_test/` — `aux_spi.{c,h}` (bus HAL, `AUX_IOX` +
   `AUX_IMU`), `mcp23s17.{c,h}` (reset / read / write / 16-bit / `probe`), `main.c`.
@@ -41,7 +41,7 @@ Hardware address pins A2:A0 are strapped **000** → SPI opcodes `0x40` (write) 
 # builds and loads -- it just fails the SDRAM memtest (0 addr / ~100% data
 # errors). ALWAYS grep the build log for "Max frequency for clock" and confirm
 # sys >= 50 MHz and sys2x >= 100 MHz; if seed 2 doesn't close, sweep seeds.
-.venv/bin/python icepi_zero_mcp.py --build --load --yosys-abc9 --nextpnr-seed 2
+.venv/bin/python targets/icepi_zero/mcp.py --build --load --yosys-abc9 --nextpnr-seed 2
 
 # firmware
 make -C software/mcp_test
@@ -78,7 +78,7 @@ the deployables:
    IO11 → the expander and a GPS-on-IO11 logger are mutually exclusive until one
    is repinned.
 2. **RESET IO10/L2 == the direct LCD/CTP reset pin** — **RESOLVED (2026-07-04)**
-   for `icepi_zero_mnist_lcd.py`: `add_lcd_touch(with_reset_pad=False)` drops the
+   for `targets/icepi_zero/mnist_lcd.py`: `add_lcd_touch(with_reset_pad=False)` drops the
    L2 pad, `add_aux_imu(with_iox=True)` puts the expander on cs[3] (R3) with
    RESET on L2, and `software/common/lcd.c` drives LCD_RST/CTP_RST from expander
    outputs **GPB0/GPB1** over SPI (see docs/reset_sidebands.md). Note the two

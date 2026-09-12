@@ -15,12 +15,12 @@ survive contact with a real SoC bus and a real toolchain?
 |---|---|
 | `verilog/psc16s.v` | the core. Multicycle FSM, same shape as `verilog/pisc.v` |
 | `gateware/psc16s.py` | LiteX wrapper — CSR peripheral **and** Wishbone master |
-| `icepi_zero_psc16s.py` | bring-up top on `BaseSoC`. Sibling of `icepi_zero_pisc.py`, which is untouched |
+| `targets/icepi_zero/psc16s.py` | bring-up top on `BaseSoC`. Sibling of `targets/icepi_zero/pisc.py`, which is untouched |
 | `tools/psc16s_asm.py` | v2 assembler. Separate from `tools/pisc_asm.py`, whose encoding is frozen |
 | `software/psc16s_test/*.s` | three programs, one per thing worth testing |
 
 v1 is entirely untouched: `pisc.v`, `gateware/pisc.py`, `tools/pisc_asm.py`,
-`sim/pisc_model.py`, `icepi_zero_pisc.py` and `docs/pisc_isa.md` all still
+`sim/pisc_model.py`, `targets/icepi_zero/pisc.py` and `docs/pisc_isa.md` all still
 describe and implement the frozen v1 core.
 
 ## What has actually been checked
@@ -44,7 +44,7 @@ them correctly is unproven.
 
 ```bash
 source oss-cad-suite/oss-cad-suite/environment
-.venv/bin/python icepi_zero_psc16s.py --build --load
+.venv/bin/python targets/icepi_zero/psc16s.py --build --load
 
 python3 tools/psc16s_asm.py software/psc16s_test/sum.s --py
 # -> load those words at addr >= 256, start_pc = 256, pulse run, poll halted

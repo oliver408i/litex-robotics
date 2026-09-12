@@ -48,7 +48,7 @@ power-on / C3 reset pulse / ctrl_reset
 | `0x280000` | application `.fbi` (`FLASH_APP_OFFSET`) — auto chain-booted on power-on; `./flash.py --boot-app` forces it | `./flash.py --app FILE --port /dev/ttyACM0` |
 
 `.fbi` = LiteX flashboot image: u32le length + u32le crc32 + payload. The
-slot offsets are single-sourced in `icepi_zero_base.py`
+slot offsets are single-sourced in `targets/icepi_zero/base.py`
 (`bios_flash_offset`, `flash_boot_offset`, `app_flash_offset`) and mirrored
 in `flash.py`'s `SLOTS` table. Tops without the boot-manager (mnist_lcd)
 still point `FLASH_BOOT` directly at their firmware.
@@ -70,7 +70,7 @@ instead of an EBR ROM — frees ~16 EBR blocks on the LFE5U-25F, which the
 SNN builds need. `with_spi_flash=False` builds keep the integrated EBR ROM
 (self-contained `--load`, golden recovery image).
 
-The non-obvious constraints, all encoded in `icepi_zero_base.py`:
+The non-obvious constraints, all encoded in `targets/icepi_zero/base.py`:
 
 - **Flash base `0x20000000`, must stay < `0x80000000`.** VexRiscv treats
   `0x80000000+` as uncached IO; XIP instruction fetch needs the region

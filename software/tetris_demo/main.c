@@ -6,7 +6,7 @@
  * Input is the FT6336U capacitive panel: four on-screen touch zones along
  * the bottom (LEFT / ROTATE / RIGHT / DROP).
  *
- * Target gateware: icepi_zero_lcd.py (LCD engine + ctp_i2c touch, no SNN).
+ * Target gateware: targets/icepi_zero/lcd.py (LCD engine + ctp_i2c touch, no SNN).
  */
 
 #include <stdint.h>

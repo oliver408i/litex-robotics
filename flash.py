@@ -61,8 +61,8 @@ SLOTS = {   # name: (offset, wrap_fbi, default_file or None)
                                              # chain-booted via --boot-app.
 }
 BUILD_HINTS = {
-    "bitstream": ".venv/bin/python icepi_zero_c3flash.py --build",
-    "bios":      ".venv/bin/python icepi_zero_c3flash.py --build",
+    "bitstream": ".venv/bin/python targets/icepi_zero/c3flash.py --build",
+    "bios":      ".venv/bin/python targets/icepi_zero/c3flash.py --build",
     "loader":    "make -C software/c3_flash",
 }
 BOUNDARIES = [("BIOS @0x100000", 0x100000), ("loader @0x200000", 0x200000),

@@ -49,7 +49,7 @@ COMMON_OBJS = lcd.o touch.o log.o mcp23s17.o
 # Shared aux SPI bus HAL lives in winc_test/. This demo uses it ONLY for the
 # MCP23S17 expander (common/mcp23s17.c) that drives LCD/CTP reset -- there is no
 # IMU/ADC/SD logging in this MNIST-only build. Requires the aux bus + expander
-# CS, i.e. icepi_zero_mnist_lcd.py (add_aux_imu with_iox=True). aux_spi.o is
+# CS, i.e. targets/icepi_zero/mnist_lcd.py (add_aux_imu with_iox=True). aux_spi.o is
 # built via the explicit rule below (not VPATH -- see the note there).
 WINC_DIR := ../winc_test
 CFLAGS   += -I$(WINC_DIR)

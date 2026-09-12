@@ -18,16 +18,16 @@ JTAG for now.
 This is the heaviest combination that fits the 25F: LCD + SNN routes (SNN ~78%
 BRAM, ~2% PnR timing margin at N_MAC=2), but adding the SD card on top does NOT
 -- SD is mutually exclusive with the LCD+SNN pair, so the data logger is its own
-bitstream (icepi_zero_logger.py). LED 0/1 = SNN busy/done, so the aux busy LED
+bitstream (targets/icepi_zero/logger.py). LED 0/1 = SNN busy/done, so the aux busy LED
 uses index 2. Timing gate: nextpnr runs with --timing-allow-fail, so always
 confirm "Max frequency for clock" >= 50 MHz.
 
 Forces the deployment shape (with_spi_flash + flash_master always on), so the
 flash slot map is retained for the eventual C3 OTA. This supersedes
-icepi_zero_all.py, which is the same SoC once SD is dropped. Boot chain / flash
+targets/icepi_zero/all.py, which is the same SoC once SD is dropped. Boot chain / flash
 layout: docs/boot_chain.md.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import (add_lcd_touch, add_snn_mlp, add_aux_imu,
                                     add_c3_loader_baseline)

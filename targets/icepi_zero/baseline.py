@@ -14,7 +14,7 @@ feature build bricks or won't fit, flash this to get a board back to a loadable
 state. The XIP-BIOS + LiteSPI-master flash slot map is retained for the eventual
 C3 OTA. See docs/boot_chain.md and the winc-archive branch (archived WINC stack).
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import add_flashing_baseline
 

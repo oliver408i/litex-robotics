@@ -9,7 +9,7 @@
 #include "mcp23s17.h"
 
 #ifndef CSR_IOX_RESET_BASE
-#error "MCP23S17 driver needs the iox_reset/iox_inta CSRs -- build a SoC with the expander (add_mcp_expander, or add_aux_imu with_iox=True: icepi_zero_mcp.py / icepi_zero_mnist_lcd.py)."
+#error "MCP23S17 driver needs the iox_reset/iox_inta CSRs -- build a SoC with the expander (add_mcp_expander, or add_aux_imu with_iox=True: targets/icepi_zero/mcp.py / targets/icepi_zero/mnist_lcd.py)."
 #endif
 
 /* SPI control byte: [0100 A2 A1 A0 R/W]. Hardware address pins strapped to 000

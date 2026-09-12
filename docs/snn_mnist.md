@@ -195,7 +195,7 @@ What *would* push past 25 ms (ranked by leverage / risk):
    domain, `GENSDRPHY` (1:1) was swapped for `HalfRateGENSDRPHY` (1:2): the SDRAM
    runs at 2× (100 MHz, `cd_sys2x`) while the controller, loader, and core stay at
    50 MHz — so no core re-pipelining and no new CDC in the datapath. See
-   `icepi_zero_base.py` and the half-rate SDRAM notes.
+   `targets/icepi_zero/base.py` and the half-rate SDRAM notes.
 3. **Burst weight loader — ✅ IMPLEMENTED (2026-06).** The single-beat Wishbone
    loader (`verilog/snn_weight_loader.v`) was replaced by a Migen address-gen FSM
    driving a `LiteDRAMDMAReader` on a dedicated native SDRAM port
@@ -266,7 +266,7 @@ a task where the input is genuinely sparse-in-time.
   each 32-bit word (**N_MAC≤2** without rework). Exposes CSRs: `control`
   (start/clear pulses), `status`, `weight_base/preamble_beats/beats_per_cycle/
   num_cycles`, `pixel_*`, `bias_*`, and 10 `spike_count_<i>` readback CSRs.
-- `icepi_zero_mnist.py` — SoC target wrapping `BaseSoC` with the `SNNMLP`
+- `targets/icepi_zero/mnist.py` — SoC target wrapping `BaseSoC` with the `SNNMLP`
   peripheral. `N_MAC = 2` constant at the top (must match the packer's
   `--n-mac`), plus LED status indicators.
 
@@ -323,7 +323,7 @@ MNIST_IMAGES=2 sim/cocotb/run.sh IN_SIZE=784 HIDDEN=64 OUT_SIZE=10 TIMESTEPS=25 
 sim/cocotb/run.sh TARGET=loader                          # loader unit tests
 
 # 4. Build + flash gateware (~3 min PnR). N_MAC set by the constant in the target.
-.venv/bin/python icepi_zero_mnist.py --build --load
+.venv/bin/python targets/icepi_zero/mnist.py --build --load
 # Output dir is build/icepi_zero/ (NOT build/snn_mnist_soc/).
 
 # 5. Build firmware against the generated headers
@@ -343,7 +343,7 @@ PATH=/path/to/oss-cad-suite/bin:$PATH make -C software/snn_mnist_demo
 
 ## FPGA resource budget (LFE5U-25, post-route, N_MAC=2)
 
-Captured from the 2026-05-26 `icepi_zero_mnist.py --build`:
+Captured from the 2026-05-26 `targets/icepi_zero/mnist.py --build`:
 
 | Resource | Used | Capacity | % | Notes |
 |---|---:|---:|---:|---|
@@ -388,7 +388,7 @@ reinforces the bandwidth story above.
 ## Gotchas / things future-me should know
 
 - **N_MAC must match in three places**: the gateware (`N_MAC` in
-  `icepi_zero_mnist.py` + the `n_mac` default in `gateware/snn_mlp.py`), the
+  `targets/icepi_zero/mnist.py` + the `n_mac` default in `gateware/snn_mlp.py`), the
   packer (`--n-mac`), and implicitly the host (`beats_per_cycle = len(blob)//4`
   assumes one 32-bit word per beat, i.e. N_MAC≤2).
 - **N_MAC>2 needs more than a parameter bump.** The loader slices one 32-bit

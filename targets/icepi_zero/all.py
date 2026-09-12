@@ -3,9 +3,9 @@
 
 DEPRECATED for deployment: the SD card cannot route alongside LCD+SNN on the
 25F (see the capacity note below), so `--no-sdcard` is the only shape that
-builds -- and that is exactly icepi_zero_mnist_lcd.py, now the canonical
+builds -- and that is exactly targets/icepi_zero/mnist_lcd.py, now the canonical
 WiFi-updatable flagship. Keep this top only for A/B PnR experiments on the SD
-cost; ship icepi_zero_mnist_lcd.py instead.
+cost; ship targets/icepi_zero/mnist_lcd.py instead.
 
 Composes every proven peripheral (gateware/soc_features.py) on one BaseSoC:
 
@@ -31,7 +31,7 @@ Timing gate: the critical path is in the LiteDRAM L2 (thin margin at
 N_MAC=2); nextpnr runs with --timing-allow-fail, so always check
 "Max frequency for clock" >= 50 MHz in its output after PnR.
 """
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import (add_lcd_touch, add_snn_mlp, add_winc_aux,
                                    add_boot_ctl)
@@ -50,7 +50,7 @@ class AllSoC(BaseSoC):
             force_lcd_backlight_off  = False,  # LCD owns P1 via lcd_ctrl
             **kwargs,
         )
-        # Same order as icepi_zero_mnist_lcd.py, WiFi appended last.
+        # Same order as targets/icepi_zero/mnist_lcd.py, WiFi appended last.
         add_lcd_touch(self, lcd_spi_clk_freq)
         add_snn_mlp(self, leds=(0, 1))
         add_winc_aux(self, winc_spi_clk_freq, busy_led=2)  # led2 optional

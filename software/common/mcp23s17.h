@@ -16,7 +16,7 @@
  * board -> opcodes 0x40 (write) / 0x41 (read). With IOCON.BANK=0 (POR default)
  * the A/B registers interleave and auto-increment, so a 16-bit access is just
  * a 2-byte burst starting at the A register. Requires the aux bus + iox_*
- * CSRs in gateware (icepi_zero_mcp.py / add_mcp_expander). */
+ * CSRs in gateware (targets/icepi_zero/mcp.py / add_mcp_expander). */
 
 /* ---- register addresses (IOCON.BANK = 0, the power-on default) ----------- */
 #define MCP_IODIRA   0x00u   /* 1 = input (POR 0xFF)               */

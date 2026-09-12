@@ -16,7 +16,7 @@
 #include "wifi_secrets.h"
 
 #ifndef CSR_AUX_SPI_BASE
-#error "Build the SoC from icepi_zero_winc.py (provides aux_spi) before compiling software/winc_test."
+#error "Build the SoC from targets/icepi_zero/winc.py (provides aux_spi) before compiling software/winc_test."
 #endif
 
 extern void winc_service_irq(void);   /* nm_bsp_icepi.c */

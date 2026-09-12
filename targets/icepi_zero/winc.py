@@ -10,7 +10,7 @@ The pins, sidebands and constants live in gateware/soc_features.py
 This is the hardware half of the bring-up; pair it with software/winc_test
 (and software/winc_loader when built with --flash-master).
 """
-from icepi_zero_base import BaseSoC, make_parser, resolve_spi_flash, run_build
+from base import BaseSoC, make_parser, resolve_spi_flash, run_build
 
 from gateware.soc_features import add_winc_aux, add_boot_ctl
 

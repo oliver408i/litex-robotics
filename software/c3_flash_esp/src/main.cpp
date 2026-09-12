@@ -4,7 +4,7 @@
  * production clock from the sweep) and speaks the mailbox protocol in
  * software/c3_flash/main.c. The C3 writes a command + page data into the uncached
  * mailbox RAM (@0x90000000) and rings a doorbell; the FPGA firmware programs
- * flash and returns status/result. See icepi_zero_c3flash.py.
+ * flash and returns status/result. See targets/icepi_zero/c3flash.py.
  *
  * STAGE 1: PING -- read the flash JEDEC id back through the mailbox, proving the
  * whole chain (C3 -> SPIBone -> mailbox -> firmware -> LiteSPI master -> flash).
@@ -22,7 +22,7 @@
 #define PIN_CS     2
 
 /* C3 -> FPGA reset line: pulse low to reset the FPGA's CPU/clock domains via
- * its ext_reset input (icepi_zero_base.py, ball G3, active-low, pulled up on
+ * its ext_reset input (targets/icepi_zero/base.py, ball G3, active-low, pulled up on
  * the FPGA side -- no gateware changes needed, see [[c3-loader-production-scope]]).
  * GPIO7 chosen deliberately: NOT a strapping pin (2/8/9), NOT UART0 (20/21 --
  * both glitch this line during the C3's own boot/reset and would reset the

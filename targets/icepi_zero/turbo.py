@@ -33,7 +33,7 @@ non-goal. This is a bench stunt. Do not ship it.
 """
 import sys
 
-from icepi_zero_base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build
 
 from gateware.soc_features import (add_lcd_touch, add_aux_imu,
                                     add_c3_loader_baseline)

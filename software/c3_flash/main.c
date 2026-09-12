@@ -4,7 +4,7 @@
  * (Wishbone master over SPI) writes a command + page data into an UNCACHED
  * mailbox RAM (gateware add_c3_mailbox @ 0x90000000) and rings a doorbell; this
  * firmware polls the mailbox and drives the LiteSPI MASTER (flash_w25q.c) to
- * erase/program/verify the SPI NOR. See icepi_zero_c3flash.py / docs/c3_loader.md.
+ * erase/program/verify the SPI NOR. See targets/icepi_zero/c3flash.py / docs/c3_loader.md.
  *
  * XIP-safety: this runs from main_ram (SDRAM, not flash), never fetching
  * through the flash mmap, so it is safe to issue LiteSPI master commands

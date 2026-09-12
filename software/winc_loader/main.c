@@ -25,7 +25,7 @@
 #include "flash_w25q.h"
 
 #ifndef CSR_AUX_SPI_BASE
-#error "Build the SoC from icepi_zero_winc.py --flash-master before compiling."
+#error "Build the SoC from targets/icepi_zero/winc.py --flash-master before compiling."
 #endif
 
 extern void winc_service_irq(void);   /* nm_bsp_icepi.c */

@@ -7,7 +7,7 @@
 #include "aux_spi.h"
 
 #ifndef CSR_AUX_SPI_BASE
-#error "Build the SoC from icepi_zero_mcp.py (provides aux_spi) before compiling software/mcp_test."
+#error "Build the SoC from targets/icepi_zero/mcp.py (provides aux_spi) before compiling software/mcp_test."
 #endif
 
 /* MCP23S17 SPI GPIO expander on the shared aux bus, chip-select AUX_CS_IOX.
