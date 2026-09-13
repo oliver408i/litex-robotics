@@ -6,7 +6,7 @@
 ; Shape is the v1 doc's LCD reset pulse, restructured around a subroutine so
 ; the call path is under test too.
 ;
-;   python3 tools/psc16s_asm.py software/psc16s_test/seq.s --py
+;   python3 tools/psc18sr_asm.py software/psc18sr_test/seq.s --py
 ;
 ; Host procedure (autostart=0):
 ;   1. load, start_pc = 256, pulse run

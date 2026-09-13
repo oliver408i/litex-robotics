@@ -145,6 +145,22 @@ NRST low, it has to be released between attach and program.
 * **`program` does not work with this adapter** ("Unable to reset target") and
   writes nothing while appearing to try. Use `flash write_image erase unlock`
   + `verify_image`, and reset by pulsing NRST externally.
+* **The UART bridge stops while JTAG is shifting.** Measured 2026-09-12: with
+  the console CDC held open across a `p` (program bitstream), everything the
+  target printed during configuration arrived in one gulp *when programming
+  finished* -- the LiteX BIOS magic emitted at 5.2 s was not readable until
+  6.4 s. The MCU is busy shifting and does not service the bridge. Consequence
+  for anything scripted: **the BIOS's one-shot serial-boot offer cannot be
+  answered after a reconfigure**, because the bytes do not reach the host until
+  its ack window has closed. `tools/socboot.py` handles this by letting the
+  BIOS fall through to its prompt and then sending `serialboot`, which re-offers
+  it live. Fixing it properly means servicing the CDC inside the JTAG shift
+  loop.
+* **Closing the console CDC around a reconfigure breaks the bridge's baud.**
+  The probe takes the target UART rate from the CDC's line coding, so a
+  close/reopen leaves it mis-set (the banner reports "target UART = 9600 baud"
+  after a close, 115200 while held open). Keep the console port open across
+  programming; the two CDCs are independent and programming does not need it.
 
 ## Status
 

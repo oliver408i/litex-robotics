@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""LiteX wrapper for the PSC16S prototype core (verilog/psc16s.v).
+"""LiteX wrapper for the PSC18SR prototype core (verilog/psc18sr.v).
 
-PROTOTYPE against a DRAFT ISA -- see docs/psc16s_isa_draft.md. Unlike
+PROTOTYPE against a DRAFT ISA -- see docs/psc18sr_isa_draft.md. Unlike
 gateware/pisc.py this has no golden model behind it yet, so nothing here is a
 contract.
 
 Differences from the v1 wrapper that matter for integration:
 
 - **It is a Wishbone master.** The `BUS` instruction reaches a 64K window at a
-  synthesis-time base (default the SoC CSR base). Call `add_psc16s(soc, ...)`
+  synthesis-time base (default the SoC CSR base). Call `add_psc18sr(soc, ...)`
   rather than instantiating directly, so the master gets registered on the SoC
   bus.
 - **imem is 18 bits wide and split.** Words [0, ro_words) come from the
@@ -23,16 +23,16 @@ Differences from the v1 wrapper that matter for integration:
 
 Firmware flow (autostart=0), mirroring gateware/snn_mlp.py and v1:
 
-    psc16s_control_abort_write(1)
+    psc18sr_control_abort_write(1)
     for addr, word in enumerate(prog, start=RO_WORDS):
-        psc16s_imem_addr_write(addr)
-        psc16s_imem_data_write(word)        # 18 bits
-        psc16s_imem_ctl_we_write(1)
-    psc16s_start_pc_write(RO_WORDS)
-    psc16s_control_run_write(1)
-    while not (psc16s_status_read() & 2):   # halted
+        psc18sr_imem_addr_write(addr)
+        psc18sr_imem_data_write(word)        # 18 bits
+        psc18sr_imem_ctl_we_write(1)
+    psc18sr_start_pc_write(RO_WORDS)
+    psc18sr_control_run_write(1)
+    while not (psc18sr_status_read() & 2):   # halted
         pass
-    result = psc16s_result_read()
+    result = psc18sr_result_read()
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def _log2_words(n: int) -> int:
     return bits
 
 
-class PSC16S(LiteXModule, AutoCSR):
+class PSC18SR(LiteXModule, AutoCSR):
     """PISC v2 sequencer core: CSR-mapped peripheral + Wishbone master."""
 
     def __init__(self, platform, imem_words: int = 1024, ro_words: int = 256,
@@ -64,7 +64,7 @@ class PSC16S(LiteXModule, AutoCSR):
         assert bus_base % 0x10000 == 0, "bus_base must be 64K-aligned"
 
         repo_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        platform.add_source(os.path.join(repo_root, "verilog", "psc16s.v"))
+        platform.add_source(os.path.join(repo_root, "verilog", "psc18sr.v"))
 
         self.imem_words = imem_words
         self.ro_words   = ro_words
@@ -117,7 +117,7 @@ class PSC16S(LiteXModule, AutoCSR):
         retire = Signal()
 
         self.specials += Instance(
-            "psc16s",
+            "psc18sr",
             p_IMEM_WORDS     = imem_words,
             p_RO_WORDS       = ro_words,
             p_NUM_OUT        = num_out,
@@ -173,18 +173,18 @@ class PSC16S(LiteXModule, AutoCSR):
         ]
 
 
-def add_psc16s(soc, imem_words: int = 1024, ro_words: int = 256,
+def add_psc18sr(soc, imem_words: int = 1024, ro_words: int = 256,
                num_out: int = 4, num_in: int = 4, delay_prescale: int = 1024,
                autostart: bool = False, wdt_cycles: int = 0,
                cpu_rst_port: int = 0, cpu_rst_bit: int = 0,
-               init_file: str = "", name: str = "psc16s"):
-    """Attach a PSC16S to `soc`, registering its Wishbone master.
+               init_file: str = "", name: str = "psc18sr"):
+    """Attach a PSC18SR to `soc`, registering its Wishbone master.
 
     bus_base defaults to the SoC's own CSR base, which is the whole point of
     the window: the core can reach every CSR and structurally nothing else.
     """
     bus_base = soc.mem_map["csr"]
-    core = PSC16S(soc.platform,
+    core = PSC18SR(soc.platform,
                   imem_words = imem_words,
                   ro_words   = ro_words,
                   num_out    = num_out,
@@ -199,4 +199,16 @@ def add_psc16s(soc, imem_words: int = 1024, ro_words: int = 256,
     setattr(soc, name, core)
     soc.add_csr(name)
     soc.bus.add_master(name=name, master=core.bus)
+
+    # Synthesis-time facts firmware cannot otherwise know, exported as
+    # generated constants: where the writable imem region starts (a program
+    # loaded below it is silently discarded) and how long a DELAY tick is.
+    # Hard-coding either in firmware means it drifts the first time a build
+    # overrides them.
+    up = name.upper()
+    soc.add_constant(f"{up}_IMEM_WORDS", imem_words)
+    soc.add_constant(f"{up}_RO_WORDS", ro_words)
+    soc.add_constant(f"{up}_NUM_OUT", num_out)
+    soc.add_constant(f"{up}_NUM_IN", num_in)
+    soc.add_constant(f"{up}_DELAY_PRESCALE", delay_prescale)
     return core

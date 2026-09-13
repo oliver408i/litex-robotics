@@ -2,13 +2,17 @@
 
 > **STATUS: PAPER EXERCISE. Nothing here has been assembled or run.**
 >
-> There is no assembler for the v2 encoding and no golden model, so every
-> instruction below is hand-encoded against the table in
-> `docs/psc16s_isa_draft.md` and every cycle count is arithmetic, not
-> measurement. The point is not the program — it is the list of things that
+> There is no golden model, so every instruction below is hand-encoded against
+> the table in `docs/psc18sr_isa_draft.md` and every cycle count is arithmetic,
+> not measurement. The point is not the program — it is the list of things that
 > broke while writing it, at the end.
+>
+> `tools/psc18sr_asm.py` now exists (it did not when this was written), so the
+> sketch could be assembled and run under `sim/psc18sr_tb.v` against a stubbed
+> bus. It has not been. Doing so is the cheapest remaining test of the
+> encoding short of the model.
 
-Companion to `docs/psc16s_isa_draft.md`. Written to test the ISA empirically
+Companion to `docs/psc18sr_isa_draft.md`. Written to test the ISA empirically
 rather than by inspection: take the actual stage-0 duties, write them in the
 proposed encoding against the real CSR map, and see what the encoding fights.
 
@@ -151,6 +155,17 @@ Worth noting the cheap escape hatch if it ever bites: a single `SRL` would fix
 it, and the ALU funct field has 27 reserved slots. The draft is right that the
 cost is contract surface, not gates — but the pressure is real and should be
 recorded rather than rediscovered.
+
+> **Superseded 2026-09-12: it bit, and the hatch was taken.** `SLL`/`SRL`/`SRA`
+> are defined at funct `0x05`–`0x07`. The pressure arrived exactly as
+> predicted, and from the method this sketch exists to apply — writing real
+> programs — rather than from review. `software/psc18sr_test/shift.s` is the
+> unpacking case above, executing. The finding stands as written for its own
+> sake: it is the record of *why* the shifts are general-purpose ALU ops and
+> not a "format a string" instruction, and "stage-0 should not be formatting
+> text" is still the right reading of the requirement.
+
+
 
 ### F4 — the prescale number works, and 200 ms was the wrong target
 

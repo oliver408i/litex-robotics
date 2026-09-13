@@ -1,7 +1,7 @@
 ; sum 1..10 -> 55.  The v1 "hello world" (docs/pisc_isa.md) in the v2 encoding.
 ; Exercises: LI, ALU/ADD, ADDI, BNE (backward), MOV pseudo, HLT + result latch.
 ;
-;   python3 tools/psc16s_asm.py software/psc16s_test/sum.s --py
+;   python3 tools/psc18sr_asm.py software/psc18sr_test/sum.s --py
 ;
 ; Assembled at 256 = the default ro_words, i.e. the first host-writable word.
 

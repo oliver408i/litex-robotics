@@ -1,6 +1,6 @@
-// PSC16S -- PISC v2 sequencer core.  PROTOTYPE, against a DRAFT ISA.
+// PSC18SR -- PISC v2 sequencer core.  PROTOTYPE, against a DRAFT ISA.
 //
-// 18-bit instructions / 16-bit data.  See docs/psc16s_isa_draft.md, which is
+// 18-bit instructions / 16-bit data.  See docs/psc18sr_isa_draft.md, which is
 // NOT frozen -- unlike verilog/pisc.v, this module has no golden model to be
 // diffed against yet, so it is the only executable statement of the encoding
 // and it is expected to change.  Do not treat it as a contract.
@@ -20,6 +20,12 @@
 // Microarchitecture: multicycle FSM, same shape as pisc.v.
 //   FETCH -> DECODE -> EXEC -> {LOAD | DLY | BUSRD -> BUSWR} -> FETCH
 //
+// Timing invariant the whole design serves: every instruction retires in
+// exactly 3 cycles, branches taken AND not-taken included, because they share
+// the EXEC path.  LD is the lone 4-cycle outlier; BUS, WAIT and DELAY are
+// variable by design.  Anything added to EXEC must resolve combinationally or
+// it costs more than it looks -- the shifts are the worked example.
+//
 // BUS is read-modify-write on a half-word store (see S_BUSWR): LiteX's
 // Wishbone2CSR ignores wb_sel, so a 16-bit write must read the 32-bit word
 // back first.  PROTOTYPE CAVEAT: this is wrong for any CSR with a read side
@@ -27,7 +33,7 @@
 // back what it holds, so it is safe there and nowhere promised beyond that.
 `default_nettype none
 
-module psc16s #(
+module psc18sr #(
     parameter integer IMEM_WORDS     = 1024, // unified program/data words (pow2)
     parameter integer RO_WORDS       = 256,  // low words: bitstream-resident, RO
     parameter integer NUM_OUT        = 4,
@@ -89,9 +95,9 @@ module psc16s #(
                      OP_JAL=4'h8, OP_JALR=4'h9,OP_PORT=4'hA, OP_BITOP=4'hB,
                      OP_WAIT=4'hC,OP_BUS=4'hD, OP_DELAY=4'hE,OP_HLT =4'hF;
 
-    // ALU funct (draft: 0x05-0x1F reserved, deliberately unassigned).
+    // ALU funct (draft: 0x08-0x1F reserved, deliberately unassigned).
     localparam [4:0] F_ADD=5'h00, F_SUB=5'h01, F_AND=5'h02, F_OR=5'h03,
-                     F_XOR=5'h04;
+                     F_XOR=5'h04, F_SLL=5'h05, F_SRL=5'h06, F_SRA=5'h07;
 
     localparam integer PSCW = (DELAY_PRESCALE <= 1) ? 1 : $clog2(DELAY_PRESCALE+1);
 
@@ -151,6 +157,13 @@ module psc16s #(
     wire [15:0] in_word = io_in[16*in_idx +: 16];
     wire        wait_done = (in_word[bsel] == lvl);
 
+    // SLL/SRL/SRA take their amount from regs[rs2][3:0] -- MASKED, not
+    // saturating, so a shift is total: every amount 0-15 is defined and 16+
+    // wraps rather than trapping.  Barrel, combinational, resolved within
+    // S_EXEC like every other ALU op, so a shift costs 3 cycles like every
+    // other ALU op.  An iterative shifter would be smaller and would make the
+    // cycle count data-dependent, which breaks the property the core exists
+    // for -- see the draft's "The shifts" before replacing it with one.
     reg [15:0] alu;
     always @* begin
         case (op)
@@ -159,6 +172,9 @@ module psc16s #(
                         F_AND:   alu = a & b;
                         F_OR:    alu = a | b;
                         F_XOR:   alu = a ^ b;
+                        F_SLL:   alu = a << b[3:0];
+                        F_SRL:   alu = a >> b[3:0];
+                        F_SRA:   alu = $signed(a) >>> b[3:0];
                         default: alu = a + b;      // F_ADD; reserved -> ADD
                     endcase
             OP_ADDI: alu = a + imm8;

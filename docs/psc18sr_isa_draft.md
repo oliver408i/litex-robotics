@@ -1,4 +1,4 @@
-# PSC16S — draft ISA (successor to PSC16I)
+# PSC18SR — draft ISA (successor to PISC v1)
 
 > **STATUS: DRAFT. Nothing here is frozen.**
 >
@@ -11,21 +11,31 @@
 > assignment, and name below is provisional and expected to change. Do not
 > implement against it yet. It becomes a contract only when it says so.
 
-## Naming — deferred
+## Naming — settled 2026-09-12
 
-**Not being decided now.** The earlier sketch proposed `PSC16I` → `PSC16S`,
-which is wrong in a way worth recording so it is not re-proposed: a trailing
-letter reads as an *extension* marker, because RV32I / RV32IMAC trained
-everyone to parse it that way. `I` looks like "base integer" and `S` like a
-supervisor extension. What is actually being distinguished here is
-**generation and role**, not an extension — and the digit was separately
-ambiguous (16 = data width or instruction width?). Two characters, both
-overloaded, neither carrying its own meaning.
+**The core is `PSC18SR`.** `PSC16S` and `PSC16I` are dead spellings; nothing
+in the tree should use them.
 
-Filenames below use `psc16s` as a placeholder only. The family name in the
-tree is **PISC** (`gateware/pisc.py`, `verilog/pisc.v`, `docs/pisc_isa.md`)
-and v1 keeps it; nothing is renamed retroactively. Resolve before the draft
-banner comes off, not before.
+The earlier sketch's `PSC16I` → `PSC16S` was wrong in a way worth keeping on
+record so it is not re-proposed. A trailing letter reads as an *extension*
+marker, because RV32I / RV32IMAC trained everyone to parse it that way: `I`
+looks like "base integer" and `S` like a supervisor extension. What is
+actually being distinguished here is **generation and role**, not an
+extension. The digit was separately ambiguous — 16 could be read as data or
+instruction width.
+
+`PSC18SR` fixes both halves:
+
+- **18** is the **instruction** width, which is the thing that actually
+  distinguishes this machine (and is not an accident — see "Why 18 bits is
+  free"). Data stays 16-bit; that is stated in the machine model rather than
+  smuggled into the name.
+- **SR** is *sequencer*, the role. Two characters that read as one word, not
+  as an extension letter.
+
+The family name in the tree is still **PISC** (`gateware/pisc.py`,
+`verilog/pisc.v`, `docs/pisc_isa.md`) and v1 keeps it; nothing is renamed
+retroactively.
 
 Independent of the name: the core's role is no longer purely IO-oriented. It
 boots the SoC, touches the CSR bus, and holds the main CPU in reset until it
@@ -48,7 +58,7 @@ CPU) exposed hard limits:
 
 The first three are the ones that actually hurt.
 
-**Amended after the stage-0 sketch (`docs/psc16s_stage0_sketch.md`):** the
+**Amended after the stage-0 sketch (`docs/psc18sr_stage0_sketch.md`):** the
 "inlining blows the imem" line above is the weakest of the five. Written out,
 the real stage-0 sequence is ~26 instructions — capacity was never the binding
 constraint. What v1 actually lacks is `JAL`/`RET` and `BEQ` *existing at all*,
@@ -74,8 +84,8 @@ every axis — real toolchain, no vasm backend, no golden model, no three-way
 contract — and we should switch rather than keep going.
 
 **The cost of an instruction is not gates.** It is that every defined
-instruction must be implemented and tested in three places (`verilog/psc16s.v`,
-`sim/psc16s_model.py`, the vasm backend) and agreed with this doc. Reserved
+instruction must be implemented and tested in three places (`verilog/psc18sr.v`,
+`sim/psc18sr_model.py`, the vasm backend) and agreed with this doc. Reserved
 encoding space is free; defined encoding space is a permanent tax.
 
 ## Machine model (provisional)
@@ -135,7 +145,7 @@ block wasting two lanes per word. Verified 2026-08-26 with oss-cad-suite
 | op | mnemonic | fields | effect |
 |---|---|---|---|
 | `0x0` | `JMP off` | imm14 | `PC += sext14(off)` — ±8191 |
-| `0x1` | `ALU rd,rs,rs2` | rs2[7:5], funct[4:0] | see funct table |
+| `0x1` | `ALU rd,rs,rs2` | rs2[7:5], funct[4:0] | see funct table (incl. shifts) |
 | `0x2` | `ADDI rd,rs,imm8` | imm8 signed | `rd = rs + sext8(imm8)` |
 | `0x3` | `LI rd,imm11` | rs+imm8 | `rd = sext11(imm11)` |
 | `0x4` | `LD rd,rs,imm8` | | `rd = mem[rs + sext8]` (low 16 bits) |
@@ -145,8 +155,8 @@ block wasting two lanes per word. Verified 2026-08-26 with oss-cad-suite
 | `0x8` | `JAL off` | imm14 | `r6 = PC+1; PC += sext14` |
 | `0x9` | `JALR rs,imm8` | | `r6 = PC+1; PC = rs + sext8` |
 | `0xA` | `PORT rd/rs,dir,port` | dir[7], port[5:0] | merged `IN`/`OUT` |
-| `0xB` | `BITOP port,#bit,lvl` | bit[10:8], lvl[7], port[5:0] | merged `SETB`/`CLRB` |
-| `0xC` | `WAIT port,#bit,lvl` | bit[10:8], lvl[7], port[5:0] | block until match |
+| `0xB` | `BITOP port,#bit,lvl` | bit[11:8], lvl[7], port[5:0] | merged `SETB`/`CLRB` |
+| `0xC` | `WAIT port,#bit,lvl` | bit[11:8], lvl[7], port[5:0] | block until match |
 | `0xD` | `BUS rd,rs,dir,half` | dir[7], half[6], imm6 | CSR access, see below |
 | `0xE` | `DELAY imm14` | | stall imm14 counts × prescale |
 | `0xF` | `HLT` | | latch `r7` → `status`, raise `halted`, stop fetching |
@@ -168,12 +178,49 @@ safely" is a boot-safety guarantee, not just tidiness.
 | `0x02` | `AND` |
 | `0x03` | `OR` |
 | `0x04` | `XOR` |
-| `0x05`–`0x1F` | **reserved — do not assign** |
+| `0x05` | `SLL` |
+| `0x06` | `SRL` |
+| `0x07` | `SRA` |
+| `0x08`–`0x1F` | **reserved — do not assign** |
 
 The field is 5 bits because reclaiming it was free, not because 32 operations
-are wanted. Shifts, `SRA`, rotates, etc. are intentionally *not* defined.
-Adding one later costs nothing in encoding and everything in contract surface;
-see the design line above.
+are wanted. Rotates, bit-count, min/max and the rest are still intentionally
+*not* defined: adding one later costs nothing in encoding and everything in
+contract surface; see the design line above.
+
+### The shifts (added 2026-09-12) — and why they are combinational
+
+`SLL`/`SRL`/`SRA` are ordinary ALU ops: `rd = rs <shift> rs2`. The **amount is
+`rs2[3:0]`, masked, not saturated** — every amount 0–15 is defined and 16 or
+more wraps, so a shift can never trap or stall. There is no shift-immediate
+form; shifting by a literal is `LI` plus the shift, two instructions.
+
+This is the one place the design line was argued and *lost* on purpose, so the
+reasoning is recorded rather than the verdict alone:
+
+- They were found the way the sketch says things should be found — by writing
+  actual programs and hitting the wall, not by review. Open question 13 below
+  predicted the exact wall (packing two bytes per word) and it arrived.
+- The funct field was reserved for precisely this, which is why the cost is
+  three encodings rather than an opcode.
+- They are **general**, which is the point. A fixed-purpose "unpack a byte"
+  instruction would have served the same program and been dead weight for the
+  next one.
+
+**Combinational, resolved inside `S_EXEC` — never iterative.** Every
+instruction usable inside a bit-bang loop costs exactly **3 cycles**, branches
+taken *and* not-taken included (they share the FSM path). `LD` is the lone
+4-cycle outlier; `BUS`, `WAIT` and `DELAY` are variable by design and by name.
+That uniformity is what makes IO timing computable by hand, and it is the only
+reason this core exists instead of SERV. A data-dependent shifter — a cheaper
+implementation that shifts one place per cycle — would silently make every
+loop containing a shift untimeable. **Any future ALU op must hold the same
+line: if it cannot complete in one `S_EXEC` cycle, it does not go in.**
+
+Cost, measured on the prototype (`yosys synth_ecp5`, LFE5U-25F): 1437 → 1457
+LUT4, one DP16KD unchanged, and the mux primitives fall enough that total
+logic cells land slightly *below* the pre-shift build. The shifter is not what
+makes this core big.
 
 ### Pseudo-ops
 
@@ -262,6 +309,16 @@ Three properties worth noting:
 No kick instruction: a whole-program deadline is a stronger guarantee than a
 refreshable one and adds no contract surface.
 
+**The invariant is load-bearing, not belt-and-braces.** It reads like a
+backstop for buggy programs, but the extension mechanism below makes it the
+primary safety property: the intended idiom for a port-mapped peripheral is
+`WAIT busy,0`, and `WAIT` is unbounded by design. A wrong clock divider, a
+peripheral held in reset, a block that never deasserts BUSY — each of those
+hangs stage-0 in a *correct* program. Nothing in the ISA can bound it, because
+"how long should this take" is not knowable from the encoding. The watchdog is
+what makes that idiom safe to write, so it must be **on** for any autostart
+build that waits on a peripheral, not just for ones with suspect software.
+
 ## The bus window
 
 `BUS` addresses a **64K window** whose base is a **synthesis-time parameter**
@@ -288,6 +345,52 @@ during boot to "pins only" afterward. It is dropped, for two reasons:
 
 What remains bounded is *reach* (the window) and *when boot can be redefined*
 (the read-only low imem region), not *when the bus is available*.
+
+## Extending the machine: ports, not opcodes
+
+**Decided 2026-09-12, before any of it was built.** As soon as stage-0 has to
+push real traffic — an SPI-attached panel, a flash divisor, an expander — the
+question is how the core gets faster at it than bit-banging. Two roads were
+considered and rejected, and one taken.
+
+**Rejected: a dedicated engine reached by new opcodes.** An SPI-shaped
+instruction (or a family of them) would be the fastest thing to write and the
+most expensive thing to own. It spends ISA surface on one peripheral, has to
+be modelled and agreed in three places forever, and is exactly the
+fixed-purpose shape the design line exists to refuse.
+
+**Rejected: reaching such an engine through `BUS`.** `BUS` already reaches
+every CSR, so this costs no encoding at all — but `BUS` is the one instruction
+whose timing is not uniform (variable on `wb_ack`, and a half-word write is
+read-modify-write, so two bus round trips). Putting the hot path through it
+gives up the property the shifts were just kept combinational to protect.
+
+**Taken: hang blocks off the existing 16-bit IO ports.** `OUT`/`IN`/`SETB`/
+`CLRB`/`WAIT` already exist, so a new peripheral costs **zero ISA surface**.
+A byte transfer becomes
+
+    OUT   tx, rX          ; data
+    SETB  ctl, START      ; go
+    WAIT  sts, BUSY, 0    ; block until the engine is done
+    IN    rY, rx          ; result
+
+— roughly 9 core cycles plus the engine's own time, against ~72 to bit-bang
+the same byte. `NUM_OUT`/`NUM_IN` are synthesis parameters, so ports can be
+allocated for a new block without touching this document. **The encoding can
+freeze while the hardware keeps changing**, which is the whole argument: a
+frozen ISA and a growing SoC stop fighting each other.
+
+Two consequences, both already stated above but worth naming here: the
+watchdog becomes the safety property that makes `WAIT busy,0` writable, and
+everything on that path stays 3 cycles except `WAIT` itself.
+
+**Measure before building any of it.** The SoC already has SPI masters
+(`gateware/aux_spi.py`, `AuxSPIMaster`, CSR at `0xf0000800` — inside the `BUS`
+window), so the first question is whether driving *that* over `BUS` is simply
+good enough. Nobody knows yet, because no real stage-0 program exists and so
+nothing has measured what it has to push. The non-boot side instantiation is
+the rig for answering it; building an engine before that measurement would be
+building to a guess.
 
 ## Toolchain facts (verified 2026-08-26, no hardware)
 
@@ -348,6 +451,22 @@ Kept as a record, since these were the ones blocking everything else.
 Also settled, outside the numbering: **no bus lockout latch** (see "The bus
 window"), and **`HLT` is restartable**, not terminal.
 
+### Resolved 2026-09-12
+
+10. **`BITOP`/`WAIT` bit field is 4 bits, reaching all 16 bits of a port.**
+    This was *already true in the RTL* — `bsel = ir[11:8]` — and the draft
+    simply had not caught up; the `rd` field `[13:11]` is unused in both
+    instructions, so the width was free. Folded back here rather than left as
+    a question the code had quietly answered. The port-mapped extension
+    mechanism makes it load-bearing: control and status bits for a new block
+    land wherever they land in a 16-bit port, not politely in the low half.
+13. **Shifts exist: `SLL`/`SRL`/`SRA` at funct `0x05`–`0x07`.** The predicted
+    pressure (packing two bytes per word) arrived, from writing programs
+    rather than from review, which is the sketch's own method working. See
+    "The shifts" above for the reasoning and for the constraint the
+    implementation has to hold. The naming question above is resolved in the
+    same breath: this is what the `18` in `PSC18SR` was waiting on.
+
 ### Still open
 
 All of the following have a leaning recorded; none blocks the model.
@@ -365,11 +484,6 @@ All of the following have a leaning recorded; none blocks the model.
    sequencer-shaped choice, which under the design line is a point in favour.
    Note that `RET` = `JALR r6, 0` rewrites `r6` as it returns, so a frame
    cannot be returned from twice.
-10. **`BITOP`/`WAIT` reach only bits 0–7.** The `bit` field is 3 bits, so half
-    of every 16-bit port is unreachable by bit ops — inherited from v1, where
-    it was a deliberate call. In v2 the `rd` field `[13:11]` is **unused** in
-    both instructions, so widening `bit` to 4 and reaching all 16 is free in
-    encoding. Free is not the same as warranted; see the design line.
 11. **Assembler: extend `tools/pisc_asm.py`, or a vasm backend?** The draft
     assumes vasm in "What must stay true", but nothing vasm exists in the tree
     and v1 ships a working homegrown assembler. This is an unstated decision
@@ -379,23 +493,25 @@ All of the following have a leaning recorded; none blocks the model.
     an extra `ADDI` and a scratch register (sketch F2). Cost is one `ADDI` per
     *block* if the base register is kept live, so leaning accept rather than
     widen — but it is a field that mostly does not pay for itself.
-13. **No shift means one 16-bit word per ASCII character.** A boot marker
-    string cannot pack two bytes per word, because unpacking needs a shift
-    (sketch F3). Survivable for a few fixed strings; the honest response is
-    that stage-0 should not be formatting text, not that shifts should be
-    added. Recorded so the pressure is not rediscovered — a single `SRL` would
-    fix it and the funct field has 27 free slots, which is exactly why the
-    design line exists.
 
 ## What must stay true
 
-- **The golden model gates the ISA.** `sim/psc16s_model.py` is what makes the
+- **The golden model gates the ISA.** `sim/psc18sr_model.py` is what makes the
   boot sequence testable before hardware exists. If the model cannot run it,
   it does not go in.
+
+  **It is deliberately not written yet, and that is sequencing rather than
+  debt.** The encoding is still moving — the shifts above are the proof — and
+  a model written against a moving encoding is a model that gets rewritten
+  instead of a model that catches anything. It is owed the moment the draft
+  banner comes off, and not before. `sim/psc18sr_tb.v` is the smaller thing
+  that is useful in the meantime: it runs an assembled program on the RTL and
+  checks the result, which proves instructions execute but says nothing about
+  whether the encoding is right.
 - **Four implementations must agree** once this is frozen: this doc, the
   model, the assembler (whichever question 11 picks), and the Verilog. This doc
   is the arbiter — but only once the draft banner comes off.
-- **v1 is not broken.** `docs/pisc_isa.md` stays as-is; PSC16I and PSC16S are
+- **v1 is not broken.** `docs/pisc_isa.md` stays as-is; PSC16I and PSC18SR are
   versioned siblings. The DTB node for an instantiated core should carry a
   `compatible` string and its `imem_words` so tooling picks the right encoding
   from what the hardware reports rather than a build-time assumption.
@@ -408,11 +524,11 @@ those become wanted, that is the signal to drop in SERV and use gcc instead.
 
 ## Companion documents
 
-- `docs/psc16s_stage0_sketch.md` — the stage-0 boot sequence written out in
+- `docs/psc18sr_stage0_sketch.md` — the stage-0 boot sequence written out in
   this encoding against the real CSR map. Paper exercise, nothing assembled or
   run, but it is where findings F1–F7 cited above come from. Rewrite it
   whenever the encoding changes; it is the cheapest test the ISA has.
-- `docs/psc16s_prototype.md` — the RTL/LiteX/assembler prototype. Synthesizes
+- `docs/psc18sr_prototype.md` — the RTL/LiteX/assembler prototype. Synthesizes
   to 1 DP16KD in native 18-bit mode and elaborates into a SoC as both a CSR
   peripheral and a bus master. **It has no golden model behind it**, so it
   currently violates "the golden model gates the ISA" below; that is a debt,

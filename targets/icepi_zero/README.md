@@ -34,7 +34,7 @@ map — but check this column before picking one to build on.
 | `c3spibone.py` | C3 link bring-up over SPIBone | Bring-up scaffold |
 | `c3uartbone.py` | C3 link bring-up over UARTBone | Bring-up scaffold |
 | `mcp.py` | MCP23S17 GPIO-expander bring-up | Bring-up scaffold |
-| `psc16s.py` | PSC16S (PISC v2) prototype | **Prototype against a draft ISA.** No golden model yet — see `docs/psc16s_prototype.md` |
+| `psc18sr.py` | PSC18SR (PISC v2) prototype | **Prototype against a draft ISA.** No golden model yet — see `docs/psc18sr_prototype.md` |
 | `pisc.py` | PISC v1 sequencer bring-up | Works, but still instantiates the dead WINC block |
 | `la.py` | 18-channel logic analyzer | Gateware + sims pass; its firmware/host offload is WiFi-only, so the transport is gone |
 | `usb_device.py` | ValentyUSB CDC device scaffold | **Untested on hardware.** PLL2 is shared with the LCD clock, so USB and LCD are mutually exclusive on the 25F |
