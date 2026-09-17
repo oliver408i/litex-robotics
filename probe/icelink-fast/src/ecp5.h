@@ -49,4 +49,18 @@ void ecp5_config_data(const uint8_t *buf, uint32_t n);
 /* Leave Shift-DR, settle, disable ISC, and check DONE. */
 ecp5_err_t ecp5_config_end(uint32_t *final_status);
 
+/* Tell the FPGA to reconfigure ITSELF from its SPI flash, and wait for DONE.
+ *
+ * This is REFRESH used on its own rather than as step 1 of a reprogram, and it
+ * only became useful once the flash held a bitstream we put there: it reloads
+ * whatever configuration memory holds, discarding the running design. Nothing
+ * is shifted, so it is quick to issue -- but the FPGA then reads the whole
+ * bitstream back out of SPI flash at its own pace, which is why this polls for
+ * DONE rather than assuming a fixed settling time.
+ *
+ * Returns ECP5_ERR_NOT_DONE if DONE never comes up, which is what an empty or
+ * corrupt flash looks like. That is recoverable, not fatal: SRAM configuration
+ * over JTAG still works and is how you get a design back. */
+ecp5_err_t ecp5_refresh(uint32_t *final_status);
+
 #endif /* ECP5_H */

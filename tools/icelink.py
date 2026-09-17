@@ -114,13 +114,93 @@ def program_sram(bitstream, port=DEFAULT_PORT, timeout=60.0, verbose=True):
     return status
 
 
+def refresh(port=DEFAULT_PORT, timeout=15.0, verbose=True):
+    """Tell the FPGA to reconfigure itself from its SPI flash.
+
+    This is how a flashed bitstream is activated without power-cycling the
+    board: the probe issues a JTAG REFRESH and the ECP5 reloads configuration
+    from flash. It discards whatever is currently running.
+
+    Returns the ECP5 status register. Raises IcelinkError if DONE never comes
+    up -- which means the flash is empty or the image is bad, NOT that the
+    board is bricked: `program_sram` still works exactly as before and is how
+    you get a design back.
+    """
+    s = _open(port)
+    try:
+        # Take the JTAG bus back first. The probe can come up with its pins
+        # hi-Z (that is the state after a power cycle, and after the 'z'
+        # command), and a refresh cannot drive the TAP from there -- it reports
+        # "refresh skipped" rather than failing usefully. 'a' is a no-op when
+        # the bus is already held.
+        s.write(b"a")
+        s.flush()
+        time.sleep(0.3)
+        s.reset_input_buffer()
+        s.write(b"f")
+        s.flush()
+        out = b""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            out += s.read(4096)
+            if b"DONE" in out or b"never came up" in out or b"skipped" in out:
+                time.sleep(0.3)
+                out += s.read(4096)
+                break
+        text = out.decode("utf-8", "replace")
+    finally:
+        s.close()
+
+    if verbose:
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                print(f"  {line}")
+
+    if "DONE -- the flashed bitstream is running" not in text:
+        raise IcelinkError(
+            "reconfiguration did not complete.\n"
+            "  Either the SPI flash holds no valid bitstream, or the JTAG pins\n"
+            "  are hi-Z. Recover with a normal SRAM load: tools/icelink.py <bit>"
+        )
+
+    status = None
+    for line in text.splitlines():
+        if "status" in line and "0x" in line:
+            try:
+                status = int(line.split("0x")[1].split()[0], 16)
+            except (IndexError, ValueError):
+                pass
+    return status
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("bitstream", help="path to the .bit file")
+    ap.add_argument("bitstream", nargs="?", help="path to the .bit file")
+    ap.add_argument("--refresh", action="store_true",
+                    help="Do not load anything: tell the FPGA to reconfigure "
+                         "itself from its SPI flash. This is how a flashed "
+                         "bitstream is activated without a power cycle.")
     ap.add_argument("--port", default=DEFAULT_PORT,
                     help=f"probe console port (default {DEFAULT_PORT})")
     args = ap.parse_args()
+
+    if args.refresh:
+        if args.bitstream:
+            print("error: --refresh loads nothing; drop the bitstream argument",
+                  file=sys.stderr)
+            return 2
+        try:
+            refresh(port=args.port)
+        except IcelinkError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print("reconfigured from flash.")
+        return 0
+
+    if not args.bitstream:
+        ap.error("give a bitstream to load, or --refresh")
     try:
         program_sram(args.bitstream, port=args.port)
     except IcelinkError as e:

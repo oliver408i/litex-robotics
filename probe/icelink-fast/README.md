@@ -162,6 +162,35 @@ NRST low, it has to be released between attach and program.
   after a close, 115200 while held open). Keep the console port open across
   programming; the two CDCs are independent and programming does not need it.
 
+## Reconfiguring the FPGA from flash ('f', added 2026-09-13)
+
+`ecp5_refresh()` issues a standalone JTAG REFRESH: the FPGA reloads
+configuration from its SPI flash, discarding whatever is running. That only
+became useful once the flash held a bitstream we put there (see
+`targets/colorlight_i9/README.md`); before that it just unloaded the design and
+came back as the factory image.
+
+    .venv/bin/python tools/icelink.py --refresh
+
+Two details worth keeping:
+
+* **The probe comes up with its JTAG pins hi-Z** -- after a power cycle, and
+  after 'z'. A refresh cannot drive the TAP from there and says so
+  ("refresh skipped") rather than failing obscurely. `tools/icelink.py
+  --refresh` sends 'a' first, which is a no-op when the bus is already held.
+* **It polls for DONE rather than waiting a fixed time.** Reconfiguration reads
+  the whole bitstream back out of SPI flash at the master-SPI clock, which is
+  far slower than the JTAG link that put it there and depends on what `ecppack`
+  wrote into the header.
+
+The target can ask for this itself: the bridge watches the target->host UART for
+`\x01ICELINK-REFRESH\x01` and refreshes on a match. The FPGA has no other way
+to do it -- the ECP5 has no ICAP-style primitive and `PROGRAMN` is not brought
+out to the fabric -- so the console UART is the only wire available. It is a
+convenience, not a recovery path: **a wedged design cannot print**, and that is
+exactly when a reconfigure is wanted. Use 'f' for that; it works regardless of
+what the FPGA is doing.
+
 ## Status
 
 - [x] Stage 0: boots in the interface slot, verified running on hardware

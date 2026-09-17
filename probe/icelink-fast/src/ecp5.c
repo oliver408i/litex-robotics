@@ -92,6 +92,33 @@ void ecp5_config_data(const uint8_t *buf, uint32_t n)
     jtag_shift_bytes_out(buf, n);
 }
 
+ecp5_err_t ecp5_refresh(uint32_t *final_status)
+{
+    jtag_tap_reset();
+
+    jtag_shift_ir(ECP5_LSC_REFRESH);
+    jtag_run_test(2);
+
+    /* Give configuration a clear run before touching the TAP again. The
+     * settling time config_begin uses (50 ms) is for the TAP; this has to
+     * cover the FPGA reading a whole bitstream out of SPI flash, which at the
+     * master-SPI default clock is far slower than the JTAG link that put it
+     * there. Poll rather than guess, because that rate depends on what
+     * ecppack wrote into the bitstream header. */
+    delay_ms(200);
+
+    uint32_t st = 0;
+    for (uint32_t waited = 200; waited < 6000; waited += 100) {
+        jtag_tap_reset();
+        st = jtag_read_reg32(ECP5_LSC_READ_STATUS);
+        if (st & ECP5_STATUS_DONE) break;
+        delay_ms(100);
+    }
+
+    if (final_status) *final_status = st;
+    return (st & ECP5_STATUS_DONE) ? ECP5_OK : ECP5_ERR_NOT_DONE;
+}
+
 ecp5_err_t ecp5_config_end(uint32_t *final_status)
 {
     /* Leaving Shift-DR inherently clocks one more bit. That is fine: the

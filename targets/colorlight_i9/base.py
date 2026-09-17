@@ -31,6 +31,7 @@ for rel_path in [
     "litex-boards",
     "migen",
     "litedram",
+    "liteeth",
     "litespi",
     "litesdcard",
 ]:
@@ -164,7 +165,8 @@ def make_parser(description):
     # Keep nested software builds on this interpreter and this checkout.
     os.environ["PYTHON"] = sys.executable
     extra = [os.path.join(LITEX_SETUP_ROOT, p)
-             for p in ("litex", "litex-boards", "migen", "litedram", "litespi", "litesdcard")]
+             for p in ("litex", "litex-boards", "migen", "litedram", "liteeth",
+                       "litespi", "litesdcard")]
     existing = os.environ.get("PYTHONPATH", "")
     os.environ["PYTHONPATH"] = os.pathsep.join(p for p in extra + [existing] if p)
 
@@ -196,6 +198,55 @@ def make_parser(description):
                                help="NOT IMPLEMENTED on this board yet -- the probe does "
                                     "SRAM configuration only. See run_build().")
     return parser
+
+
+
+def add_eth_arguments(parser, default_etherbone=True):
+    """The Ethernet flags shared by the i9 tops.
+
+    Etherbone defaults ON (`--no-etherbone` turns it off) because it is the
+    board's flashing path: `tools/i9_flash_bitstream.sh` drives a running
+    Etherbone image, so an image flashed without one boots with no way back in
+    except the probe. See gateware/soc_features.py: add_eth, and the README
+    section on flashing over Ethernet.
+
+    The tradeoff is that nextpnr will report a post-route timing failure on the
+    eth_rx/eth_tx domains in every build that has them. That report has been
+    wrong every time it was checked against hardware; `--no-etherbone` is there
+    for when a trustworthy STA number matters more than the network path.
+    """
+    ethopts = parser.target_group.add_mutually_exclusive_group()
+    ethopts.add_argument("--with-etherbone", dest="with_etherbone", action="store_true",
+                         default=default_etherbone,
+                         help="Etherbone: a Wishbone master over UDP, so the host "
+                              "reaches every CSR without the probe."
+                              + (" (default)" if default_etherbone else ""))
+    ethopts.add_argument("--no-etherbone", dest="with_etherbone", action="store_false",
+                         help="Build without Etherbone."
+                              + (" (default)" if not default_etherbone else ""))
+    parser.add_target_argument("--local-ip", default="192.168.1.50",
+                               help="This board's IP, for Etherbone.")
+    parser.add_target_argument("--etherbone-buffer-depth", default=256,
+                               type=lambda x: int(x, 0),
+                               help="Etherbone record FIFO depth in 32-bit words "
+                                    "(max 256). This is a hard cap on burst size -- "
+                                    "a longer burst deadlocks the core. LiteX "
+                                    "defaults to 16; do not lower this without "
+                                    "reading the note in gateware/soc_features.py.")
+    parser.add_target_argument("--eth-phy", default=0, type=int,
+                               help="Which PHY gets the RGMII data pins (0 or 1). "
+                                    "MDIO reaches both either way.")
+    return parser
+
+
+def eth_kwargs(args):
+    """add_eth() keyword arguments from a parser built with add_eth_arguments."""
+    return dict(
+        phy_index              = args.eth_phy,
+        with_etherbone         = args.with_etherbone,
+        local_ip               = args.local_ip,
+        etherbone_buffer_depth = args.etherbone_buffer_depth,
+    )
 
 
 def run_build(soc, args, parser):

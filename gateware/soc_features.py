@@ -18,7 +18,7 @@ from litex.build.generic_platform import Pins, Subsignal, IOStandard, Misc
 from litex.soc.cores.i2c import I2CMaster as HWI2CMaster
 from litex.soc.cores.gpio import GPIOIn, GPIOOut, GPIOTristate
 from litex.soc.cores.spi.spi_bone import SPIBone
-from litex.soc.interconnect.csr import AutoCSR, CSRStorage
+from litex.soc.interconnect.csr import AutoCSR, CSRStorage, CSRStatus
 
 from litex.soc.integration.soc import SoCRegion
 
@@ -30,49 +30,90 @@ from gateware.spi_slave import SPISlave
 
 
 # LCD / Touch --------------------------------------------------------------------------------------
-def _lcd_io(with_reset_pad):
-    """Build the LCD/touch platform extension.
+# Per-board wiring for the ST7796S LCD + FT6336U touch module. The module is the
+# same on both boards; only which FPGA ball each wire lands on differs, so the
+# gateware below is shared and the pin choice is a parameter.
+#
+# IcePi Zero: docs/icepi_zero_pin_mapping.md. LCD_RST and CTP_RST are tied
+# together on the board and share one pin (L2), and there is no SD_CS wire.
+ICEPI_ZERO_LCD_PINS = {
+    "clk":  "E4", "cs_n": "H3", "mosi": "D4", "miso": "E3",
+    "dc":   "G1", "backlight": "P1", "reset_n": "L2",
+    "scl":  "N1", "sda": "N4", "int": "F2",
+}
 
-    lcd_ctrl.reset_n (IO10/L2) is optional: with_reset_pad=True keeps the
-    direct-pin reset (LCD_RST/CTP_RST tied to L2 on the board, the default for
-    targets/icepi_zero/lcd.py / _all.py / _logger.py). with_reset_pad=False drops it --
-    used by the expander build (targets/icepi_zero/mnist_lcd.py), where L2 becomes the
-    MCP23S17 RESET line and LCD/CTP reset move onto expander outputs GPB0/GPB1,
-    driven by firmware (see docs/reset_sidebands.md). LCDEngine treats the reset
-    pad as optional (hasattr check), so omitting it is safe.
+# Colorlight i9 v7.2: P4 (pmodg and the balls past it). Two differences from the
+# IcePi wiring, both handled in add_lcd_touch():
+#   * LCD_RST (E4) and CTP_RST (H4) are separate wires, so ctp_reset_n gets its
+#     own pad -- driven from the same CSR bit, which reproduces the IcePi
+#     behaviour exactly and keeps software/common/lcd.c unchanged.
+#   * SD_CS (J5) is wired. The module's microSD slot shares MOSI/SCK/MISO with
+#     the panel, so this pin is held high; see add_lcd_touch().
+# J4/K3/H5/J5 are real IO on the LFE5U-45F CABGA381 but are not in
+# litex-boards' pmod tables for this board, hence raw ball names throughout.
+COLORLIGHT_I9_LCD_PINS = {
+    "clk":  "F3", "cs_n": "E1", "mosi": "F1", "miso": "H5",
+    "dc":   "F2", "backlight": "H3", "reset_n": "E4", "ctp_reset_n": "H4",
+    "scl":  "G3", "sda": "J4", "int": "K3",
+    "sd_cs": "J5",
+}
+
+
+def _lcd_io(pins, with_reset_pad):
+    """Build the LCD/touch platform extension for one board's `pins` map.
+
+    lcd_ctrl.reset_n is optional: with_reset_pad=True keeps the direct-pin reset
+    (the default for targets/icepi_zero/lcd.py / all.py / logger.py and for the
+    i9). with_reset_pad=False drops it -- used by the expander build
+    (targets/icepi_zero/mnist_lcd.py), where L2 becomes the MCP23S17 RESET line
+    and LCD/CTP reset move onto expander outputs GPB0/GPB1, driven by firmware
+    (see docs/reset_sidebands.md). LCDEngine treats the reset pad as optional
+    (hasattr check), so omitting it is safe.
+
+    "ctp_reset_n" and "sd_cs" are optional keys -- present only on boards that
+    wire those lines out separately.
     """
     lcd_ctrl_subsignals = [
-        Subsignal("dc",        Pins("G1")),
-        Subsignal("backlight", Pins("P1")),
+        Subsignal("dc",        Pins(pins["dc"])),
+        Subsignal("backlight", Pins(pins["backlight"])),
     ]
     if with_reset_pad:
-        lcd_ctrl_subsignals.append(Subsignal("reset_n", Pins("L2")))
-    return [
+        lcd_ctrl_subsignals.append(Subsignal("reset_n", Pins(pins["reset_n"])))
+        if "ctp_reset_n" in pins:
+            lcd_ctrl_subsignals.append(Subsignal("ctp_reset_n", Pins(pins["ctp_reset_n"])))
+    io = [
         ("lcd_spi", 0,
-            Subsignal("clk",  Pins("E4")),
-            Subsignal("cs_n", Pins("H3")),
-            Subsignal("mosi", Pins("D4")),
-            Subsignal("miso", Pins("E3")),
+            Subsignal("clk",  Pins(pins["clk"])),
+            Subsignal("cs_n", Pins(pins["cs_n"])),
+            Subsignal("mosi", Pins(pins["mosi"])),
+            Subsignal("miso", Pins(pins["miso"])),
             IOStandard("LVCMOS33"),
             Misc("SLEWRATE=FAST"),
         ),
         ("lcd_ctrl", 0, *lcd_ctrl_subsignals, IOStandard("LVCMOS33")),
         ("ctp_i2c", 0,
-            Subsignal("scl", Pins("N1"), Misc("PULLMODE=UP")),
-            Subsignal("sda", Pins("N4"), Misc("PULLMODE=UP")),
+            Subsignal("scl", Pins(pins["scl"]), Misc("PULLMODE=UP")),
+            Subsignal("sda", Pins(pins["sda"]), Misc("PULLMODE=UP")),
             IOStandard("LVCMOS33"),
         ),
-        ("ctp_int", 0, Pins("F2"), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
+        ("ctp_int", 0, Pins(pins["int"]), IOStandard("LVCMOS33"), Misc("PULLMODE=UP")),
     ]
+    if "sd_cs" in pins:
+        io.append(("lcd_sd_cs", 0, Pins(pins["sd_cs"]), IOStandard("LVCMOS33")))
+    return io
 
 
-def add_lcd_touch(soc, lcd_spi_clk_freq, with_reset_pad=True):
+def add_lcd_touch(soc, lcd_spi_clk_freq, with_reset_pad=True, pins=ICEPI_ZERO_LCD_PINS):
     """ST7796S LCD engine + FT6336U capacitive touch (I2C + INT).
 
     Caller contract: the BaseSoC must have been constructed with
     spi_clk_freq=lcd_spi_clk_freq (the engine's SPI shifter lives in cd_spi,
-    SCK = lcd_spi_clk_freq / 2) and force_lcd_backlight_off=False (the
-    lcd_ctrl extension owns P1).
+    SCK = lcd_spi_clk_freq / 2). On the IcePi Zero it must also be constructed
+    with force_lcd_backlight_off=False, because the lcd_ctrl extension owns P1
+    there; the i9 has no such conflict.
+
+    `pins` selects the board wiring -- ICEPI_ZERO_LCD_PINS or
+    COLORLIGHT_I9_LCD_PINS above.
 
     with_reset_pad=False drops the direct LCD reset pin (IO10/L2) so the
     MCP23S17 expander can own it; LCD/CTP reset then move to expander outputs
@@ -81,11 +122,12 @@ def add_lcd_touch(soc, lcd_spi_clk_freq, with_reset_pad=True):
     assert hasattr(soc.crg, "cd_spi"), \
         "add_lcd_touch: BaseSoC must be built with spi_clk_freq=lcd_spi_clk_freq"
     platform = soc.platform
-    platform.add_extension(_lcd_io(with_reset_pad))
+    platform.add_extension(_lcd_io(pins, with_reset_pad))
 
+    lcd_ctrl_pads = platform.request("lcd_ctrl")
     soc.lcd = LCDEngine(
         pads      = platform.request("lcd_spi"),
-        ctrl_pads = platform.request("lcd_ctrl"),
+        ctrl_pads = lcd_ctrl_pads,
         platform  = platform,
         sclk_div  = 1,
     )
@@ -95,11 +137,21 @@ def add_lcd_touch(soc, lcd_spi_clk_freq, with_reset_pad=True):
     soc.add_constant("LCD_HEIGHT", 480)
     soc.add_constant("LCD_SPI_FREQUENCY", int(lcd_spi_clk_freq // 2))
 
-    # Reset: with_reset_pad=True keeps LCD_RST+CTP_RST tied to one direct pin
-    # (lcd_ctrl.reset_n on IO10/L2), driven from the reset_n CSR field -- touch
-    # reset follows LCD reset with no extra wiring. with_reset_pad=False (the
-    # expander build) omits that pad entirely: firmware drives LCD_RST/CTP_RST
-    # via MCP23S17 outputs instead (add_aux_imu with_iox, docs/reset_sidebands.md).
+    # Reset: with_reset_pad=True keeps LCD_RST+CTP_RST on the reset_n CSR field
+    # -- on the IcePi they are one pin (L2); on the i9 they are two pins driven
+    # from the same bit (ctp_reset_n below). Either way touch reset follows LCD
+    # reset with no firmware change. with_reset_pad=False omits both pads
+    # entirely: firmware drives LCD_RST/CTP_RST via MCP23S17 outputs instead
+    # (add_aux_imu with_iox, docs/reset_sidebands.md).
+    if hasattr(lcd_ctrl_pads, "ctp_reset_n"):
+        soc.comb += lcd_ctrl_pads.ctp_reset_n.eq(soc.lcd.pads_ctrl.fields.reset_n)
+
+    # SD_CS: the module's microSD slot hangs off the same MOSI/SCK/MISO as the
+    # panel. Left floating it can latch low, at which point the card drives MISO
+    # and corrupts every LCD register read. Nothing here talks to the card, so
+    # hold its chip select deasserted (high) for good.
+    if "sd_cs" in pins:
+        soc.comb += platform.request("lcd_sd_cs").eq(1)
 
     # FT6336U capacitive touch (I2C + INT). RST follows LCD reset (above).
     # Hardware I2C master (wishbone-mapped, 2 word registers: xfer + config).
@@ -113,6 +165,130 @@ def add_lcd_touch(soc, lcd_spi_clk_freq, with_reset_pad=True):
     # (FT6336U pulses INT low on touch events).
     soc.ctp_int = GPIOIn(platform.request("ctp_int"), with_irq=True)
     soc.irq.add("ctp_int", use_loc_if_exists=True)
+
+
+# Ethernet / Etherbone (Colorlight i9) -------------------------------------------------------------
+# The i9 has two RGMII PHYs; the IcePi Zero has none, so nothing here is reachable
+# from an IcePi top. liteeth is imported inside add_eth() rather than at module
+# scope so the IcePi builds never take the dependency.
+class EthRxClockProbe(LiteXModule, AutoCSR):
+    """Is the PHY's RX clock actually running, and how fast?
+
+    This exists because of a real ambiguity on a board with no magjacks: the
+    in-band status CSR reading 0 could mean "no RX clock" or "this PHY does not
+    emit RGMII in-band status", and those call for completely different next
+    steps. A counter settles it.
+
+    `cd_eth_rx` is driven straight off the PHY's RX clock pin, so if the PHY is
+    not clocking, everything in that domain is frozen and the count never
+    moves. Only ONE bit crosses domains (a divided-down clock), edge-detected
+    and counted in `sys`, so there is no multi-bit CDC to get wrong: read
+    `ticks` twice a known time apart and the delta gives the frequency.
+
+    Divider is 2^DIV_BITS, so at 125 MHz the crossing toggles at ~122 kHz --
+    far below sys, so no edge is missed.
+    """
+    DIV_BITS = 10
+
+    def __init__(self):
+        self.ticks = CSRStatus(32, description="Edges of the divided eth_rx clock, "
+                                               "counted in sys. Frozen = no RX clock.")
+
+        div = Signal(self.DIV_BITS + 1)
+        self.sync.eth_rx += div.eq(div + 1)
+
+        sampled = Signal()
+        prev    = Signal()
+        count   = Signal(32)
+        self.specials += MultiReg(div[self.DIV_BITS], sampled)
+        self.sync += [
+            prev.eq(sampled),
+            If(sampled != prev, count.eq(count + 1)),
+        ]
+        self.comb += self.ticks.status.eq(count)
+
+
+def add_eth(soc, phy_index=0, with_ethernet=False, with_etherbone=True,
+            local_ip="192.168.1.50", etherbone_buffer_depth=256, with_rx_probe=False):
+    """RGMII PHY, plus optionally the MAC and/or Etherbone.
+
+    Etherbone is a Wishbone master over UDP, and on this board it is how
+    gateware gets flashed without the probe (see targets/colorlight_i9/README.md,
+    "Flashing the gateware over Ethernet"). That is why it defaults ON here: an
+    image flashed without it boots with no network path, and getting back in
+    means reaching for the probe. Not a brick -- the probe still SRAM-configures
+    over JTAG -- but an avoidable trip to the bench.
+
+    The cost to know about is timing analysis, not fabric. The eth_rx/eth_tx
+    domains make nextpnr report a post-route failure on every build that has
+    them (70-105 MHz against 125), and that report has been wrong every single
+    time it has been checked against hardware -- 12/12 pings in loopback, 300
+    packets at 0% loss on a live link, Etherbone reads and writes. The README
+    has the table. Build with with_etherbone=False when a trustworthy STA
+    report matters more than the network path.
+
+    **Only one PHY can be instantiated at a time.** `eth 0` and `eth 1` share
+    rst_n (P4), mdio (P5) and mdc (N5) on this board, so requesting both would
+    drive those pads twice. `phy_index` picks which one gets the RGMII data
+    pins; either choice reaches BOTH PHYs over MDIO, since MDIO is a shared bus
+    addressed by PHY address. The platform's numbering is swapped relative to
+    the silkscreen (it follows the PHYA[0] straps).
+
+    with_rx_probe adds EthRxClockProbe -- diagnostic only, wanted by the PHY
+    bring-up top and not by anything else.
+    """
+    assert not (with_ethernet and with_etherbone), \
+        "add_eth: this LiteX cannot put the MAC and Etherbone on one PHY; pick one"
+    from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
+
+    # Must be named `ethphy`: the BIOS looks for CSR_ETHPHY_MDIO_W_ADDR, and it
+    # gates mdio_read/mdio_write/mdio_dump on that alone -- no MAC required.
+    #
+    # tx_delay=0 follows litex-boards' own colorlight target: the PHY is
+    # expected to add the RGMII TX clock delay internally, from strapping,
+    # rather than the FPGA adding it in DELAYG taps. It is the first thing to
+    # question if a link comes up but corrupts frames.
+    soc.ethphy = LiteEthPHYRGMII(
+        clock_pads = soc.platform.request("eth_clocks", phy_index),
+        pads       = soc.platform.request("eth", phy_index),
+        tx_delay   = 0,
+    )
+    soc.add_csr("ethphy")
+
+    if with_rx_probe:
+        soc.eth_rx_probe = EthRxClockProbe()
+        soc.add_csr("eth_rx_probe")
+
+    if with_ethernet:
+        # dynamic_ip=True is what puts `ping`, `eth_local_ip`, `eth_remote_ip`
+        # and `eth_mac_addr` in the BIOS (cmd_liteeth.c gates them on
+        # ETH_DYNAMIC_IP). Without it the addresses are compile-time constants
+        # and there is no way to poke the stack from the console. `ping` is the
+        # cheapest end-to-end datapath test there is: with the PHY in internal
+        # loopback the board can ping ITSELF, proving TX -> PHY -> RX and the
+        # whole MAC round trip with no cable, no magjack and no firmware.
+        #
+        # local_ip is deliberately NOT passed: add_ethernet asserts it is None
+        # under dynamic_ip, because the addresses become runtime state. Set
+        # them from the console with `eth_local_ip` / `eth_remote_ip`.
+        #
+        # MAC and Etherbone are mutually exclusive here (asserted above): this
+        # LiteX's add_ethernet has no with_etherbone parameter, so one PHY
+        # cannot feed both without sharing a UDP core by hand.
+        soc.add_ethernet(phy=soc.ethphy, dynamic_ip=True)
+    elif with_etherbone:
+        # buffer_depth is the Etherbone record payload FIFO, in 32-bit words,
+        # and it is a HARD limit on burst size: a burst longer than this
+        # overflows it, corrupts the transfer and deadlocks the core -- the
+        # whole LiteEth stack with it, so the board stops answering even ICMP
+        # and needs a reload. Measured 2026-09-13 against the LiteX default of
+        # 16: bursts of 8 fine, 32 wedged it every time.
+        #
+        # 256 is the maximum LiteX asserts, and it covers the 255-word maximum
+        # burst the Etherbone protocol itself allows, so the host can use
+        # full-size bursts and nothing can exceed the buffer.
+        soc.add_etherbone(phy=soc.ethphy, ip_address=local_ip,
+                          buffer_depth=etherbone_buffer_depth)
 
 
 # SNN-MLP MNIST classifier -------------------------------------------------------------------------

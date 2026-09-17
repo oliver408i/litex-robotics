@@ -50,15 +50,16 @@ Timing note: this closes 48 MHz with about 1 MHz of margin, where the plain
 `bringup.py` has room to spare. The flow runs `--timing-allow-fail`, so read
 the Fmax nextpnr reports rather than treating a bitstream as proof.
 """
-from base import BaseSoC, make_parser, run_build
+from base import BaseSoC, make_parser, run_build, add_eth_arguments, eth_kwargs
 
 from gateware.psc18sr import add_psc18sr
+from gateware.soc_features import add_eth
 
 
 class Psc18srSoC(BaseSoC):
     def __init__(self, sys_clk_freq=48e6, sdram_rate="1:1",
                  psc18sr_imem_words=1024, psc18sr_ro_words=256,
-                 psc18sr_prescale=1024, **kwargs):
+                 psc18sr_prescale=1024, eth=None, **kwargs):
         super().__init__(sys_clk_freq=sys_clk_freq, sdram_rate=sdram_rate, **kwargs)
 
         # autostart / wdt_cycles are not parameters here on purpose -- see the
@@ -74,11 +75,17 @@ class Psc18srSoC(BaseSoC):
                     wdt_cycles     = 0,
                     init_file      = "")
 
+        # Etherbone is on by default -- this is a build meant to end up in
+        # flash, and an image without it has no way back in but the probe.
+        if eth is not None and eth["with_etherbone"]:
+            add_eth(self, **eth)
+
 
 def main():
     parser = make_parser(description="Colorlight i9 SoC + PSC18SR as a non-boot side "
                                      "block (PISC v2, DRAFT ISA -- see "
                                      "docs/psc18sr_isa_draft.md).")
+    add_eth_arguments(parser)
     parser.add_target_argument("--psc18sr-imem-words", default=1024,
                                type=lambda x: int(x, 0),
                                help="Unified imem depth in 18-bit words (power of 2, "
@@ -101,6 +108,7 @@ def main():
         psc18sr_imem_words = args.psc18sr_imem_words,
         psc18sr_ro_words   = args.psc18sr_ro_words,
         psc18sr_prescale   = args.psc18sr_prescale,
+        eth = eth_kwargs(args),
         **parser.soc_argdict,
     )
     run_build(soc, args, parser)

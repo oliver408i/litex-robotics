@@ -59,6 +59,41 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const *coding)
  * only moves what both the ring and the USB FIFO can take right now, and
  * whatever is left waits for the next pass. Anything that spun here would
  * stall tud_task() and stutter the console. */
+/* Let the TARGET ask to be reconfigured.
+ *
+ * The FPGA has no way to reconfigure itself: the ECP5 has no ICAP-style
+ * primitive, and PROGRAMN is not brought out to anything the fabric can drive.
+ * The only wire from the FPGA to this MCU is the console UART -- so the FPGA
+ * prints a magic string and we do the JTAG REFRESH on its behalf.
+ *
+ * The magic is long and starts with a byte no console ever emits, because a
+ * false positive here destroys a running design. It is matched on the
+ * target->host direction only, so nothing the HOST types can trigger it.
+ *
+ * This is a convenience, not a recovery path: a wedged design cannot print,
+ * and that is exactly when you want a reconfigure. Use the 'f' console command
+ * for that -- it works no matter what the FPGA is doing. */
+static const char REFRESH_MAGIC[] = "\x01ICELINK-REFRESH\x01";
+#define REFRESH_MAGIC_LEN (sizeof(REFRESH_MAGIC) - 1)
+
+static volatile int g_refresh_req;
+
+static void sniff_refresh_magic(const uint8_t *buf, uint32_t n)
+{
+    static uint32_t pos;
+    for (uint32_t i = 0; i < n; i++) {
+        if (buf[i] == (uint8_t)REFRESH_MAGIC[pos]) {
+            if (++pos == REFRESH_MAGIC_LEN) {
+                pos = 0;
+                g_refresh_req = 1;
+            }
+        } else {
+            /* Restart, but do not drop a byte that begins a fresh match. */
+            pos = (buf[i] == (uint8_t)REFRESH_MAGIC[0]) ? 1u : 0u;
+        }
+    }
+}
+
 static void uart_bridge_task(void)
 {
     uint8_t buf[64];
@@ -84,6 +119,7 @@ static void uart_bridge_task(void)
         if (room > sizeof buf) room = sizeof buf;
         uint32_t got = uart_read(buf, room);
         if (got) {
+            sniff_refresh_magic(buf, got);
             tud_cdc_n_write(CDC_UART, buf, got);
             tud_cdc_n_write_flush(CDC_UART);
         }
@@ -145,6 +181,39 @@ static void emit_dec(uint32_t v)
     if (v == 0) t[n++] = '0';
     while (v) { t[n++] = (char)('0' + v % 10u); v /= 10u; }
     while (n && olen < (int)sizeof(obuf) - 1) obuf[olen++] = t[--n];
+}
+
+static void flush_out(void);
+
+/* Reconfigure the FPGA from its SPI flash, and say what happened.
+ *
+ * Shared by the 'f' console command and the target's magic string so both
+ * report identically -- when this runs unexpectedly, the log line is the only
+ * clue as to which one asked for it. */
+static void do_refresh(const char *who)
+{
+    olen = 0;
+    if (g_bus_released) {
+        emit("\r\nrefresh skipped: JTAG pins are hi-Z (press 'a' to take the bus back)\r\n");
+        flush_out();
+        return;
+    }
+    emit("\r\nREFRESH ("); emit(who); emit("): reconfiguring from SPI flash...\r\n");
+    flush_out();
+
+    uint32_t st = 0;
+    ecp5_err_t e = ecp5_refresh(&st);
+
+    olen = 0;
+    emit("  status = 0x"); emit_hex32(st);
+    if (e == ECP5_OK) {
+        emit("  DONE -- the flashed bitstream is running\r\n");
+    } else {
+        emit("  DONE never came up.\r\n"
+             "  The flash is empty or the image is bad. The FPGA is NOT bricked:\r\n"
+             "  load a bitstream into SRAM with 'p' exactly as before.\r\n");
+    }
+    flush_out();
 }
 
 /* Write everything, waiting for FIFO space. tud_cdc_write() silently drops
@@ -389,6 +458,15 @@ int main(void)
         tud_task();
         uart_bridge_task();
 
+        /* Deliberately here and not in the bridge task: a refresh polls the
+         * TAP for up to 6 s, and anything that long inside the bridge would
+         * stall tud_task() and drop the console. */
+        if (g_refresh_req) {
+            g_refresh_req = 0;
+            do_refresh("target asked");
+            reported = 0;
+        }
+
         uint32_t ms = millis_elapsed();
 
         if (!tud_mounted() && ms > DEADMAN_MS) {
@@ -409,6 +487,9 @@ int main(void)
                     flush_out();
                     for (volatile uint32_t d = 0; d < 2000000u; d++) { } /* let it drain */
                     request_bootloader();
+                } else if (c == 'f' || c == 'F') {
+                    do_refresh("host asked");
+                    reported = 0;
                 } else if (c == 'r' || c == 'R') {
                     reported = 0;
                 } else if (c == 's' || c == 'S') {
