@@ -5,7 +5,10 @@ TRIPLE?=riscv64-linux-gnu
 include $(BUILD_DIR)/software/include/generated/variables.mak
 
 SOC_DIRECTORY := $(LITEX_ROOT)/litex/litex/soc
-CPU_DIRECTORY := $(SOC_DIRECTORY)/cores/cpu/vexriscv
+# CPU_DIRECTORY deliberately NOT overridden: variables.mak already sets it to
+# the absolute path of the CPU this build actually used, and hardcoding
+# .../cpu/vexriscv here silently pulls VexRiscv's crt0.S into a VexiiRiscv
+# build. See docs/cpu_vexiiriscv.md.
 PICOLIBC_DIRECTORY := $(LITEX_ROOT)/pythondata-software-picolibc/pythondata_software_picolibc/data
 COMPILER_RT_DIRECTORY := $(LITEX_ROOT)/pythondata-software-compiler_rt/pythondata_software_compiler_rt/data
 LIBC_DIRECTORY := $(SOC_DIRECTORY)/software/libc

@@ -192,8 +192,8 @@ static inline uint32_t pack_coords(uint16_t lo, uint16_t hi)
 	return ((uint32_t)hi << 16) | (uint32_t)lo;
 }
 
-void lcd_dma_rect(int16_t x, int16_t y, int16_t w, int16_t h,
-                  const void *buf, uint32_t len)
+static void lcd_dma_rect_op(int16_t x, int16_t y, int16_t w, int16_t h,
+                            const void *buf, uint32_t len, uint32_t op)
 {
 	uint16_t x1 = (uint16_t)(x + w - 1);
 	uint16_t y1 = (uint16_t)(y + h - 1);
@@ -204,7 +204,22 @@ void lcd_dma_rect(int16_t x, int16_t y, int16_t w, int16_t h,
 	lcd_dma_src_write((uint32_t)buf);
 	lcd_dma_row_bytes_write(len);
 	lcd_dma_row_count_write(1);
-	lcd_op_write(LCD_OP_DMA_RECT);
+	lcd_op_write(op);
+}
+
+void lcd_dma_rect(int16_t x, int16_t y, int16_t w, int16_t h,
+                  const void *buf, uint32_t len)
+{
+	lcd_dma_rect_op(x, y, w, h, buf, len, LCD_OP_DMA_RECT);
+}
+
+void lcd_dma_rect_xrgb8888(int16_t x, int16_t y, int16_t w, int16_t h,
+                           const void *buf, uint32_t len)
+{
+	/* len is the source length (4 bytes/pixel); the engine halves it on the
+	 * wire. dma_row_bytes stays in source bytes in cvt mode, so this is the
+	 * same op with the format bit set. */
+	lcd_dma_rect_op(x, y, w, h, buf, len, LCD_OP_DMA_RECT | LCD_OP_CVT);
 }
 
 void lcd_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color)

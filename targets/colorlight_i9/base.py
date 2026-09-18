@@ -122,6 +122,7 @@ class BaseSoC(SoCCore):
                  with_sdram=True,
                  with_spi_flash=True,
                  spi_clk_freq=None,
+                 force_lcd_idle=True,
                  **kwargs):
         platform = colorlight_i5.Platform(board="i9", revision="7.2")
 
@@ -157,6 +158,50 @@ class BaseSoC(SoCCore):
             from litespi.modules import W25Q64
             from litespi.opcodes import SpiNorFlashOpCodes as Codes
             self.add_spi_flash(mode="1x", module=W25Q64(Codes.READ_1_1_1))
+
+        # LCD module parked ------------------------------------------------------------------------
+        # With the ST7796S module wired to P4 (see targets/colorlight_i9/lcd.py),
+        # a build that does NOT instantiate the engine leaves those pins
+        # unrequested -- and an unrequested ECP5 pin comes up as an input with
+        # its weak pull-up on. Pulled high, the backlight line lights the panel
+        # with no image on it. targets/icepi_zero/base.py has the same guard for
+        # the same reason (force_lcd_backlight_off).
+        #
+        # lcd.py passes force_lcd_idle=False: add_lcd_touch requests these pins
+        # itself, and requesting a pin twice is an error.
+        #
+        # Imported here rather than at module scope so the non-LCD tops do not
+        # pull in the whole gateware feature set to build a bring-up SoC.
+        if force_lcd_idle:
+            from gateware.soc_features import add_lcd_idle
+            add_lcd_idle(self)
+
+
+# VexiiRiscv 2-way superscalar preset: two decode/execute lanes + full branch
+# prediction (BTB/RAS/gshare) + late-ALU. Appended AFTER the `standard` variant
+# base (mul/div, 2-way L1 I$/D$, relaxed-branch), so this is standard + IPC.
+# Trades Fmax and area for instructions-per-clock. On the 25F this collapsed
+# the clock to 46 MHz and filled 79% of the chip (docs/cpu_vexiiriscv.md); the
+# 45F has the room the IcePi never had, which is the whole reason to retry it
+# here.
+VEXII_SUPERSCALAR_ARGS = (
+    "--decoders=2 --lanes=2 --with-btb --with-ras --with-gshare --with-late-alu"
+)
+
+
+def _argv_value(flag, default=None):
+    """Exact-match scan of sys.argv for `--flag value` or `--flag=value`.
+
+    Used to peek at --cpu *before* parse_args() so we can preset the LiteX CPU
+    args it registers. We can't use the parser's get_value_from_key() here: it
+    matches by substring, so "--cpu" would falsely match "--cpu-type" etc.
+    """
+    for i, tok in enumerate(sys.argv):
+        if tok == flag:
+            return sys.argv[i + 1] if i + 1 < len(sys.argv) else default
+        if tok.startswith(flag + "="):
+            return tok.split("=", 1)[1]
+    return default
 
 
 # Build helpers ------------------------------------------------------------------------------------
@@ -197,6 +242,26 @@ def make_parser(description):
     parser.add_target_argument("--flash", action="store_true",
                                help="NOT IMPLEMENTED on this board yet -- the probe does "
                                     "SRAM configuration only. See run_build().")
+    parser.add_target_argument("--cpu", default="vexriscv",
+                               choices=["vexriscv", "vexii", "vexii-superscalar"],
+                               help="Soft CPU core. 'vexriscv' (default): production "
+                                    "VexRiscv -- highest Fmax, smallest. "
+                                    "'vexii': VexiiRiscv 'standard' (single-issue, 2-way L1 "
+                                    "I$/D$); build-on-demand, needs sbt+JDK21 on PATH. "
+                                    "'vexii-superscalar': VexiiRiscv 2-way superscalar + branch "
+                                    "prediction + late-ALU -- trades Fmax/area for IPC. Raw "
+                                    "--cpu-type/--cpu-variant/--vexii-args still work and override "
+                                    "this preset. See docs/cpu_vexiiriscv.md.")
+    # Preset the LiteX CPU args from --cpu *before* parse_args(), so the parser
+    # registers/reads the VexiiRiscv-specific args (--vexii-args etc.) and selects
+    # the core. Peek at argv directly (parse hasn't run yet). Raw --cpu-type /
+    # --cpu-variant / --vexii-args passed on the CLI still win (argparse CLI value
+    # overrides these set_defaults).
+    cpu_choice = _argv_value("--cpu", "vexriscv")
+    if cpu_choice in ("vexii", "vexii-superscalar"):
+        parser.set_defaults(cpu_type="vexiiriscv", cpu_variant="standard")
+        if cpu_choice == "vexii-superscalar":
+            parser.set_defaults(vexii_args=VEXII_SUPERSCALAR_ARGS)
     return parser
 
 
@@ -224,8 +289,13 @@ def add_eth_arguments(parser, default_etherbone=True):
     ethopts.add_argument("--no-etherbone", dest="with_etherbone", action="store_false",
                          help="Build without Etherbone."
                               + (" (default)" if not default_etherbone else ""))
-    parser.add_target_argument("--local-ip", default="192.168.1.50",
-                               help="This board's IP, for Etherbone.")
+    # 192.168.0.50 is the bench subnet (the host sits on 192.168.0.10/24) and
+    # the address tools/i9_flash_bitstream.sh and the README's litex_server
+    # invocation both assume. The old eth.py default was 192.168.1.50, which is
+    # simply unreachable from here -- it cost a debugging round to notice.
+    parser.add_target_argument("--local-ip", default="192.168.0.50",
+                               help="This board's IP, for Etherbone. Must be on the "
+                                    "host's subnet to be reachable.")
     parser.add_target_argument("--etherbone-buffer-depth", default=256,
                                type=lambda x: int(x, 0),
                                help="Etherbone record FIFO depth in 32-bit words "

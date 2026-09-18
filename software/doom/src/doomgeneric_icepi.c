@@ -7,6 +7,7 @@
  * Built at 320x200 (native DOOM resolution, no scaling) via
  * -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200. */
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <system.h>
@@ -25,8 +26,15 @@
 #define DW DOOMGENERIC_RESX
 #define DH DOOMGENERIC_RESY
 
-/* Full-frame RGB565 scratch (128 KB); lives in .bss -> SDRAM per linker.ld. */
+/* No RGB565 scratch buffer: the LCD engine converts XRGB8888 -> RGB565 as it
+ * DMAs, so it reads DG_ScreenBuffer directly. That removes 128 KB of .bss and,
+ * more to the point, a whole CPU pass over the frame -- see the `convert` note
+ * on the frame profile below. Falls back to a firmware repack if the gateware
+ * predates the engine's cvt field. */
+#ifndef CSR_LCD_OP_CVT_OFFSET
+#define DOOM_CPU_CONVERT 1
 static uint16_t fb565[DW * DH];
+#endif
 
 /* ---- millisecond clock ------------------------------------------------- *
  * timer0 as a free-running down-counter (reload = 0xffffffff). We accumulate
@@ -60,6 +68,65 @@ uint32_t DG_GetTicksMs(void)
     s_acc_ticks += (uint32_t)(s_last_val - v);  /* correct across one reload */
     s_last_val = v;
     return (uint32_t)(s_acc_ticks / (CONFIG_CLOCK_FREQUENCY / 1000u));
+}
+
+/* Raw 64-bit sys-clock tick count. Same accumulator as DG_GetTicksMs, but
+ * undivided: a frame is ~10-100 ms and we are splitting it three ways, so ms
+ * granularity would quantize the phases into noise. */
+static uint64_t ticks_now(void)
+{
+    if (!s_timer_up)
+        timer_start();
+    timer0_update_value_write(1);
+    uint32_t v = timer0_value_read();
+    s_acc_ticks += (uint32_t)(s_last_val - v);
+    s_last_val = v;
+    return s_acc_ticks;
+}
+
+/* ---- frame profile ----------------------------------------------------- *
+ * Three phases, accumulated over a window and reported as per-frame averages:
+ *
+ *   render  - everything doomgeneric_Tick() does before DG_DrawFrame: game
+ *             logic plus the software rasterizer. Pure CPU+memory, and the
+ *             only phase a faster core can move much.
+ *   convert - the XRGB8888 -> byte-swapped RGB565 repack. Also CPU, but a
+ *             tight predictable loop, so it scales differently from render.
+ *   flush   - lcd_dma_rect + lcd_wait_idle: the panel SPI link. Bound by SCK,
+ *             not by the CPU, and on this hardware it dominates -- which is
+ *             exactly why a single end-to-end frame time understates a CPU
+ *             change (raising sys 50->90 MHz moved lcd_test by 0.5%).
+ *
+ * Reporting these separately is the point: `render` is the CPU-bound number to
+ * judge a core swap on, `render+convert+flush` is what the player sees. */
+#ifndef DOOM_PROFILE_FRAMES
+#define DOOM_PROFILE_FRAMES 50u
+#endif
+
+static uint64_t prof_render, prof_convert, prof_flush;
+static uint32_t prof_frames;
+
+static void prof_report(void)
+{
+    /* Integer microseconds per frame; CONFIG_CLOCK_FREQUENCY/1000000 is the
+     * ticks-per-us divisor. Printed as us to keep one decimal of ms. */
+    uint32_t per_us = CONFIG_CLOCK_FREQUENCY / 1000000u;
+    uint32_t n      = prof_frames;
+    uint32_t r      = (uint32_t)(prof_render  / n / per_us);
+    uint32_t c      = (uint32_t)(prof_convert / n / per_us);
+    uint32_t f      = (uint32_t)(prof_flush   / n / per_us);
+    uint32_t total  = r + c + f;
+    /* mfps = frames per second * 1000, computed without floating point. */
+    uint32_t mfps   = total ? (1000000u * 1000u) / total : 0;
+
+    printf("doom: %lu frames  render %lu us  convert %lu us  flush %lu us  "
+           "total %lu us  %lu.%03lu fps\n",
+           (unsigned long)n, (unsigned long)r, (unsigned long)c,
+           (unsigned long)f, (unsigned long)total,
+           (unsigned long)(mfps / 1000u), (unsigned long)(mfps % 1000u));
+
+    prof_render = prof_convert = prof_flush = 0;
+    prof_frames = 0;
 }
 
 void DG_SleepMs(uint32_t ms)
@@ -183,6 +250,8 @@ void DG_Init(void)
 /* ---- video ------------------------------------------------------------- */
 void DG_DrawFrame(void)
 {
+    uint64_t t_convert0 = ticks_now();
+#ifdef DOOM_CPU_CONVERT
     const uint32_t *s = (const uint32_t *)DG_ScreenBuffer;
     for (int i = 0; i < DW * DH; i++) {
         uint32_t p = s[i];     /* doomgeneric rgba8888: 0xAARRGGBB */
@@ -193,8 +262,21 @@ void DG_DrawFrame(void)
          * scrambled/"inverted" on the panel. */
         fb565[i] = (uint16_t)((v >> 8) | (v << 8));
     }
+#endif
+    uint64_t t_flush0 = ticks_now();
+#ifdef DOOM_CPU_CONVERT
     lcd_dma_rect(0, 0, DW, DH, fb565, DW * DH * 2);
+#else
+    /* Engine-side conversion: source is XRGB8888, so the length is 4 B/pixel.
+     * The engine emits the same 2 B/pixel on the wire, so `flush` is directly
+     * comparable to the firmware-convert path above. */
+    lcd_dma_rect_xrgb8888(0, 0, DW, DH, DG_ScreenBuffer, DW * DH * 4);
+#endif
     lcd_wait_idle();
+    uint64_t t_end = ticks_now();
+
+    prof_convert += t_flush0 - t_convert0;
+    prof_flush   += t_end    - t_flush0;
 }
 
 /* ---- input ------------------------------------------------------------- */
@@ -224,7 +306,20 @@ int main(int argc, char **argv)
     (void)argv;
     static char *dg_argv[] = { "doom", 0 };
     doomgeneric_Create(1, dg_argv);
-    for (;;)
+    for (;;) {
+        /* doomgeneric_Tick() runs the game + rasterizer and calls DG_DrawFrame
+         * at the end, so DrawFrame's own two phases are already accounted for;
+         * render is whatever is left of the tick. Subtracting rather than
+         * instrumenting doom's internals keeps the engine source untouched. */
+        uint64_t t0 = ticks_now();
+        uint64_t c0 = prof_convert, f0 = prof_flush;
         doomgeneric_Tick();
+        uint64_t spent = ticks_now() - t0;
+        uint64_t drawn = (prof_convert - c0) + (prof_flush - f0);
+        prof_render += (spent > drawn) ? (spent - drawn) : 0;
+
+        if (++prof_frames >= DOOM_PROFILE_FRAMES)
+            prof_report();
+    }
     return 0;
 }

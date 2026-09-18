@@ -20,6 +20,15 @@
 #define LCD_OP_FILL_RECT      ((4u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
 #define LCD_OP_DMA_RECT       ((5u << CSR_LCD_OP_KIND_OFFSET) | LCD_OP_START)
 
+/* DMA payload format bit. Set it alongside a DMA op kind and the engine treats
+ * each source word as one XRGB8888 pixel, emitting its RGB565 on the wire --
+ * see lcd_dma_rect_xrgb8888(). Only meaningful for the DMA kinds. */
+#ifdef CSR_LCD_OP_CVT_OFFSET
+#define LCD_OP_CVT            (1u << CSR_LCD_OP_CVT_OFFSET)
+#else
+#define LCD_OP_CVT            0u
+#endif
+
 #define LCD_BUSY              (1u << CSR_LCD_STATUS_BUSY_OFFSET)
 #define LCD_CAN_ACCEPT        (1u << CSR_LCD_STATUS_CAN_ACCEPT_OFFSET)
 
@@ -68,6 +77,20 @@ void lcd_init(void);
  * use lcd_wait_idle() / op-done IRQ if you need to know it's done. */
 void lcd_dma_rect(int16_t x, int16_t y, int16_t w, int16_t h,
                   const void *buf, uint32_t len);
+
+/* Same, but `buf` holds w*h XRGB8888 words (0xAARRGGBB, alpha ignored) and the
+ * engine does the RGB565 conversion on the way out. `len` is the SOURCE length
+ * in bytes, i.e. w*h*4 -- twice what the same rect costs in lcd_dma_rect().
+ *
+ * This exists because doing the repack on the CPU costs ~17 instructions per
+ * pixel (~1.1M per 320x200 frame) plus a whole second framebuffer, and the
+ * engine gets it combinationally for free while staying SPI-bound. Prefer it
+ * over converting in firmware whenever the source is already XRGB8888.
+ *
+ * `buf` must be word-aligned. Falls back to nothing if the gateware predates
+ * the cvt field -- check CSR_LCD_OP_CVT_OFFSET if you need to care. */
+void lcd_dma_rect_xrgb8888(int16_t x, int16_t y, int16_t w, int16_t h,
+                           const void *buf, uint32_t len);
 
 /* Queue a solid-color FILL RECT op: window = (x,y,w,h), each pixel set
  * to `color` (RGB565). */

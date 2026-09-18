@@ -38,6 +38,18 @@ except ImportError:
 DEFAULT_PORT = "/dev/icelink-uart"
 PROMPT = b"litex>"
 
+# The BIOS prompt is ANSI-coloured -- the bytes on the wire are
+# "\x1b[92;1mlitex\x1b[0m>", so a plain endswith(b"litex>") NEVER matches and
+# every command without --expect sat here until --timeout elapsed. That is what
+# made flashing look slow: a 4 MB flash_write appeared to take 15 minutes
+# because it was run with --timeout 850, when the write itself had long since
+# finished. Strip the escapes before testing for the prompt.
+ANSI_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def at_prompt(buf: bytes) -> bool:
+    return ANSI_RE.sub(b"", buf).rstrip().endswith(PROMPT)
+
 
 def drain(port, quiet_for=0.5, limit=20.0) -> int:
     """Read until the console has been silent for `quiet_for` seconds."""
@@ -88,7 +100,7 @@ def main() -> int:
             d = port.read(4096)
             if not d:
                 # Idle at a prompt with nothing outstanding: the command is done.
-                if expect_re is None and buf.rstrip().endswith(PROMPT):
+                if expect_re is None and at_prompt(buf):
                     break
                 continue
             buf += d

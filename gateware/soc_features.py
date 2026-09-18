@@ -291,6 +291,46 @@ def add_eth(soc, phy_index=0, with_ethernet=False, with_etherbone=True,
                           buffer_depth=etherbone_buffer_depth)
 
 
+
+def add_lcd_idle(soc, pins=COLORLIGHT_I9_LCD_PINS):
+    """Park the LCD module's pins safely on a build that has no LCD engine.
+
+    Unrequested pins are not in the design or the LPF, and nothing passes an
+    unused-IO option to ecppack, so they come up as the ECP5 default: input,
+    output hi-Z, weak pull-up ON. Pulled high, the backlight line turns the
+    panel's LED driver ON -- a white, backlit, image-less panel on every
+    non-LCD build, plus the current draw. This is the same problem
+    targets/icepi_zero/base.py solves with force_lcd_backlight_off; the i9 has
+    the whole header broken out, so it parks the rest of the lines too.
+
+    Driven, and why:
+      backlight   0   off
+      reset_n     0   hold the panel in reset -- it cannot misread anything
+      ctp_reset_n 0   same for the touch controller
+      cs_n        1   deasserted
+      sd_cs       1   deasserted; the microSD shares MOSI/SCK/MISO
+      clk/mosi/dc 0   quiet, and irrelevant while cs_n is high
+
+    NOT driven, deliberately: miso (an input), and scl/sda/int. The I2C pair
+    belongs to the FT6336U's bus and must stay released -- driving either line
+    from here would fight the pull-ups and could hold the bus low. They keep
+    their default pull-up, which is the idle state I2C wants anyway.
+    """
+    out_high = ("cs_n", "sd_cs")
+    out_low  = ("backlight", "reset_n", "ctp_reset_n", "clk", "mosi", "dc")
+    subsignals = [Subsignal(name, Pins(pins[name]))
+                  for name in out_high + out_low if name in pins]
+    soc.platform.add_extension([("lcd_idle", 0, *subsignals, IOStandard("LVCMOS33"))])
+
+    idle = soc.platform.request("lcd_idle")
+    for name in out_high:
+        if hasattr(idle, name):
+            soc.comb += getattr(idle, name).eq(1)
+    for name in out_low:
+        if hasattr(idle, name):
+            soc.comb += getattr(idle, name).eq(0)
+
+
 # SNN-MLP MNIST classifier -------------------------------------------------------------------------
 # MAC parallelism sweet spot: N_MAC=2 packs two Q4.12 weights into one 32-bit
 # Wishbone word, halving both core cycles AND SDRAM weight traffic. Going

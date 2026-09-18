@@ -50,7 +50,12 @@ class LCDEngine(LiteXModule, AutoCSR):
       rect_y = (y1 << 16) | y0
     """
 
-    def __init__(self, pads, ctrl_pads, platform, sclk_div=1):
+    def __init__(self, pads, ctrl_pads, platform, sclk_div=1, sim_spi=False):
+        # sim_spi swaps the SPI_Master Verilog black box for a behavioral
+        # shifter with the same handshake. migen's Python simulator cannot
+        # evaluate an Instance, so without this the TX FIFO never drains and
+        # the payload FSM stalls after 4 bytes -- i.e. the DMA path would be
+        # untestable in sim. Synthesis never sets it; see sim/test_lcd_engine.py.
         # Slow / non-per-transfer pads, still firmware-driven.
         self.pads_ctrl = CSRStorage(fields=[
             CSRField("reset_n",   size=1, offset=0, reset=1, description="LCD reset#, active low."),
@@ -73,6 +78,13 @@ class LCDEngine(LiteXModule, AutoCSR):
             CSRField("kind",  size=3, offset=0, description=
                      "0=idle, 1=CMD, 2=CMD_DATA_DMA, 3=CMD_DATA_FILL, "
                      "4=FILL_RECT, 5=DMA_RECT."),
+            CSRField("cvt", size=1, offset=4, description=
+                     "DMA payload format. 0 = raw bytes (source is already "
+                     "wire-ready RGB565, MSB first). 1 = convert: each source "
+                     "word is one XRGB8888 pixel and the engine emits its "
+                     "RGB565 as two wire bytes, MSB first. In cvt mode "
+                     "dma_row_bytes/dma_stride stay in SOURCE bytes (4 per "
+                     "pixel) and dma_src must be word-aligned."),
             CSRField("start", size=1, offset=8, pulse=True, description="Pulse to launch op."),
         ])
         self.status = CSRStatus(fields=[
@@ -98,7 +110,8 @@ class LCDEngine(LiteXModule, AutoCSR):
             self.comb += ctrl_pads.reset_n.eq(self.pads_ctrl.fields.reset_n)
 
         verilog_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "verilog"))
-        platform.add_source(os.path.join(verilog_root, "spi", "SPI_host.v"))
+        if not sim_spi:
+            platform.add_source(os.path.join(verilog_root, "spi", "SPI_host.v"))
 
         # ---- SPI domain: SPI_Master + FIFO consumer ---------------------
         spi_tx_byte  = Signal(8)
@@ -108,7 +121,32 @@ class LCDEngine(LiteXModule, AutoCSR):
         spi_rx_byte  = Signal(8)
         spi_clk_pad  = Signal()
         spi_mosi_pad = Signal()
-        self.specials += Instance(
+        if sim_spi:
+            # Behavioral SPI_Master: same handshake, 16 spi-clocks per byte
+            # (the real core's 8 bits x 2 half-bit phases at sclk_div=1), then
+            # one o_RX_DV pulse. Enough for the FSM's flow control and framing
+            # to be exercised exactly as on hardware.
+            _sh_cnt = Signal(5)
+            _sh_bsy = Signal()
+            self.sync.spi += [
+                spi_rx_dv.eq(0),
+                If(~_sh_bsy,
+                    If(spi_tx_dv,
+                        _sh_bsy.eq(1),
+                        _sh_cnt.eq(16),
+                        spi_rx_byte.eq(spi_tx_byte),
+                    ),
+                ).Else(
+                    _sh_cnt.eq(_sh_cnt - 1),
+                    If(_sh_cnt == 1,
+                        _sh_bsy.eq(0),
+                        spi_rx_dv.eq(1),
+                    ),
+                ),
+            ]
+            self.comb += spi_tx_ready.eq(~_sh_bsy)
+        else:
+            self.specials += Instance(
             "SPI_Master",
             p_SPI_MODE          = 0,
             p_CLKS_PER_HALF_BIT = int(sclk_div),
@@ -122,7 +160,7 @@ class LCDEngine(LiteXModule, AutoCSR):
             o_o_SPI_Clk  = spi_clk_pad,
             i_i_SPI_MISO = pads.miso,
             o_o_SPI_MOSI = spi_mosi_pad,
-        )
+            )
         self.comb += [
             pads.clk.eq(spi_clk_pad),
             pads.mosi.eq(spi_mosi_pad),
@@ -131,8 +169,8 @@ class LCDEngine(LiteXModule, AutoCSR):
         # ---- TX byte CDC: AsyncFIFO sys -> spi --------------------------
         # Depth=4 gives the sys-side push loop headroom to keep the SPI
         # shifter fed across DMA word-boundary fetches.
-        tx_byte = Signal(8)
-        tx_we   = Signal()
+        tx_byte = self.tx_byte = Signal(8)
+        tx_we   = self.tx_we   = Signal()
         tx_fifo = ClockDomainsRenamer({"write": "sys", "read": "spi"})(
             AsyncFIFO(width=8, depth=4))
         self.submodules.tx_fifo = tx_fifo
@@ -172,6 +210,7 @@ class LCDEngine(LiteXModule, AutoCSR):
         # free to overwrite CSRs the moment it has fired op.start.
         a_kind          = Signal(3)
         a_cmd_byte      = Signal(8)
+        a_cvt           = Signal()
         a_dma_src       = Signal(32)
         a_dma_row_bytes = Signal(24)
         a_dma_row_count = Signal(16)
@@ -183,6 +222,7 @@ class LCDEngine(LiteXModule, AutoCSR):
 
         q_kind          = Signal(3)
         q_cmd_byte      = Signal(8)
+        q_cvt           = Signal()
         q_dma_src       = Signal(32)
         q_dma_row_bytes = Signal(24)
         q_dma_row_count = Signal(16)
@@ -208,6 +248,7 @@ class LCDEngine(LiteXModule, AutoCSR):
             If(q_load,
                 q_valid.eq(1),
                 q_kind.eq(self.op.fields.kind),
+                q_cvt.eq(self.op.fields.cvt),
                 q_cmd_byte.eq(self.cmd_byte.storage),
                 q_dma_src.eq(self.dma_src.storage),
                 q_dma_row_bytes.eq(self.dma_row_bytes.storage),
@@ -274,6 +315,31 @@ class LCDEngine(LiteXModule, AutoCSR):
             3: cur_word_byte.eq(cached_word[24:32]),
         })
 
+        # XRGB8888 -> RGB565 byte source (cvt mode). The source word is one
+        # pixel, 0xAARRGGBB; we take the top 5/6/5 bits of R/G/B and stream the
+        # result MSB first, which is the order the panel wants. Doing it here
+        # rather than in firmware removes ~17 RISC-V instructions per pixel
+        # (~1.1M per 320x200 frame) AND the whole RGB565 scratch buffer: the
+        # engine reads DG_ScreenBuffer directly, so the frame crosses SDRAM
+        # once instead of three times. Purely combinational -- no extra cycle,
+        # and the engine stays SPI-bound (a pixel costs ~4 sys cycles against a
+        # 173 ns two-byte SPI slot at 92.5 MHz SCK).
+        cvt_rgb565 = Signal(16)
+        cvt_byte   = Signal(8)
+        self.comb += cvt_rgb565.eq(Cat(cached_word[3:8],     # B: bits 4:0
+                                       cached_word[10:16],   # G: bits 10:5
+                                       cached_word[19:24]))  # R: bits 15:11
+        self.comb += cvt_byte.eq(Mux(word_byte_idx == 0,
+                                     cvt_rgb565[8:16],       # MSB first
+                                     cvt_rgb565[0:8]))
+
+        # In cvt mode a "source step" is 4 bytes (one pixel) and spans two wire
+        # bytes; in raw mode it is 1 byte per wire byte. Keeping row_bytes and
+        # stride in source bytes either way means the row/stride arithmetic
+        # below is shared, with `step` as the only difference.
+        step = Signal(3)
+        self.comb += step.eq(Mux(a_cvt, 4, 1))
+
         # Inline (rect coord) byte source. Wire order: w0 MSB, w0 LSB,
         # w1 MSB, w1 LSB. coord_src picks rect_x in CASET phase, rect_y
         # in RASET phase.
@@ -298,6 +364,7 @@ class LCDEngine(LiteXModule, AutoCSR):
         def promote_queue():
             return [
                 NextValue(a_kind,          q_kind),
+                NextValue(a_cvt,           q_cvt),
                 NextValue(a_cmd_byte,      q_cmd_byte),
                 NextValue(a_dma_src,       q_dma_src),
                 NextValue(a_dma_row_bytes, q_dma_row_bytes),
@@ -338,7 +405,7 @@ class LCDEngine(LiteXModule, AutoCSR):
                 NextValue(tx_row_remaining,   a_dma_row_bytes),
                 NextValue(tx_rows_remaining,  a_dma_row_count - 1),
                 NextValue(addr_byte,          a_dma_src),
-                NextValue(word_byte_idx,      a_dma_src[0:2]),
+                NextValue(word_byte_idx,      Mux(a_cvt, 0, a_dma_src[0:2])),
             ).Elif(a_kind == KIND_CMD_DATA_FILL,
                 NextValue(cur_cmd,           a_cmd_byte),
                 NextValue(cur_ptype,         PT_FILL),
@@ -370,7 +437,7 @@ class LCDEngine(LiteXModule, AutoCSR):
                         NextValue(tx_row_remaining,   a_dma_row_bytes),
                         NextValue(tx_rows_remaining,  a_dma_row_count - 1),
                         NextValue(addr_byte,          a_dma_src),
-                        NextValue(word_byte_idx,      a_dma_src[0:2]),
+                        NextValue(word_byte_idx,      Mux(a_cvt, 0, a_dma_src[0:2])),
                     ),
                 ),
             ),
@@ -425,40 +492,58 @@ class LCDEngine(LiteXModule, AutoCSR):
         # rows queued, advance addr_byte to the next row's start using
         # the stride and refresh the word cache.
         fsm.act("PAYLOAD_DMA",
-            tx_byte.eq(cur_word_byte),
+            tx_byte.eq(Mux(a_cvt, cvt_byte, cur_word_byte)),
             If(tx_row_remaining == 0,
                 # All rows exhausted (drained the last byte of the last
                 # row on the previous cycle).
                 NextState("DRAIN"),
             ).Elif(tx_fifo.writable,
                 tx_we.eq(1),
-                NextValue(tx_row_remaining, tx_row_remaining - 1),
-                If(tx_row_remaining == 1,
-                    # This push completes the current row.
-                    If(tx_rows_remaining != 0,
-                        # More rows to come: jump addr to next row start.
-                        # addr_byte currently points at the last byte of
-                        # the current row; advancing it by 1 puts us at
-                        # row_start + row_bytes, and we want to land at
-                        # row_start + stride - so add (stride - row_bytes + 1).
-                        NextValue(addr_byte,
-                                  addr_byte + a_dma_stride - a_dma_row_bytes + 1),
-                        NextValue(word_byte_idx,
-                                  (addr_byte + a_dma_stride - a_dma_row_bytes + 1)[0:2]),
-                        NextValue(tx_row_remaining,  a_dma_row_bytes),
-                        NextValue(tx_rows_remaining, tx_rows_remaining - 1),
-                        NextState("DMA_FETCH"),
-                    ),
-                    # else: last byte of last row, no addr advance needed;
-                    # next cycle hits tx_row_remaining == 0 -> DRAIN.
+                If(a_cvt & (word_byte_idx == 0),
+                    # cvt mode, first wire byte of a pixel: the MSB half of the
+                    # cached word. No source byte is consumed yet, so neither
+                    # addr_byte nor the row counter moves -- only the half-pixel
+                    # index does. The LSB half goes out next cycle from the same
+                    # cached word, so no refetch either.
+                    NextValue(word_byte_idx, 1),
                 ).Else(
-                    # Mid-row push: normal byte-walk + word-boundary fetch.
-                    NextValue(addr_byte, addr_byte + 1),
-                    If(word_byte_idx == 3,
-                        NextValue(word_byte_idx, 0),
-                        NextState("DMA_FETCH"),
+                    # A whole source step (1 raw byte, or 4 bytes = 1 pixel in
+                    # cvt mode) is consumed by this push.
+                    NextValue(tx_row_remaining, tx_row_remaining - step),
+                    If(tx_row_remaining == step,
+                        # This push completes the current row.
+                        If(tx_rows_remaining != 0,
+                            # More rows to come: jump addr to next row start.
+                            # addr_byte currently points at the start of the
+                            # last source step of the row; advancing it by
+                            # `step` puts us at row_start + row_bytes, and we
+                            # want row_start + stride - so add
+                            # (stride - row_bytes + step).
+                            NextValue(addr_byte,
+                                      addr_byte + a_dma_stride - a_dma_row_bytes + step),
+                            NextValue(word_byte_idx,
+                                      Mux(a_cvt, 0,
+                                          (addr_byte + a_dma_stride - a_dma_row_bytes + 1)[0:2])),
+                            NextValue(tx_row_remaining,  a_dma_row_bytes),
+                            NextValue(tx_rows_remaining, tx_rows_remaining - 1),
+                            NextState("DMA_FETCH"),
+                        ),
+                        # else: last step of last row, no addr advance needed;
+                        # next cycle hits tx_row_remaining == 0 -> DRAIN.
                     ).Else(
-                        NextValue(word_byte_idx, word_byte_idx + 1),
+                        # Mid-row push: advance by one source step. In cvt mode
+                        # that is a whole word, so always refetch; in raw mode
+                        # only on a word boundary.
+                        NextValue(addr_byte, addr_byte + step),
+                        If(a_cvt,
+                            NextValue(word_byte_idx, 0),
+                            NextState("DMA_FETCH"),
+                        ).Elif(word_byte_idx == 3,
+                            NextValue(word_byte_idx, 0),
+                            NextState("DMA_FETCH"),
+                        ).Else(
+                            NextValue(word_byte_idx, word_byte_idx + 1),
+                        ),
                     ),
                 ),
             )

@@ -5,9 +5,14 @@
  * through the XIP mmap window -- zero copy: W_Read memcpy's lump bytes straight
  * out of flash, and W_CacheLump copies them once into the zone heap.
  *
- * The shareware DOOM1.WAD is flashed to flash offset 0x400000, which the LiteSPI
- * XIP region maps to CPU address SPIFLASH_BASE + 0x400000. Override the address
- * or length with -DDOOM_WAD_ADDR / -DDOOM_WAD_LEN if the layout changes. */
+ * The shareware DOOM1.WAD is flashed at a fixed offset into the LiteSPI XIP
+ * region, so it lands at CPU address SPIFLASH_BASE + offset. The offset is
+ * board-dependent because the WAD is ~4 MB and the part is not always 16 MB:
+ * on the IcePi Zero's 16 MB W25Q128 it sits at 0x400000, but on the i9's 8 MB
+ * W25Q64 that offset would run 756 bytes off the end of the part, so the WAD
+ * goes at 0x200000 instead -- still clear of the ~1.16 MB bitstream at offset
+ * 0. Override the address or length with -DDOOM_WAD_ADDR / -DDOOM_WAD_LEN if
+ * the layout changes. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +23,12 @@
 #include "w_file.h"
 
 #ifndef DOOM_WAD_ADDR
-#define DOOM_WAD_ADDR (SPIFLASH_BASE + 0x400000u)
+#if SPIFLASH_SIZE >= 0x1000000
+#define DOOM_WAD_OFFSET 0x400000u     /* 16 MB part (IcePi Zero W25Q128) */
+#else
+#define DOOM_WAD_OFFSET 0x200000u     /* 8 MB part (Colorlight i9 W25Q64) */
+#endif
+#define DOOM_WAD_ADDR (SPIFLASH_BASE + DOOM_WAD_OFFSET)
 #endif
 #ifndef DOOM_WAD_LEN
 #define DOOM_WAD_LEN  4196020u        /* shareware DOOM1.WAD */

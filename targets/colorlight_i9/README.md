@@ -430,6 +430,43 @@ need to trust.
 and `eth.py` catches the pair in `main()` so you get a sentence instead of a
 traceback.
 
+## Clock sweep — measured on hardware 2026-09-16
+
+The shipping numbers for `lcd.py` are **sys 90 MHz, SDRAM 181 MHz, SCK 92.5 MHz**,
+and they are the defaults. nextpnr reports all three as timing failures.
+
+| SCK | sys | SDRAM | fps | panel |
+|---|---|---|---|---|
+| 50 | 47.7 | 47.7 | 2137 | OK |
+| **92.5** | **90** | **181** | **3891** | **OK — shipping** |
+| 125 | 90 | 181 | 5287 | **WHITE** |
+| 150 | 90 | 181 | 6302 | **WHITE** |
+
+**The wall is the ST7796S, at roughly 100 MHz SCK. It is not the FPGA.** This is
+the important part, because the panel dies *silently from the console's point of
+view*: at 125 and 150 MHz the firmware still reported full frame rates, a passing
+DMA self-test and `ft6336u: chip_id=0x64`, while the display was blank white.
+Every one of those checks measures the FPGA side of the wire. **A console pass is
+not evidence that the picture is right** — somebody has to look at the panel, or
+a read-back comparison has to be added to `software/lcd_test`.
+
+That is why 92.5 MHz is the number here and in `targets/icepi_zero/turbo.py`: it
+sits just under a panel limit that was found the same way on the other board. It
+is not the fastest thing that will build, and it should not be raised on console
+evidence.
+
+Other things the sweep settled:
+
+* **Frame rate tracks SCK linearly** (2137 / 3891 / 5287 / 6302 against
+  50 / 92.5 / 125 / 150), so the panel link is the bottleneck and the shifter
+  has margin to spare.
+* **Raising `sys` buys nothing here.** 50 -> 90 MHz moved fps by 0.5%. It is
+  worth raising only for CPU-bound firmware (LVGL, the SNN demo).
+* **SDRAM runs at 181 MHz**, matching the ~180 MHz ceiling found earlier on
+  these parts. `Memtest OK` on 4 MB.
+* STA was wrong about every domain, every time: `sys` 41.7 reported vs 90 run,
+  SDRAM 145.7 vs 181, `spi` 209.6 vs 300, `eth_rx` 61-68 vs 125.
+
 ## Clock headroom — measured 2026-09-12, not estimated
 
 `nextpnr` reports Fmax at the **-6 worst-case corner** (slowest process, 85 °C,

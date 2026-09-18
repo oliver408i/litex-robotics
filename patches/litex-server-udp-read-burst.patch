@@ -1,0 +1,29 @@
+diff --git a/litex/tools/litex_server.py b/litex/tools/litex_server.py
+index 6ca88c42f..1787bbc21 100755
+--- a/litex/tools/litex_server.py
++++ b/litex/tools/litex_server.py
+@@ -139,9 +139,23 @@ class RemoteServer(EtherboneIPC):
+ 
+                     # Handle Etherbone reads.
+                     if record.reads != None:
++                        # CommUDP's read() already packs N addresses into ONE
++                        # Etherbone record and does a single sendto/recvfrom, so
++                        # capping it at 1 word turned every client burst into N
++                        # separate round trips to the board -- measured 17.5 ms
++                        # for a 255-word read on a link with 0.1 ms ping, i.e.
++                        # ~58 KB/s, which is what made a flash backup take
++                        # minutes. The cap is a conservative default, not a
++                        # protocol limit.
++                        #
++                        # The real limit is the gateware's Etherbone record FIFO
++                        # (`buffer_depth`): a burst longer than that deadlocks
++                        # the whole LiteEth stack. Builds here use 256, so 255 is
++                        # safe; override with LITEX_UDP_READ_BURST if a target
++                        # uses a smaller depth (LiteX's own default is 16).
+                         max_length = {
+                             "CommUART": 256,
+-                            "CommUDP":    1,
++                            "CommUDP":  int(os.environ.get("LITEX_UDP_READ_BURST", 255)),
+                         }.get(self.comm.__class__.__name__, 1)
+                         bursts = {
+                             "CommUART": ["incr", "fixed"]

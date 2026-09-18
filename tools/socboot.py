@@ -44,6 +44,10 @@ copied, so a LiteX bump cannot leave a stale duplicate behind here.
 from __future__ import annotations
 
 import argparse
+import socket
+import struct
+import subprocess
+import zlib
 import os
 import re
 import sys
@@ -271,6 +275,117 @@ def do_hard_reset(port, bitstream: str, probe_port: str | None) -> None:
         raise BootError(f"hard reset failed: {e}")
 
 
+
+# Etherbone kernel upload ---------------------------------------------------------------------------
+# SFL over the console is 115200 baud with 60-byte frames and an ack each, so a
+# 578 KB firmware (software/mnist_lcd_demo) takes minutes. Etherbone writes the
+# same bytes straight into SDRAM over UDP in seconds. The gateware has to have
+# been built with Etherbone for this to exist at all -- see
+# gateware/soc_features.py: add_eth, on by default for the feature tops.
+DEFAULT_CSR_CSV = "build/colorlight_i5/csr.csv"
+DEFAULT_EB_IP   = "192.168.0.50"
+EB_BURST        = 255            # Etherbone protocol maximum, in 32-bit words
+SRAM_TRAP       = (0x10000000, 0x10002000)
+
+
+def _litex_server_up(host: str, eb_port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.4)
+        return s.connect_ex((host, eb_port)) == 0
+
+
+class _LiteXServer:
+    """Spawn litex_server --udp only if one is not already listening.
+
+    A server started here is stopped here; one that was already running is left
+    alone, because it is probably the caller's and may be serving other tools.
+    """
+    def __init__(self, ip: str, host: str, eb_port: int):
+        self.ip, self.host, self.eb_port, self.proc = ip, host, eb_port, None
+
+    def __enter__(self):
+        if _litex_server_up(self.host, self.eb_port):
+            return self
+        exe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           ".venv", "bin", "litex_server")
+        cmd = [exe if os.path.exists(exe) else "litex_server", "--udp", "--udp-ip", self.ip]
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(40):                       # up to ~8 s
+            if _litex_server_up(self.host, self.eb_port):
+                return self
+            time.sleep(0.2)
+        self.__exit__(None, None, None)
+        raise BootError(f"litex_server did not come up for {self.ip}; "
+                        f"is the board reachable? (ping {self.ip})")
+
+    def __exit__(self, *exc):
+        if self.proc:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+            self.proc = None
+
+
+def etherbone_upload(path: str, addr: int, ip: str, host: str, eb_port: int,
+                     csr_csv: str, pace: float = 0.0) -> tuple[int, int]:
+    """Write `path` into memory at `addr`. Returns (padded length, CRC32).
+
+    The CRC is zlib's, which is what the BIOS `crc` command computes, so the
+    caller can verify the landing without reading anything back.
+    """
+    lo, hi = SRAM_TRAP
+    if lo <= addr < hi:
+        raise BootError(f"refusing: 0x{addr:08x} is the CPU's SRAM, where the running "
+                        f"BIOS keeps its stack")
+    blob = open(path, "rb").read()
+    if not blob:
+        raise BootError(f"{path} is empty")
+    data  = blob + b"\x00" * ((-len(blob)) % 4)
+    words = list(struct.unpack("<%dI" % (len(data) // 4), data))
+
+    from litex.tools.litex_client import RemoteClient
+    with _LiteXServer(ip, host, eb_port):
+        bus = RemoteClient(csr_csv=csr_csv, host=host, port=eb_port)
+        bus.open()
+        try:
+            t0 = time.time()
+            for i in range(0, len(words), EB_BURST):
+                bus.write(addr + 4 * i, words[i:i + EB_BURST])
+                if pace:
+                    time.sleep(pace)
+            dt = time.time() - t0
+        finally:
+            bus.close()
+    print(f"[socboot] etherbone: {len(data)} bytes to 0x{addr:08x} in {dt:.2f}s "
+          f"({len(data)/dt/1e6:.1f} MB/s)", flush=True)
+    return len(data), zlib.crc32(data) & 0xffffffff
+
+
+def etherbone_boot(port, tee: Tee, path: str, addr: int, args, deadline_left) -> None:
+    """Upload over Etherbone, verify by CRC at the BIOS prompt, then `boot`.
+
+    Verification is not optional here the way it is over SFL: SFL acks every
+    frame, Etherbone acks nothing, and the README records a real failure mode
+    where an unpaced write wedges the Wishbone bus while ICMP keeps answering.
+    A CRC mismatch means the upload did not land -- do not jump into it.
+    """
+    length, crc = etherbone_upload(path, addr, args.eb_ip, args.eb_host,
+                                   args.eb_port, args.csr_csv, args.eb_pace)
+    drain(port, tee)
+    port.write(f"\ncrc 0x{addr:08x} {length}\n".encode())
+    port.flush()
+    want = f"{crc:08x}".encode()
+    if not wait_for(port, tee, want, min(30.0, deadline_left())):
+        raise BootError(f"CRC mismatch after etherbone upload (expected {crc:08x}); "
+                        f"the image did not land -- not booting it")
+    print(f"[socboot] etherbone: CRC {crc:08x} verified", flush=True)
+    drain(port, tee)
+    port.write(f"\nboot 0x{addr:08x}\n".encode())
+    port.flush()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -294,8 +409,28 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=120.0,
                     help="overall deadline in seconds (default 120)")
     ap.add_argument("--quiet", action="store_true", help="do not echo the console")
+    eb = ap.add_argument_group("etherbone (fast --kernel upload; needs an Etherbone build)")
+    eb.add_argument("--etherbone", action="store_true",
+                    help="upload --kernel over Etherbone into SDRAM instead of SFL "
+                         "over the 115200 console. Seconds instead of minutes for the "
+                         "big firmware images; verified by CRC before booting.")
+    eb.add_argument("--eb-ip", default=DEFAULT_EB_IP,
+                    help=f"the board's IP (default {DEFAULT_EB_IP}). litex_server is "
+                         f"started against it if one is not already listening.")
+    eb.add_argument("--eb-host", default="localhost", help="litex_server host")
+    eb.add_argument("--eb-port", type=int, default=1234, help="litex_server port")
+    eb.add_argument("--csr-csv", default=DEFAULT_CSR_CSV,
+                    help=f"csr.csv matching the running gateware (default {DEFAULT_CSR_CSV})")
+    eb.add_argument("--eb-pace", type=float, default=0.002,
+                    help="seconds between bursts (default 0.002). At full rate a large "
+                         "write intermittently wedges the Wishbone bus while ICMP keeps "
+                         "answering -- see targets/colorlight_i9/README.md.")
     args = ap.parse_args()
 
+    # Whether the caller actually asked for a reset, as opposed to inheriting
+    # the default. It matters only without --kernel: a bare `--send`/`--monitor`
+    # run must not reboot a board the user is watching.
+    reset_explicit = args.reset is not None or args.bitstream is not None
     if args.reset is None:
         args.reset = "auto" if args.bitstream else "soft"
     if args.reset in ("hard", "auto") and not args.bitstream:
@@ -328,7 +463,36 @@ def main() -> int:
         print(f"[socboot +{time.time() - t0:5.1f}s] {msg}", flush=True)
 
     try:
-        if args.kernel:
+        # A reset was asked for but there is no kernel to boot. Without this the
+        # reset silently does nothing -- the whole reset path used to live inside
+        # the --kernel branch, so `--reset hard --bitstream X --send ...` looked
+        # like it reconfigured while actually reading the PREVIOUS build's
+        # console. That is a trap worth closing loudly rather than documenting.
+        if not args.kernel and reset_explicit and args.reset != "none":
+            if args.reset in ("hard", "auto") and args.bitstream:
+                do_hard_reset(port, args.bitstream, args.probe_port)
+                stamp("configured")
+                drain(port, tee)
+            elif args.reset == "soft":
+                stamp("soft reset: reboot")
+                do_soft_reset(port, tee, min(6.0, left()))
+
+        if args.kernel and args.etherbone:
+            # Etherbone needs the BIOS at its prompt, not the SFL offer: the
+            # bytes go in over UDP and the console is only used to verify and
+            # jump. A hard reset still reconfigures first when asked for.
+            if args.reset in ("hard", "auto") and args.bitstream:
+                do_hard_reset(port, args.bitstream, args.probe_port)
+                stamp("configured")
+                time.sleep(2.0)          # let the BIOS finish SDRAM init
+            elif args.reset in ("soft", "auto"):
+                stamp("soft reset: reboot")
+                do_soft_reset(port, tee, min(6.0, left()))
+            stamp("etherbone upload")
+            etherbone_boot(port, tee, args.kernel, args.kernel_addr, args, left)
+            stamp("booted")
+
+        elif args.kernel:
             got_magic = False
             if args.reset in ("soft", "auto"):
                 stamp("soft reset: reboot")

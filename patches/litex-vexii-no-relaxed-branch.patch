@@ -1,0 +1,35 @@
+diff --git a/litex/soc/cores/cpu/vexiiriscv/core.py b/litex/soc/cores/cpu/vexiiriscv/core.py
+index 200cdc203..1c656d9ca 100755
+--- a/litex/soc/cores/cpu/vexiiriscv/core.py
++++ b/litex/soc/cores/cpu/vexiiriscv/core.py
+@@ -193,7 +193,17 @@ class VexiiRiscv(CPU):
+         VexiiRiscv.vexii_args += " --with-mul --with-div --allow-bypass-from=0 --performance-counters=0"
+         VexiiRiscv.vexii_args += " --fetch-l1 --fetch-l1-ways=2"
+         VexiiRiscv.vexii_args += " --lsu-l1 --lsu-l1-ways=2  --with-lsu-bypass"
+-        VexiiRiscv.vexii_args += " --relaxed-branch"
++        # --relaxed-branch spends a cycle on branches to buy Fmax. LiteX adds it
++        # unconditionally and VexiiRiscv has no negation for it (it is a bare
++        # flag -- see its Regression.scala, which dimensions it as ["",
++        # "--relaxed-branch"]), so the trade cannot be evaluated from outside.
++        # On a board where the CPU is NOT on the critical path (the i9: all
++        # three cores land within 2.7% of each other) that cycle buys nothing,
++        # so honour a --no-relaxed-branch sentinel in the user's --vexii-args.
++        # NOTE: test args.vexii_args, not VexiiRiscv.vexii_args -- the user's
++        # args are not merged in until further down.
++        if "--no-relaxed-branch" not in args.vexii_args:
++            VexiiRiscv.vexii_args += " --relaxed-branch"
+ 
+         if args.cpu_variant in ["linux", "debian"]:
+             VexiiRiscv.with_opensbi = True
+@@ -220,6 +230,11 @@ class VexiiRiscv(CPU):
+         VexiiRiscv.update_repo      = args.update_repo
+         VexiiRiscv.no_netlist_cache = args.no_netlist_cache
+         VexiiRiscv.vexii_args      += " " + args.vexii_args
++        # Strip the sentinel before it reaches the generator, which would reject
++        # it as an unknown option. It still contributes to the args hash above
++        # only via its absence, which is what we want: a relaxed/no-relaxed pair
++        # produces two different netlists.
++        VexiiRiscv.vexii_args = VexiiRiscv.vexii_args.replace("--no-relaxed-branch", "")
+ 
+         md5_hash = hashlib.md5()
+         md5_hash.update(VexiiRiscv.vexii_args.encode('utf-8'))

@@ -10,6 +10,17 @@
 #   .venv/bin/litex_server --udp --udp-ip 192.168.0.50 &     # once
 #   tools/i9_flash_bitstream.sh build/colorlight_i5/gateware/colorlight_i5.bit
 #
+# A second argument flashes any payload at an arbitrary flash offset, which is
+# how bulk read-only data gets onto the board -- e.g. DOOM's IWAD, which
+# software/doom/src/w_file_icepi.c reads in place through the XIP window:
+#
+#   tools/i9_flash_bitstream.sh software/doom/wad/doom1.wad 0x200000
+#
+# Offset 0 is the bitstream (the boot image), so a payload must go above it:
+# 0x200000 clears the ~1.16 MB bitstream and leaves the WAD ending at 0x6002F4,
+# inside the 8 MB part. Only the sectors covering [offset, offset+len) are
+# erased, so flashing data does not disturb the bitstream and vice versa.
+#
 # Requires an Etherbone-capable bitstream to be RUNNING on the board (that is
 # how the upload gets in), i.e. targets/colorlight_i9/eth.py --with-etherbone.
 #
@@ -34,6 +45,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 BIT="${1:-}"
+OFFSET="${2:-${OFFSET:-0}}"                      # flash offset; 0 = the boot bitstream
 STAGE="${STAGE:-0x40100000}"                     # SDRAM, clear of the BIOS
 BACKUP="${BACKUP:-$HOME/i9_flash_backup_2MB.bin}"
 # Pace the upload. At full rate (~12 MB/s) a 1.15 MB write into SDRAM has been
@@ -50,8 +62,20 @@ NOT_ERASED='not erased'
 
 die() { echo "FAILED: $*" >&2; exit 1; }
 
-[ -n "$BIT" ] || die "usage: $0 <bitstream.bit>   (env: STAGE, BACKUP)"
-[ -f "$BIT" ] || die "no such bitstream: $BIT"
+[ -n "$BIT" ] || die "usage: $0 <payload> [flash-offset]   (env: STAGE, BACKUP, OFFSET)"
+[ -f "$BIT" ] || die "no such file: $BIT"
+
+# Normalize the offset (accepts 0x... or decimal) and keep the payload inside
+# the 8 MB part -- running off the end wraps silently and corrupts the image.
+OFFSET=$(( OFFSET ))
+FLASH_SIZE=$(( 8 * 1024 * 1024 ))
+PAYLEN=$(stat -c%s "$BIT")
+[ $(( OFFSET + PAYLEN )) -le $FLASH_SIZE ] || die "payload does not fit the part.
+  $BIT is $PAYLEN bytes at offset $OFFSET, which ends at $(( OFFSET + PAYLEN ))
+  -- past the $FLASH_SIZE-byte W25Q64. Use a lower offset."
+FLASH_ADDR=$(( 0x00800000 + OFFSET ))            # CPU address of the XIP window
+printf 'target         : flash offset 0x%x (CPU 0x%08x), %s bytes\n' \
+       "$OFFSET" "$FLASH_ADDR" "$PAYLEN"
 
 # --- preflight ------------------------------------------------------------
 if [ ! -f "$BACKUP" ]; then
@@ -93,12 +117,12 @@ echo "  match -- safe to erase"
 SECTOR=4096
 ERASE=$(( (LEN + SECTOR - 1) / SECTOR * SECTOR ))
 echo
-echo "=== 3/4  erase $ERASE bytes ($((ERASE / SECTOR)) x 4K sectors) ==="
-$CON "flash_erase_range 0 $ERASE" --timeout 300 | tail -3
+echo "=== 3/4  erase $ERASE bytes ($((ERASE / SECTOR)) x 4K sectors) at offset $OFFSET ==="
+$CON "flash_erase_range $OFFSET $ERASE" --timeout 300 | tail -3
 
 echo
-echo "=== 3/4  program $LEN bytes from $STAGE ==="
-WOUT="$($CON "flash_write 0 $STAGE $LEN" --fail "$NOT_ERASED" --timeout 600)"
+echo "=== 3/4  program $LEN bytes from $STAGE to offset $OFFSET ==="
+WOUT="$($CON "flash_write $OFFSET $STAGE $LEN" --fail "$NOT_ERASED" --timeout 600)"
 WRC=$?
 echo "$WOUT" | tail -3
 if [ "$WRC" = 2 ]; then
@@ -112,11 +136,11 @@ fi
 
 echo
 echo "=== 4/4  verify what is actually in flash ==="
-FGOT="$($CON "crc 0x00800000 $LEN" --expect CRC32 --timeout 120 \
+FGOT="$($CON "crc $FLASH_ADDR $LEN" --expect CRC32 --timeout 120 \
         | grep -ao 'CRC32: [0-9a-f]\{8\}' | tail -1 | awk '{print $2}')"
 echo "  expected 0x$CRC   flash 0x${FGOT:-<no reply>}"
 if [ "$FGOT" != "$CRC" ]; then
-    die "flash does not match the bitstream.
+    die "flash does not match the payload.
   Do NOT reconfigure from it. Restore the backup, or simply re-run this script
   -- the board is still running the design that was loaded into SRAM, and the
   probe can reload one at any time."
@@ -124,4 +148,10 @@ fi
 
 echo
 echo "FLASHED AND VERIFIED."
-echo "  Activate it without a power cycle:  $PY tools/icelink.py --refresh"
+if [ "$OFFSET" -eq 0 ]; then
+    echo "  Activate it without a power cycle:  $PY tools/icelink.py --refresh"
+else
+    printf '  Readable in place at CPU 0x%08x via the XIP window.\n' "$FLASH_ADDR"
+    echo "  (--refresh would reconfigure the FPGA from the bitstream at offset 0;"
+    echo "   a data payload needs no activation.)"
+fi
