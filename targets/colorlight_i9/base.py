@@ -117,8 +117,8 @@ class BaseSoC(SoCCore):
     Deliberately plain: this is the substrate the board's bring-up runs on, and
     every feature added to it should be added knowingly.
     """
-    def __init__(self, sys_clk_freq=48e6,
-                 sdram_rate="1:1",
+    def __init__(self, sys_clk_freq=87.5e6,
+                 sdram_rate="1:2",
                  with_sdram=True,
                  with_spi_flash=True,
                  spi_clk_freq=None,
@@ -205,8 +205,14 @@ def _argv_value(flag, default=None):
 
 
 # Build helpers ------------------------------------------------------------------------------------
-def make_parser(description):
-    """The argparse parser shared by the i9 tops."""
+def make_parser(description, default_cpu="vexriscv"):
+    """The argparse parser shared by the i9 tops.
+
+    `default_cpu` lets a CPU-bound top opt into a bigger core without changing
+    it for everything else. It has to be threaded through here rather than set
+    with `parser.set_defaults(cpu=...)`, because the CPU choice is read from
+    argv *before* parse_args() runs -- see the comment at `_argv_value` below.
+    """
     # Keep nested software builds on this interpreter and this checkout.
     os.environ["PYTHON"] = sys.executable
     extra = [os.path.join(LITEX_SETUP_ROOT, p)
@@ -218,21 +224,51 @@ def make_parser(description):
     from litex.build.parser import LiteXArgumentParser
     parser = LiteXArgumentParser(platform=colorlight_i5.Platform, description=description)
     parser.set_defaults(uart_baudrate=115200)
-    # 60 MHz is litex-boards' default and it does NOT close timing on this
-    # design (nextpnr reported 45.3 MHz, and builds only because the flow runs
-    # with --timing-allow-fail). 48 MHz closes with margin; raise it
-    # deliberately and read the reported Fmax, do not assume a bitstream means
-    # timing passed.
-    parser.add_target_argument("--sys-clk-freq", default=48e6, type=float,
-                               help="System clock (Hz). Default 48e6 -- closes timing; "
-                                    "litex-boards' 60e6 does not.")
-    parser.add_target_argument("--sdram-half-rate", action="store_true",
-                               help="Use the half-rate SDRAM PHY (SDRAM clock = 2*sys) "
-                                    "instead of full rate (SDRAM clock = sys). Doubles "
-                                    "memory bandwidth per sys cycle -- but the CPU path "
-                                    "is the real limit for CPU-driven traffic, so it "
-                                    "mostly pays off for DMA engines. Validate with the "
-                                    "BIOS memtest.")
+    # 87.5 MHz, half-rate SDRAM (175 MHz). Every part of this is measured.
+    #
+    # It must be a frequency the PLL hits EXACTLY, because LiteX derives the
+    # UART divisor -- and this project's ADC sample rate -- from the REQUESTED
+    # value, not the achieved one. In half-rate the PLL has to produce sys AND
+    # 2*sys, which is a harder constraint than it looks: 90 MHz comes out as
+    # 90.62/181.25 (0.7% high), while 87.5 -> 87.50/175.00 and 93.75 ->
+    # 93.75/187.50 land exactly. The old 48e6 default was never 48 either --
+    # it was 47.73 (VCO 525/11). That is why this is 87.5 and not a round 90.
+    #
+    # nextpnr reports FAIL here as it does at every frequency this board has
+    # ever run at; it times the -6 worst-case corner and is ~70% pessimistic
+    # against this bench. The hardware sweep in README.md is the evidence:
+    # 50 / 60 / 70 / 80 / 87.5 / 93.75 MHz all pass the BIOS memtest and
+    # 96.875 does not. 93.75 is exact and passes too, but sits only 3 MHz under
+    # a MEASURED cliff; 87.5 keeps 9 MHz of margin for a rounding error's worth
+    # of speed.
+    parser.add_target_argument("--sys-clk-freq", default=87.5e6, type=float,
+                               help="System clock (Hz). Default 87.5e6 -- exactly "
+                                    "achievable with the half-rate PLL, and 9 MHz "
+                                    "below the 96.875 MHz cliff measured on hardware. "
+                                    "nextpnr will call this a timing failure; see README.")
+    # HALF RATE IS THE DEFAULT, and this is not a performance choice -- the
+    # full-rate PHY is BROKEN on this board above ~48 MHz. Measured 2026-09-20
+    # at 90 MHz sys: full rate (SDRAM = sys) gives 1048576/1048576 data errors,
+    # a total failure; half rate (SDRAM = 2*sys = 181 MHz) gives Memtest OK on
+    # the same build and the same board, minutes apart. It is the known
+    # full-rate phase problem noted in docs/ -- 90 degrees is what the PHY
+    # wants and 180 is what the target sets, and it survives at 48 MHz only
+    # because the window is wide there.
+    #
+    # Nothing that touches SDRAM works on a full-rate build at this clock: it
+    # is what corrupted a bitstream staged in SDRAM for flashing and produced
+    # a CRC mismatch that looked like an Etherbone pacing problem for a week.
+    # Do not flip this back without re-running `mem_test`.
+    sdopts = parser.target_group.add_mutually_exclusive_group()
+    sdopts.add_argument("--sdram-half-rate", dest="sdram_half_rate",
+                        action="store_true", default=True,
+                        help="Half-rate SDRAM PHY, clock = 2*sys (DEFAULT, and the "
+                             "only rate that passes memtest above ~48 MHz).")
+    sdopts.add_argument("--sdram-full-rate", dest="sdram_half_rate",
+                        action="store_false",
+                        help="Full-rate SDRAM PHY, clock = sys. BROKEN above ~48 MHz "
+                             "on this board -- 100%% data errors at 90 MHz. Here for "
+                             "experiments on the phase fix, not for use.")
     # --load is bound to the probe rather than a JTAG dongle: this board has no
     # on-board FTDI, and openFPGALoader's CH347 backend does not work against
     # this chip (probe/icelink-fast/README.md).
@@ -242,7 +278,7 @@ def make_parser(description):
     parser.add_target_argument("--flash", action="store_true",
                                help="NOT IMPLEMENTED on this board yet -- the probe does "
                                     "SRAM configuration only. See run_build().")
-    parser.add_target_argument("--cpu", default="vexriscv",
+    parser.add_target_argument("--cpu", default=default_cpu,
                                choices=["vexriscv", "vexii", "vexii-superscalar"],
                                help="Soft CPU core. 'vexriscv' (default): production "
                                     "VexRiscv -- highest Fmax, smallest. "
@@ -257,7 +293,7 @@ def make_parser(description):
     # the core. Peek at argv directly (parse hasn't run yet). Raw --cpu-type /
     # --cpu-variant / --vexii-args passed on the CLI still win (argparse CLI value
     # overrides these set_defaults).
-    cpu_choice = _argv_value("--cpu", "vexriscv")
+    cpu_choice = _argv_value("--cpu", default_cpu)
     if cpu_choice in ("vexii", "vexii-superscalar"):
         parser.set_defaults(cpu_type="vexiiriscv", cpu_variant="standard")
         if cpu_choice == "vexii-superscalar":

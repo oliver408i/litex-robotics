@@ -68,6 +68,56 @@ dirty rect into the other buffer while the previous buffer is still
 being shifted out. CPU rendering and SPI shifting overlap; for any
 non-trivial frame the slower of the two dominates rather than the sum.
 
+## Source formats: wire-ready RGB565, or XRGB8888 converted in gateware
+
+A DMA op reads its payload in one of two formats, selected by the `cvt`
+field of the engine's `op` CSR (it latches with `start`, like every
+other op parameter):
+
+- **`cvt = 0` (raw).** Source bytes go out unchanged. The buffer must
+  already hold RGB565 in wire order — MSB first. This is the LVGL path:
+  the software renderer composites directly into that format, so there
+  is nothing to convert.
+- **`cvt = 1` (convert).** Each source **word** is one XRGB8888 pixel
+  (`0xAARRGGBB`, alpha ignored) and the engine emits its RGB565 as two
+  wire bytes, MSB first. This is for sources that are already XRGB8888
+  and would otherwise need a CPU repack — DOOM's doomgeneric is the
+  motivating case.
+
+The conversion is pure combinational wiring (three bit-slices
+concatenated), so it costs no extra cycle: a pixel is ~4 `sys` cycles
+against a 173 ns two-byte SPI slot at 92.5 MHz SCK, leaving ~3.9x
+headroom. The engine stays SPI-bound, which is the point — the flush
+time is unchanged, the CPU work simply disappears.
+
+**Measured on hardware (i9, 320x200 DOOM frame):** the firmware repack
+cost **17 RISC-V instructions per pixel**, ~1.09M per frame, ~12 ms at
+90 MHz — against an 11 ms panel flush, so it was roughly a *second*
+flush's worth of pure overhead hiding inside the frame time. In
+gateware it measures **0-2 us**. It also deletes the intermediate
+RGB565 buffer outright (128 KB for DOOM), which takes frame SDRAM
+traffic from 512 KB (CPU reads 256 KB XRGB, writes 128 KB, engine reads
+128 KB) down to a single 256 KB engine read.
+
+**The one sharp edge:** in `cvt` mode `dma_row_bytes` and `dma_stride`
+stay in **source** bytes — 4 per pixel, i.e. twice the wire length of
+the same rect. Keeping them in source units is what lets the row/stride
+arithmetic in the FSM stay shared between both formats, but it means a
+rect costs `w*h*4`, not `w*h*2`. `dma_src` must also be word-aligned.
+
+Firmware entry points are `lcd_dma_rect()` (raw) and
+`lcd_dma_rect_xrgb8888()` (cvt) in `software/common/lcd.c`; both are
+`#ifdef`'d on `CSR_LCD_OP_CVT_OFFSET`, so firmware still builds against
+gateware that predates the field.
+
+Verified in `sim/test_lcd_engine.py` — raw passthrough (proving the
+existing path is unregressed), conversion, strided multi-row, and
+channel mapping, with a negative control that catches an R/B swap. The
+bench needs `LCDEngine(sim_spi=True)`, which swaps the `SPI_Master`
+Verilog black box for a behavioral shifter, because migen's Python
+simulator cannot evaluate an `Instance` and the TX FIFO would otherwise
+never drain. Synthesis never sets it.
+
 ## Op queue
 
 The engine has a single-slot queue ahead of the active op. Software

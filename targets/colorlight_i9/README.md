@@ -26,6 +26,8 @@ needs a tty.
 | `bringup.py` | CPU + SDRAM + flash + UART, nothing else | **Deployable.** Build this when changing the clock or the SDRAM PHY |
 | `psc18sr.py` | `bringup.py` + PSC18SR as a **non-boot side block** | Works on hardware — all firmware checks pass. See `docs/psc18sr_prototype.md` |
 | `eth.py` | Ethernet PHY bring-up (MDIO only); `--with-ethernet` adds the MAC, `--with-etherbone` a Wishbone master over UDP | **Datapath verified in PHY loopback** (12/12 pings, no magjacks). See below |
+| `adc.py` | `bringup.py` + a free-running MCP3008 8-channel ADC sampler on P3/`pmodh` | **Works on hardware** (2026-09-18): the part answers, channels are distinguishable, CH0 noise floor is 5 counts p-p. First step of the radar chain |
+| `adc_stream.py` | `bringup.py` + Ethernet + hardware-timed capture of one MCP3008 channel, streamed to the host over raw UDP | **Works on hardware** (2026-09-19): 20,000.0 sps exactly, 39.1 pkt/s, 0 lost / 0 dropped over 5 s. Needs `--eth-phy 1`. See below |
 | `lcd.py` | ST7796S LCD engine + FT6336U touch, on P4 | **Builds; untested on hardware.** All 12 pins place, `cd_spi` passes at 209 MHz; `sys` fails STA by 4% and ships anyway (see Timing) |
 
 ## Ethernet PHY — what is known, measured 2026-09-12
@@ -322,7 +324,7 @@ on the same design, 2026-09-16:
 
 So Etherbone costs ~16 MHz of reported `sys` headroom, and the critical path
 runs `etherbone_record_fifo -> bus adr decode -> spiflash mmap comparator`.
-**The build ships at 48 MHz with Etherbone anyway.** nextpnr times the
+**The build ships at the 90 MHz default with Etherbone anyway.** nextpnr times the
 worst-case corner -- slowest speed grade, 85 C, minimum voltage -- and a 4%
 shortfall against that corner is not evidence of anything on a bench at room
 temperature. This board's history is the argument: the 50 MHz core has been run
@@ -467,6 +469,55 @@ Other things the sweep settled:
 * STA was wrong about every domain, every time: `sys` 41.7 reported vs 90 run,
   SDRAM 145.7 vs 181, `spi` 209.6 vs 300, `eth_rx` 61-68 vs 125.
 
+## ADC capture over UDP — measured 2026-09-19
+
+`adc_stream.py` + `tools/adc_stream_rx.py`. The capture half of the radar
+chain: gateware samples one MCP3008 channel on a free-running timer and pushes
+the samples out a UDP socket; the host writes raw int16. No CPU in the sample
+path — sample-interval jitter smears an FFT and frequency *is* the measurement.
+
+    .venv/bin/python targets/colorlight_i9/adc_stream.py --build --load --eth-phy 1
+    .venv/bin/python tools/adc_stream_rx.py --seconds 5 --out /tmp/cap.raw --fft
+
+It streams from power-on (`enable` resets to 1), so no firmware runs and
+nothing has to be poked first. Etherbone stays up beside it on port 1234 —
+two UDP ports on one core — so `tools/adc_stream_ctl.py` can change channel,
+rate and destination at runtime without a rebuild.
+
+| | |
+|---|---|
+| rate | `period` 4500 off 90 MHz = **20,000.0 sps exactly** |
+| packets | 512 samples = 1056 B payload, **39.1/s**, ~40 KB/s |
+| 5 s capture | 197 packets, 100,864 samples, **0 lost in transit, 0 board drops** |
+| wire format | verified by `tcpdump`: magic `RADC` little-endian, IP/UDP lengths exact |
+
+**The capture chain is validated against a known signal, which is the thing
+worth having before any radar is attached.** A floating input picks up mains
+hum, and that turns out to be a free calibration source:
+
+- 60.08 Hz fundamental, **63 dB above the noise floor**;
+- harmonics at 119.96 / 180.04 / 239.93 / 300.01 Hz — within 0.08 Hz of exact
+  multiples, which is what calibrates the frequency axis. A wrong sample rate
+  would stretch them proportionally;
+- **no image at `fs/2 - 60` = 9940 Hz** (−57 dB, the noise floor). That is the
+  signature a swapped 16-bit pair in the packing would leave, so its absence
+  proves the two-samples-per-word order.
+
+Bit alignment is separately proven in `sim/test_adc_stream.py` against a
+behavioural MCP3008 returning `0x2A5` — grounded channels read ~0 whichever
+way the bits are shifted, so hardware alone cannot test it.
+
+### Two traps that cost an evening here
+
+- **The cable is on PHY 1.** `--eth-phy 1` or there is no link at all, and the
+  failure looks like "the board is not streaming".
+- **firewalld REJECTs, it does not drop.** Fedora's default `public` zone sent
+  ICMP host-prohibited back at ~40 packets/s while `Ip:InReceives` climbed and
+  `Ip:InDelivers` did not. `--add-port=5005/udp --permanent` is not enough on
+  its own: **permanent edits need `firewall-cmd --reload`**, and until then
+  `--list-ports` shows the runtime zone as empty while the permanent rule sits
+  there unused.
+
 ## Clock headroom — measured 2026-09-12, not estimated
 
 `nextpnr` reports Fmax at the **-6 worst-case corner** (slowest process, 85 °C,
@@ -502,12 +553,19 @@ Three things worth keeping from that:
 - **93.75 MHz is a measurement, not an operating point.** It runs the SDRAM at
   187.5 MHz against a part rated 143–166 MHz, on one board, at one temperature,
   today. Margin bought from an unmodelled corner disappears on a hot day or a
-  different die. The default stays **48 MHz**; 80 MHz (160 MHz SDRAM, 17 MHz
-  below the observed cliff) is the highest point with real margin on both axes.
+  different die.
+
+**The default is now 90 MHz** (changed 2026-09-19, was 48). It sits between two
+measured passes, 87.5 and 93.75, on this very build; `lcd.py` has run 90/181 on
+hardware since 2026-09-16; and it is exactly achievable, which 48 was not --
+48e6 requested came out as 47.727 MHz (VCO 525/11). If you want more margin on
+both axes, 80 MHz (160 MHz SDRAM, 17 MHz below the cliff) is the conservative
+pick. Do not go past 93.75 without redoing this sweep.
 
 Only exactly-achievable PLL frequencies were used, so requested == actual:
 `VCO = 25 MHz × k` must land in 400–800 MHz, then `sys = VCO / 2d`. This
 matters because LiteX derives the UART divisor from the **requested** frequency
-— the committed 48 MHz default is really 47.727 MHz (525/11), a 0.6% error that
-is harmless, but a badly-chosen target can be far enough off to break the
-console.
+— the old 48 MHz default was really 47.727 MHz (525/11), a 0.6% error that was
+harmless on the console and out of spec for USB FS (`docs/usb_device.md`), and
+was the main reason to move off it. 90 MHz is exact (VCO 450, ÷5). A
+badly-chosen target can be far enough off to break the console.

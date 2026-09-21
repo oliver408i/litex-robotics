@@ -46,9 +46,11 @@ with a status, so the test is scriptable. It also handles the reset: `--reset
 soft` is the BIOS `reboot`, `--reset hard --bitstream <file>` reconfigures the
 FPGA through the probe.
 
-Timing note: this closes 48 MHz with about 1 MHz of margin, where the plain
-`bringup.py` has room to spare. The flow runs `--timing-allow-fail`, so read
-the Fmax nextpnr reports rather than treating a bitstream as proof.
+Timing note: nextpnr reports this design as a failure at the 90 MHz default, as
+it does for every i9 build -- it times a corner this bench is nowhere near. The
+hardware sweep in README.md was run on THIS top, and 87.5 and 93.75 MHz both
+pass the BIOS memtest, so 90 sits between two measured passes. Read the Fmax as
+information; judge it on the memtest and the firmware's PASS/FAIL.
 """
 from base import BaseSoC, make_parser, run_build, add_eth_arguments, eth_kwargs
 
@@ -57,7 +59,7 @@ from gateware.soc_features import add_eth
 
 
 class Psc18srSoC(BaseSoC):
-    def __init__(self, sys_clk_freq=48e6, sdram_rate="1:1",
+    def __init__(self, sys_clk_freq=87.5e6, sdram_rate="1:2",
                  psc18sr_imem_words=1024, psc18sr_ro_words=256,
                  psc18sr_prescale=1024, eth=None, **kwargs):
         super().__init__(sys_clk_freq=sys_clk_freq, sdram_rate=sdram_rate, **kwargs)
@@ -98,8 +100,8 @@ def main():
                                     "loads at is the address stage-0 would use.")
     parser.add_target_argument("--psc18sr-prescale", default=1024,
                                type=lambda x: int(x, 0),
-                               help="Core cycles per DELAY tick (default 1024: 21.3 us/tick "
-                                    "at 48 MHz, 349 ms max).")
+                               help="Core cycles per DELAY tick (default 1024: 11.7 us/tick "
+                                    "at the 87.5 MHz default, 192 ms max).")
     args = parser.parse_args()
 
     soc = Psc18srSoC(

@@ -107,6 +107,67 @@ domain, just a different net picked as representative.
   be the first to actually break. Re-run the BIOS memtest after the swap rather
   than assuming the 90/181 operating point carries over.
 
+## What the two cores actually are
+
+Same ISA -- both are **rv32i2p0_m** (RV32IM, ilp32). Everything below is
+microarchitecture, not instruction set.
+
+| | VexRiscv `standard` | VexiiRiscv `vexii-superscalar` |
+|---|---|---|
+| Issue width | 1 | **2** (`--decoders=2 --lanes=2`) |
+| Branch prediction | STATIC | **BTB + RAS + gshare** |
+| Late ALU | no | yes |
+| I-cache | 4 KB, direct-mapped, 32 B line | **8 KB** -- 64 sets x 2 ways x 64 B |
+| D-cache | 4 KB, direct-mapped, 32 B line | **8 KB** -- 64 sets x 2 ways x 64 B, + bypass |
+| Netlist | pre-generated Verilog | generated on demand via SBT/SpinalHDL |
+
+So VexiiRiscv has **2x the capacity, 2x the associativity and 2x the line
+size** on both L1s -- 16 KB of L1 against 8 KB.
+
+Cache figures are read off the generated netlist, not just the defaults: the tag
+arrays are `FetchL1Plugin_logic_ways_{0,1}_mem [0:63]` (and the same for
+`LsuL1Plugin`), I-cache data is 2 banks x 512 x 64 bit = 8192 B, D-cache data is
+2 banks x 1024 x 32 bit = 8192 B. That matches `Param.scala`'s `fetchL1Sets = 64`
+/ `lsuL1Sets = 64` with `lineSize = 64`, which apply because LiteX passes ways
+but never overrides sets. VexRiscv's come from `GenCoreDefault.scala`
+(`iCacheSize`/`dCacheSize = 4096`, `bytePerLine = 32`, `wayCount = 1`,
+`prediction = STATIC`).
+
+The full `vexii-superscalar` generator argument list, as actually passed --
+LiteX's `standard` variant base plus this repo's preset:
+
+```
+--with-mul --with-div --allow-bypass-from=0 --performance-counters=0
+--fetch-l1 --fetch-l1-ways=2
+--lsu-l1  --lsu-l1-ways=2 --with-lsu-bypass
+--relaxed-branch                                   <- LiteX adds this; see below
+--decoders=2 --lanes=2 --with-btb --with-ras --with-gshare --with-late-alu
+```
+
+## Core area on its own, separate from the SoC
+
+The utilisation tables above are **whole-SoC** numbers -- they include LiteDRAM,
+the gigabit MAC + Etherbone, LiteSPI, the LCD engine and the CSR fabric, most of
+which you pay for whatever the core. Synthesising each core standalone
+(`synth_ecp5`, LUT sites = `LUT4 + 2*CCU2C + 4*DPR16X4`, a formula checked
+against nextpnr on the full SoC to 0.25%):
+
+| core alone | LUT sites | % of 45F | FF | BRAM |
+|---|---|---|---|---|
+| VexRiscv standard | **3120** | 7.1% | 1527 | 10 |
+| VexiiRiscv standard | 7180 | 16.4% | 4548 | 8 |
+| VexiiRiscv superscalar | **13239** | 30.2% | 6970 | 14 |
+
+**The trade, stated plainly: superscalar costs 4.24x the LUTs of VexRiscv for
+1.45x the performance -- about 2.9x worse performance-per-LUT.** Free if the
+fabric has no other claimant; expensive if it does. For scale, the 10119-LUT
+difference between them is almost exactly the *entire* free space the 25F had
+(10287) at the point where adding one more peripheral stopped routing.
+
+**`--cpu vexii` (single-issue) has no DOOM number yet.** At 7180 LUTs it is 2.3x
+VexRiscv rather than 4.2x, so if it captures much of the 1.45x it is the better
+point on the curve. Measuring it is one build plus one boot.
+
 ## `--relaxed-branch`: tested, makes no difference (2026-09-17)
 
 LiteX adds `--relaxed-branch` to every VexiiRiscv variant unconditionally, and

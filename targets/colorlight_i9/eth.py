@@ -50,7 +50,7 @@ class EthPhySoC(BaseSoC):
     specific to this top is only the default (no MAC, no Etherbone, so PHY
     bring-up never depends on the datapath being right) and the RX clock probe.
     """
-    def __init__(self, sys_clk_freq=48e6, sdram_rate="1:1", eth=None, **kwargs):
+    def __init__(self, sys_clk_freq=87.5e6, sdram_rate="1:2", eth=None, **kwargs):
         super().__init__(sys_clk_freq=sys_clk_freq, sdram_rate=sdram_rate, **kwargs)
         add_eth(self, with_rx_probe=True, **eth)
 

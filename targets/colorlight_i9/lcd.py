@@ -61,7 +61,13 @@ class LCDSoC(BaseSoC):
 
 
 def main():
-    parser = make_parser(description="Colorlight i9 SoC + ST7796S LCD + FT6336U touch.")
+    # The one top where the CPU is the product: doom runs here, and
+    # vexii-superscalar measured 1.45x on its render phase (docs/cpu_vexiiriscv.md).
+    # It is NOT the base default -- it costs 4.24x the LUTs for that 1.45x and
+    # needs sbt+JDK21 on PATH, which most i9 builds have no reason to pay.
+    # `--cpu vexriscv` still gets the small core back.
+    parser = make_parser(description="Colorlight i9 SoC + ST7796S LCD + FT6336U touch.",
+                         default_cpu="vexii-superscalar")
     add_eth_arguments(parser)
     # 90 MHz sys / 181 MHz SDRAM / 92.5 MHz SCK: all three measured on hardware,
     # all three reported as timing failures by nextpnr. See the module docstring.

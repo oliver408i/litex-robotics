@@ -32,7 +32,8 @@ lcd_pads_apply();          /* push initial pad state */
 lcd_init();                /* hw reset, init sequence, backlight on */
 
 lcd_fill_rect(x, y, w, h, 0x07e0);          /* solid green rect */
-lcd_dma_rect(x, y, w, h, pixel_buf, len);   /* RGB565 buffer */
+lcd_dma_rect(x, y, w, h, pixel_buf, len);   /* RGB565 buffer, wire order */
+lcd_dma_rect_xrgb8888(x, y, w, h, buf, len); /* XRGB8888; engine converts */
 lcd_write_cmd(0x29);                         /* arbitrary cmd byte */
 lcd_cmd_data(0x36, &madctl, 1);              /* cmd + data payload */
 ```
@@ -41,6 +42,15 @@ For hot paths that need to bypass the helpers (LVGL's `flush_cb`, a
 custom blitter, anything that wants the engine's stride-aware DMA),
 use `lcd_wait_can_accept()`, write the engine CSRs directly, and fire
 `lcd_op_write(LCD_OP_*)`.
+
+`lcd_dma_rect_xrgb8888()` is for sources that are already XRGB8888
+(`0xAARRGGBB`): the LCD engine does the RGB565 conversion as it DMAs, which is
+free in gateware and removes ~17 RISC-V instructions per pixel plus the whole
+intermediate RGB565 buffer. Note its `len` is the **source** length, `w*h*4` --
+twice what the same rect costs via `lcd_dma_rect()` -- and `buf` must be
+word-aligned. It compiles to nothing on gateware without the engine's `cvt`
+field, so guard on `CSR_LCD_OP_CVT_OFFSET` if you need to support both. Details
+in `docs/display_architecture.md`.
 
 ### `touch.h`
 
