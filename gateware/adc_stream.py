@@ -222,7 +222,7 @@ class ADCStreamer(LiteXModule, AutoCSR):
     def __init__(self, pads, sys_clk_freq, sclk_div=24,
                  samples_per_packet=512, sample_rate=20e3,
                  fifo_depth=512, enable_reset=1,
-                 dest_ip="192.168.0.10", udp_port=5005):
+                 dest_ip="255.255.255.255", udp_port=5005):
         assert samples_per_packet % 2 == 0
         words_per_packet = samples_per_packet // 2
         payload_words    = HEADER_WORDS + words_per_packet
@@ -242,6 +242,22 @@ class ADCStreamer(LiteXModule, AutoCSR):
         # the one thing about this design most likely to change, and a rebuild
         # to chase a new DHCP lease is a silly price. add_adc_stream() wires
         # these into the UDP streamer's own address signals.
+        #
+        # Default is the broadcast address, not a specific host, and that is
+        # load-bearing rather than a style choice. liteeth's IP TX only ARPs
+        # for a unicast destination -- a trailing ".255" octet (bcast_ip_mask
+        # in liteeth/common.py) goes straight to the broadcast MAC with no ARP
+        # involved. A unicast default pointed at a bench host that is not on
+        # the network this boots into means the TX path retries that lookup
+        # forever, and liteeth's ARP resolver tracks exactly one outstanding
+        # request at a time -- so that endless retry starves ARP for every
+        # *other* outbound packet too, including Etherbone's own replies and
+        # ICMP. Symptom: the board answers ARP (a reply needs no resolution)
+        # but nothing else -- ping, Etherbone, all of it looks dead, on a link
+        # whose PHY and cabling are completely fine. Cost a full debugging
+        # session (2026-10-09) on a host move that was otherwise a non-event.
+        # `tools/adc_stream_ctl.py --dest-ip`/`--auto` re-point it at one host
+        # at runtime for anyone who wants a non-broadcast capture.
         self._dest_ip   = CSRStorage(32, reset=_pack_ip(dest_ip),
                                      description="Destination IPv4, first octet in bits 31:24.")
         self._dest_port = CSRStorage(16, reset=udp_port, description="Destination UDP port.")
@@ -389,7 +405,7 @@ class ADCStreamer(LiteXModule, AutoCSR):
 
 
 def add_adc_stream(soc, sclk_freq=1e6, sample_rate=20e3, samples_per_packet=512,
-                   dest_ip="192.168.0.10", udp_port=5005, fifo_depth=512,
+                   dest_ip="255.255.255.255", udp_port=5005, fifo_depth=512,
                    pins=COLORLIGHT_I9_MCP3008_PINS, name="adc_stream",
                    ethcore_name="ethcore_etherbone"):
     """Attach the capture path to `soc` and point it at a host.

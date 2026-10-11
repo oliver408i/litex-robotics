@@ -58,7 +58,7 @@ class PSC18SR(LiteXModule, AutoCSR):
                  num_out: int = 4, num_in: int = 4, delay_prescale: int = 1024,
                  autostart: bool = False, bus_base: int = 0xf0000000,
                  wdt_cycles: int = 0, cpu_rst_port: int = 0, cpu_rst_bit: int = 0,
-                 init_file: str = ""):
+                 init_file: str = "", ext_in: int = 0):
         assert (imem_words & (imem_words - 1)) == 0, "imem_words must be a power of 2"
         assert 0 <= ro_words <= imem_words, "ro_words must fit in imem_words"
         assert bus_base % 0x10000 == 0, "bus_base must be 64K-aligned"
@@ -113,6 +113,11 @@ class PSC18SR(LiteXModule, AutoCSR):
         running, halted, aborted, wdt_fired = Signal(), Signal(), Signal(), Signal()
         result = Signal(16)
         io_out = Signal(16 * num_out)
+        # Ports for gateware blocks hung off the core ("ports, not opcodes"):
+        # `io_out` is every output port, and `ext_in` supplies input ports
+        # num_in .. num_in+ext_in-1, after the CSR-driven gpio_in ones.
+        self.io_out = io_out
+        self.ext_in = Signal(16 * max(ext_in, 1))
         dbg_pc = Signal(addr_bits)
         retire = Signal()
 
@@ -121,7 +126,7 @@ class PSC18SR(LiteXModule, AutoCSR):
             p_IMEM_WORDS     = imem_words,
             p_RO_WORDS       = ro_words,
             p_NUM_OUT        = num_out,
-            p_NUM_IN         = num_in,
+            p_NUM_IN         = num_in + ext_in,
             p_DELAY_PRESCALE = delay_prescale,
             p_AUTOSTART      = 1 if autostart else 0,
             p_BUS_BASE       = bus_base,
@@ -146,7 +151,8 @@ class PSC18SR(LiteXModule, AutoCSR):
             i_imem_data = self.imem_data.storage,
 
             o_io_out = io_out,
-            i_io_in  = self.gpio_in.storage,
+            i_io_in  = Cat(self.gpio_in.storage, self.ext_in[:16 * ext_in]) if ext_in
+                       else self.gpio_in.storage,
 
             o_wb_cyc   = self.bus.cyc,
             o_wb_stb   = self.bus.stb,
@@ -177,7 +183,7 @@ def add_psc18sr(soc, imem_words: int = 1024, ro_words: int = 256,
                num_out: int = 4, num_in: int = 4, delay_prescale: int = 1024,
                autostart: bool = False, wdt_cycles: int = 0,
                cpu_rst_port: int = 0, cpu_rst_bit: int = 0,
-               init_file: str = "", name: str = "psc18sr"):
+               init_file: str = "", name: str = "psc18sr", ext_in: int = 0):
     """Attach a PSC18SR to `soc`, registering its Wishbone master.
 
     bus_base defaults to the SoC's own CSR base, which is the whole point of
@@ -195,7 +201,8 @@ def add_psc18sr(soc, imem_words: int = 1024, ro_words: int = 256,
                   wdt_cycles = wdt_cycles,
                   cpu_rst_port = cpu_rst_port,
                   cpu_rst_bit  = cpu_rst_bit,
-                  init_file  = init_file)
+                  init_file  = init_file,
+                  ext_in     = ext_in)
     setattr(soc, name, core)
     soc.add_csr(name)
     soc.bus.add_master(name=name, master=core.bus)

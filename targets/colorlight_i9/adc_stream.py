@@ -25,6 +25,14 @@ Defaults: CH0, 20 ksps, 512 samples/packet (a 1056-byte datagram, ~39/s,
 40 KB/s). 20 ksps is 5x Nyquist on the 5 kHz top of the Doppler band, and the
 whole stream is a rounding error on a gigabit link.
 
+**Destination defaults to broadcast, not one computer.** Every host on the
+local link gets the stream, and `tools/adc_stream_rx.py` et al. already bind
+`0.0.0.0` so this needs no setup -- plug the board into any network and listen.
+`--adc-dest-ip`/`tools/adc_stream_ctl.py --dest-ip` re-point it at one host if
+you specifically want to stop broadcasting; see gateware/adc_stream.py for why
+a unicast default pointed at a since-moved host is actively dangerous (it can
+wedge Etherbone itself, not just the stream).
+
 Rate and channel are CSRs, so they can be changed at runtime over Etherbone
 without rebuilding -- `tools/adc_stream_ctl.py`. Etherbone stays up alongside
 the stream: they are two UDP ports on the same core.
@@ -50,7 +58,7 @@ from gateware.soc_features import add_eth
 class AdcStreamSoC(BaseSoC):
     def __init__(self, sys_clk_freq=87.5e6, sdram_rate="1:2",
                  adc_sclk_freq=1e6, sample_rate=20e3, samples_per_packet=512,
-                 dest_ip="192.168.0.10", udp_port=5005, eth=None, **kwargs):
+                 dest_ip="255.255.255.255", udp_port=5005, eth=None, **kwargs):
         super().__init__(sys_clk_freq=sys_clk_freq, sdram_rate=sdram_rate, **kwargs)
 
         # Ethernet first: add_adc_stream hangs a second UDP port off the core
@@ -92,9 +100,14 @@ def main():
                                     "1472 bytes -- LiteEth does not fragment, so a "
                                     "bigger packet is a broken one, and the build "
                                     "asserts rather than shipping it.")
-    parser.add_target_argument("--adc-dest-ip", default="192.168.0.10",
-                               help="Host the samples are sent to (the bench host). "
-                                    "Also a CSR, so it can be re-pointed at runtime.")
+    parser.add_target_argument("--adc-dest-ip", default="255.255.255.255",
+                               help="Host the samples are sent to. Defaults to the "
+                                    "broadcast address so a stock build needs no "
+                                    "network-specific config and can never wedge "
+                                    "ARP chasing an unreachable host (see the long "
+                                    "comment in gateware/adc_stream.py). Also a CSR, "
+                                    "so it can be re-pointed at one host at runtime "
+                                    "with tools/adc_stream_ctl.py --dest-ip/--auto.")
     parser.add_target_argument("--adc-udp-port", default=5005,
                                type=lambda x: int(x, 0),
                                help="Destination UDP port. Not 1234, which is Etherbone's.")

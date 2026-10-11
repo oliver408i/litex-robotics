@@ -9,6 +9,17 @@ the board:
     .venv/bin/python tools/adc_stream_ctl.py                 # show status
     .venv/bin/python tools/adc_stream_ctl.py --channel 3 --rate 40000
     .venv/bin/python tools/adc_stream_ctl.py --reset-counters
+    .venv/bin/python tools/adc_stream_ctl.py --auto           # stream to ME specifically
+
+`--auto` is the answer to "what's my IP on this machine, again" -- it never
+needs typing out by hand, so it is correct on whatever computer runs it. It
+opens a UDP socket toward `--board-ip` (default the board's usual static
+address) and reads back the local address the OS picked to reach it -- the
+same trick tools/adc_web.py uses to print its own URL -- then writes that as
+`--dest-ip`. No packets are sent by this: UDP `connect()` only picks a route.
+The build-time default is already the broadcast address (every host on the
+link receives it, no config needed), so `--auto` is for the opposite case:
+stop broadcasting and send to exactly one machine.
 
 Etherbone and the sample stream are two UDP ports on one core, so this works
 while a capture is running -- changing the channel mid-capture takes effect on
@@ -25,6 +36,7 @@ believing anything here.
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from pathlib import Path
 
@@ -36,6 +48,23 @@ for _p in ["litex", "litex-boards", "migen"]:
         sys.path.insert(0, str(_cand))
 
 from litex import RemoteClient   # noqa: E402
+
+
+def _auto_dest_ip(board_ip: str) -> str:
+    """This machine's IP as the OS would route it toward `board_ip`.
+
+    UDP `connect()` does not send anything -- it just asks the routing table
+    which local address and interface a packet to that destination would use,
+    which `getsockname()` then reveals. Same trick tools/adc_web.py uses to
+    print its own URL. Raises OSError if `board_ip` is unroutable (no network
+    path at all, not even ARP-unresolved -- that would still succeed here).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((board_ip, 1))
+        return s.getsockname()[0]
+    finally:
+        s.close()
 
 
 def main():
@@ -54,7 +83,24 @@ def main():
                     help="zero seq/emitted/dropped, so the next capture starts clean")
     ap.add_argument("--dest-ip", help="re-point the stream at another host, e.g. 192.168.0.11")
     ap.add_argument("--dest-port", type=int, help="destination UDP port")
+    ap.add_argument("--auto", action="store_true",
+                    help="detect this machine's own IP toward --board-ip and use that "
+                         "as --dest-ip, instead of typing an address by hand. Correct "
+                         "on any computer/network; mutually exclusive with --dest-ip.")
+    ap.add_argument("--board-ip", default="192.168.0.50",
+                    help="the board's address, for --auto to route toward (default: "
+                         "the usual static --local-ip from targets/colorlight_i9/base.py)")
     args = ap.parse_args()
+
+    if args.auto:
+        if args.dest_ip is not None:
+            raise SystemExit("--auto and --dest-ip are mutually exclusive -- "
+                             "--auto picks the address for you")
+        try:
+            args.dest_ip = _auto_dest_ip(args.board_ip)
+        except OSError as e:
+            raise SystemExit(f"--auto: can't find a route to {args.board_ip}: {e}")
+        print(f"--auto: this machine is {args.dest_ip} as seen from {args.board_ip}")
 
     bus = RemoteClient(csr_csv=args.csr_csv)
     bus.open()
